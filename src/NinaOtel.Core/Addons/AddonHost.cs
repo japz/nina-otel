@@ -10,14 +10,30 @@ public sealed class AddonHost
     private readonly TimeProvider timeProvider;
     private readonly TimeSpan startTimeout;
     private readonly TimeSpan stopTimeout;
+    private readonly Func<Func<Task>, Task> startWorkScheduler;
     private readonly CancellationTokenSource shutdownCts = new();
-    private readonly List<ITelemetryAddon> knownAddons = [];
+    private readonly List<AddonRuntime> knownAddons = [];
 
     public AddonHost(
         ITelemetrySink sink,
         TimeProvider timeProvider,
         TimeSpan startTimeout,
         TimeSpan stopTimeout)
+        : this(
+            sink,
+            timeProvider,
+            startTimeout,
+            stopTimeout,
+            static startWork => Task.Run(startWork))
+    {
+    }
+
+    private AddonHost(
+        ITelemetrySink sink,
+        TimeProvider timeProvider,
+        TimeSpan startTimeout,
+        TimeSpan stopTimeout,
+        Func<Func<Task>, Task> startWorkScheduler)
     {
         if (startTimeout <= TimeSpan.Zero)
         {
@@ -33,6 +49,7 @@ public sealed class AddonHost
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.startTimeout = startTimeout;
         this.stopTimeout = stopTimeout;
+        this.startWorkScheduler = startWorkScheduler ?? throw new ArgumentNullException(nameof(startWorkScheduler));
     }
 
     public Task StartAsync(IEnumerable<ITelemetryAddon> addons, CancellationToken cancellationToken)
@@ -49,12 +66,14 @@ public sealed class AddonHost
                 continue;
             }
 
+            var runtime = new AddonRuntime(addon);
+
             lock (syncRoot)
             {
-                knownAddons.Add(addon);
+                knownAddons.Add(runtime);
             }
 
-            _ = Task.Run(() => StartOneAsync(addon), CancellationToken.None);
+            _ = startWorkScheduler(() => StartOneAsync(runtime));
         }
 
         return Task.CompletedTask;
@@ -64,14 +83,20 @@ public sealed class AddonHost
     {
         RequestShutdownCancellationWithoutWaiting();
 
-        ITelemetryAddon[] addons;
+        AddonRuntime[] addons;
         lock (syncRoot)
         {
             addons = knownAddons.ToArray();
         }
 
-        foreach (var addon in addons)
+        foreach (var runtime in addons)
         {
+            if (!TryBeginStop(runtime))
+            {
+                continue;
+            }
+
+            var addon = runtime.Addon;
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(stopTimeout);
             Task? stopTask = null;
@@ -80,6 +105,7 @@ public sealed class AddonHost
             {
                 stopTask = addon.StopAsync(timeoutCts.Token);
                 await stopTask.WaitAsync(stopTimeout, cancellationToken);
+                MarkStopped(runtime);
                 PublishHealth(addon, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -90,15 +116,18 @@ public sealed class AddonHost
             catch (TimeoutException)
             {
                 ObserveLateFault(stopTask, addon, "stop_error");
+                MarkStopped(runtime);
                 PublishHealth(addon, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
             }
             catch (OperationCanceledException)
             {
                 ObserveLateFault(stopTask, addon, "stop_error");
+                MarkStopped(runtime);
                 PublishHealth(addon, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
             }
             catch (Exception ex)
             {
+                MarkStopped(runtime);
                 PublishHealth(addon, "stop_error", ex.Message, TelemetryPriority.Important);
             }
         }
@@ -131,8 +160,17 @@ public sealed class AddonHost
         }
     }
 
-    private async Task StartOneAsync(ITelemetryAddon addon)
+    private async Task StartOneAsync(AddonRuntime runtime)
     {
+        if (Interlocked.CompareExchange(
+                ref runtime.State,
+                AddonRuntimeState.Starting,
+                AddonRuntimeState.PendingStart) != AddonRuntimeState.PendingStart)
+        {
+            return;
+        }
+
+        var addon = runtime.Addon;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
         timeoutCts.CancelAfter(startTimeout);
         Task? startTask = null;
@@ -142,7 +180,14 @@ public sealed class AddonHost
             var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
             startTask = addon.StartAsync(context, timeoutCts.Token);
             await startTask.WaitAsync(startTimeout, shutdownCts.Token);
-            PublishHealth(addon, "started", "Add-on started.", TelemetryPriority.Routine);
+
+            if (Interlocked.CompareExchange(
+                    ref runtime.State,
+                    AddonRuntimeState.Started,
+                    AddonRuntimeState.Starting) == AddonRuntimeState.Starting)
+            {
+                PublishHealth(addon, "started", "Add-on started.", TelemetryPriority.Routine);
+            }
         }
         catch (TimeoutException)
         {
@@ -159,6 +204,45 @@ public sealed class AddonHost
             PublishHealth(addon, "start_error", ex.Message, TelemetryPriority.Important);
         }
     }
+
+    private static bool TryBeginStop(AddonRuntime runtime)
+    {
+        while (true)
+        {
+            var state = Volatile.Read(ref runtime.State);
+            switch (state)
+            {
+                case AddonRuntimeState.PendingStart:
+                    if (Interlocked.CompareExchange(
+                            ref runtime.State,
+                            AddonRuntimeState.StartSkipped,
+                            AddonRuntimeState.PendingStart) == AddonRuntimeState.PendingStart)
+                    {
+                        return false;
+                    }
+
+                    break;
+
+                case AddonRuntimeState.Starting:
+                case AddonRuntimeState.Started:
+                    if (Interlocked.CompareExchange(
+                            ref runtime.State,
+                            AddonRuntimeState.Stopping,
+                            state) == state)
+                    {
+                        return true;
+                    }
+
+                    break;
+
+                default:
+                    return false;
+            }
+        }
+    }
+
+    private static void MarkStopped(AddonRuntime runtime)
+        => Volatile.Write(ref runtime.State, AddonRuntimeState.Stopped);
 
     private bool TryValidate(ITelemetryAddon addon, out string message)
     {
@@ -241,5 +325,21 @@ public sealed class AddonHost
             "ninaotel.addon.health",
             priority,
             attributes));
+    }
+
+    private sealed class AddonRuntime(ITelemetryAddon addon)
+    {
+        public ITelemetryAddon Addon { get; } = addon;
+        public int State = AddonRuntimeState.PendingStart;
+    }
+
+    private static class AddonRuntimeState
+    {
+        public const int PendingStart = 0;
+        public const int Starting = 1;
+        public const int Started = 2;
+        public const int Stopping = 3;
+        public const int Stopped = 4;
+        public const int StartSkipped = 5;
     }
 }

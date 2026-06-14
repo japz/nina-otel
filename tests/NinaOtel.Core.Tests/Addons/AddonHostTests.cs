@@ -1,3 +1,4 @@
+using System.Reflection;
 using FluentAssertions;
 using NinaOtel.Abstractions.Addons;
 using NinaOtel.Abstractions.Telemetry;
@@ -66,6 +67,32 @@ public sealed class AddonHostTests
         }
 
         sink.Records.ContainHealth("blocking-shutdown-callback", "stopped");
+    }
+
+    [Fact]
+    public async Task StopAsync_SkipsQueuedStartWhenShutdownWasRequestedFirst()
+    {
+        var sink = new RecordingSink();
+        Func<Task>? queuedStart = null;
+        var host = CreateHostWithStartScheduler(sink, startWork =>
+        {
+            queuedStart = startWork;
+            return Task.CompletedTask;
+        });
+        var addon = new RecordingLifecycleAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+
+        queuedStart.Should().NotBeNull();
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+        await queuedStart!().WaitAsync(TimeSpan.FromMilliseconds(250));
+
+        addon.StartCalls.Should().Be(0);
+        addon.StopCalls.Should().Be(0);
+        sink.Records.Any(record =>
+            record.Source == "addon.queued-start" &&
+            record.Attributes.TryGetValue("status", out var status) &&
+            (Equals(status, "started") || Equals(status, "stopped"))).Should().BeFalse();
     }
 
     [Fact]
@@ -195,6 +222,7 @@ public sealed class AddonHostTests
         var addon = new IgnoringCancellationAddon();
 
         await host.StartAsync([addon], CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+        await WaitUntilAsync(() => addon.StartCalls > 0);
         await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
 
         await WaitForHealthRecordAsync(sink, "ignores-cancellation", "start_timeout");
@@ -222,6 +250,23 @@ public sealed class AddonHostTests
         throw new TimeoutException($"Health record '{status}' for add-on '{addonId}' was not published.");
     }
 
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var stopAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+
+        while (DateTimeOffset.UtcNow < stopAt)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        throw new TimeoutException("Condition was not met before timeout.");
+    }
+
     private static Func<TelemetryRecord, bool> IsMatchingHealthRecord(string addonId, string status)
         => record =>
             record.Signal == TelemetrySignal.Health &&
@@ -230,6 +275,34 @@ public sealed class AddonHostTests
             Equals(recordAddonId, addonId) &&
             record.Attributes.TryGetValue("status", out var recordStatus) &&
             Equals(recordStatus, status);
+
+    private static AddonHost CreateHostWithStartScheduler(
+        RecordingSink sink,
+        Func<Func<Task>, Task> startWorkScheduler)
+    {
+        var constructor = typeof(AddonHost).GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            [
+                typeof(ITelemetrySink),
+                typeof(TimeProvider),
+                typeof(TimeSpan),
+                typeof(TimeSpan),
+                typeof(Func<Func<Task>, Task>),
+            ],
+            modifiers: null);
+
+        constructor.Should().NotBeNull("queued start work needs deterministic scheduling in this regression test");
+
+        return (AddonHost)constructor!.Invoke(
+        [
+            sink,
+            TimeProvider.System,
+            LifecycleTimeout,
+            LifecycleTimeout,
+            startWorkScheduler,
+        ]);
+    }
 
     private sealed class RecordingSink : ITelemetrySink
     {
@@ -268,6 +341,7 @@ public sealed class AddonHostTests
         public AddonMetadata Metadata { get; } = new(id, displayName, new Version(1, 0, 0), "test");
 
         public int StartCalls { get; private set; }
+        public int StopCalls { get; private set; }
 
         public virtual AddonValidationResult Validate() => AddonValidationResult.Success;
 
@@ -277,9 +351,16 @@ public sealed class AddonHostTests
             await StartCoreAsync(context, cancellationToken);
         }
 
-        public virtual Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public async Task StopAsync(CancellationToken cancellationToken)
+        {
+            StopCalls++;
+            await StopCoreAsync(cancellationToken);
+        }
 
         protected virtual Task StartCoreAsync(IAddonContext context, CancellationToken cancellationToken)
+            => Task.CompletedTask;
+
+        protected virtual Task StopCoreAsync(CancellationToken cancellationToken)
             => Task.CompletedTask;
     }
 
@@ -291,9 +372,11 @@ public sealed class AddonHostTests
 
     private sealed class HangingStopAddon() : TestAddon("hanging-stop", "Hanging Stop")
     {
-        public override Task StopAsync(CancellationToken cancellationToken)
+        protected override Task StopCoreAsync(CancellationToken cancellationToken)
             => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
+
+    private sealed class RecordingLifecycleAddon() : TestAddon("queued-start", "Queued Start");
 
     private sealed class BlockingShutdownCallbackAddon(ManualResetEventSlim callbackCanReturn)
         : TestAddon("blocking-shutdown-callback", "Blocking Shutdown Callback")
@@ -324,7 +407,7 @@ public sealed class AddonHostTests
 
     private sealed class ThrowingStopAddon() : TestAddon("throwing-stop", "Throwing Stop")
     {
-        public override Task StopAsync(CancellationToken cancellationToken)
+        protected override Task StopCoreAsync(CancellationToken cancellationToken)
             => throw new InvalidOperationException("stop failed");
     }
 
@@ -348,7 +431,7 @@ public sealed class AddonHostTests
         public void FaultStop(Exception exception)
             => stopCompletion.SetException(exception);
 
-        public override Task StopAsync(CancellationToken cancellationToken)
+        protected override Task StopCoreAsync(CancellationToken cancellationToken)
             => stopCompletion.Task;
     }
 
@@ -357,7 +440,7 @@ public sealed class AddonHostTests
         protected override Task StartCoreAsync(IAddonContext context, CancellationToken cancellationToken)
             => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
 
-        public override Task StopAsync(CancellationToken cancellationToken)
+        protected override Task StopCoreAsync(CancellationToken cancellationToken)
             => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
     }
 }
