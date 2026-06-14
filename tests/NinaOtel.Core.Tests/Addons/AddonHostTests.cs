@@ -312,7 +312,6 @@ public sealed class AddonHostTests
                     await releaseCallback.Task.WaitAsync(TimeSpan.FromSeconds(1));
                 }
 
-                cancellationToken.ThrowIfCancellationRequested();
                 await callbackWork();
             });
         var addon = new CallbackCountingAddon();

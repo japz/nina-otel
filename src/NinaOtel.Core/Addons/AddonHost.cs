@@ -395,7 +395,13 @@ public sealed class AddonHost
         }
 
         var addon = runtime.Addon;
-        var metadata = await InvokeMetadataAsync(addon, cancellationToken).ConfigureAwait(false);
+        var metadataResult = await InvokeMetadataAsync(runtime, addon, cancellationToken).ConfigureAwait(false);
+        if (!metadataResult.Entered)
+        {
+            return StartLifecycleResult.Skipped;
+        }
+
+        var metadata = metadataResult.Value!;
         SetMetadataSnapshot(runtime, metadata);
         cancellationToken.ThrowIfCancellationRequested();
         if (ShouldCancelCommittedStartBeforeAddonCallbacks(runtime, cancellationToken))
@@ -403,7 +409,13 @@ public sealed class AddonHost
             return StartLifecycleResult.Skipped;
         }
 
-        var validation = await InvokeValidationAsync(addon, cancellationToken).ConfigureAwait(false);
+        var validationResult = await InvokeValidationAsync(runtime, addon, cancellationToken).ConfigureAwait(false);
+        if (!validationResult.Entered)
+        {
+            return StartLifecycleResult.Skipped;
+        }
+
+        var validation = validationResult.Value!;
         cancellationToken.ThrowIfCancellationRequested();
         if (!validation.IsValid)
         {
@@ -420,13 +432,17 @@ public sealed class AddonHost
             : StartLifecycleResult.Skipped;
     }
 
-    private Task<AddonIdentity> InvokeMetadataAsync(ITelemetryAddon addon, CancellationToken cancellationToken)
-        => InvokeAddonCallbackAsync(() => CaptureMetadata(addon), cancellationToken);
-
-    private Task<AddonValidationResult> InvokeValidationAsync(
+    private Task<AddonCallbackResult<AddonIdentity>> InvokeMetadataAsync(
+        AddonRuntime runtime,
         ITelemetryAddon addon,
         CancellationToken cancellationToken)
-        => InvokeAddonCallbackAsync(addon.Validate, cancellationToken);
+        => InvokeAddonCallbackAsync(runtime, () => CaptureMetadata(addon), cancellationToken);
+
+    private Task<AddonCallbackResult<AddonValidationResult>> InvokeValidationAsync(
+        AddonRuntime runtime,
+        ITelemetryAddon addon,
+        CancellationToken cancellationToken)
+        => InvokeAddonCallbackAsync(runtime, addon.Validate, cancellationToken);
 
     private async Task<bool> InvokeAddonStartAsync(
         AddonRuntime runtime,
@@ -438,18 +454,10 @@ public sealed class AddonHost
         await addonCallbackScheduler(
             () =>
             {
-                lock (syncRoot)
+                startEntered = TryBeginAddonCallback(runtime, cancellationToken, markStartInvoked: true);
+                if (!startEntered)
                 {
-                    if (runtime.State != AddonRuntimeState.Starting ||
-                        runtime.StartInvoked ||
-                        runtime.StartCancellationRequested ||
-                        cancellationToken.IsCancellationRequested)
-                    {
-                        return Task.CompletedTask;
-                    }
-
-                    runtime.StartInvoked = true;
-                    startEntered = true;
+                    return Task.CompletedTask;
                 }
 
                 return runtime.Addon.StartAsync(context, cancellationToken);
@@ -459,19 +467,60 @@ public sealed class AddonHost
         return startEntered;
     }
 
-    private async Task<T> InvokeAddonCallbackAsync<T>(Func<T> callback, CancellationToken cancellationToken)
+    private async Task<AddonCallbackResult<T>> InvokeAddonCallbackAsync<T>(
+        AddonRuntime runtime,
+        Func<T> callback,
+        CancellationToken cancellationToken)
     {
+        var entered = false;
         T? result = default;
 
         await addonCallbackScheduler(
             () =>
             {
+                entered = TryBeginAddonCallback(runtime, cancellationToken, markStartInvoked: false);
+                if (!entered)
+                {
+                    return Task.CompletedTask;
+                }
+
                 result = callback();
                 return Task.CompletedTask;
             },
             cancellationToken).ConfigureAwait(false);
 
-        return result!;
+        return entered
+            ? AddonCallbackResult<T>.CallbackEntered(result!)
+            : AddonCallbackResult<T>.Skipped;
+    }
+
+    private bool TryBeginAddonCallback(
+        AddonRuntime runtime,
+        CancellationToken cancellationToken,
+        bool markStartInvoked)
+    {
+        lock (syncRoot)
+        {
+            if (shutdownRequested ||
+                runtime.State != AddonRuntimeState.Starting ||
+                runtime.StartCancellationRequested ||
+                cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            if (markStartInvoked)
+            {
+                if (runtime.StartInvoked)
+                {
+                    return false;
+                }
+
+                runtime.StartInvoked = true;
+            }
+
+            return true;
+        }
     }
 
     private bool TryCommitStartCallbacks(AddonRuntime runtime, CancellationToken cancellationToken)
@@ -712,6 +761,14 @@ public sealed class AddonHost
 
         public static StartLifecycleResult ValidationFailed(string message)
             => new(StartLifecycleStatus.ValidationFailed, message);
+    }
+
+    private sealed record AddonCallbackResult<T>(bool Entered, T? Value)
+    {
+        public static AddonCallbackResult<T> Skipped { get; } = new(false, default);
+
+        public static AddonCallbackResult<T> CallbackEntered(T value)
+            => new(true, value);
     }
 
     private enum StartLifecycleStatus
