@@ -5,11 +5,15 @@ namespace NinaOtel.Core.Pipeline;
 
 public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
 {
+    private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(2);
+
+    private readonly object startLock = new();
     private readonly Channel<TelemetryRecord> channel;
     private readonly ITelemetryExporter exporter;
     private readonly CancellationTokenSource stopCts = new();
-    private readonly TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? worker;
+    private int disposed;
+    private int workerStartCount;
     private long droppedRecords;
 
     public TelemetryPipeline(ITelemetryExporter exporter, int capacity)
@@ -30,16 +34,17 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
 
     public long DroppedRecords => Interlocked.Read(ref droppedRecords);
 
+    internal int WorkerStartCount => Volatile.Read(ref workerStartCount);
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        if (worker != null)
+        if (cancellationToken.IsCancellationRequested)
         {
-            return started.Task.WaitAsync(cancellationToken);
+            return Task.FromCanceled(cancellationToken);
         }
 
-        worker = Task.Run(() => RunAsync(stopCts.Token), CancellationToken.None);
-        started.TrySetResult();
-        return started.Task.WaitAsync(cancellationToken);
+        EnsureWorkerStarted();
+        return Task.CompletedTask;
     }
 
     public bool TryPublish(TelemetryRecord record)
@@ -55,24 +60,70 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        channel.Writer.TryComplete();
-        await stopCts.CancelAsync();
+        if (Interlocked.Exchange(ref disposed, 1) != 0)
+        {
+            return;
+        }
 
-        if (worker != null)
+        channel.Writer.TryComplete();
+        var workerToDrain = GetWorker();
+
+        if (workerToDrain != null)
         {
             try
             {
-                await worker.WaitAsync(TimeSpan.FromSeconds(2));
+                await workerToDrain.WaitAsync(DrainTimeout);
             }
             catch (TimeoutException)
             {
+                await CancelWithoutThrowingAsync();
+                // The worker may still observe this token after a drain timeout.
+                return;
             }
-            catch (OperationCanceledException)
+            catch
             {
             }
         }
 
         stopCts.Dispose();
+    }
+
+    private void EnsureWorkerStarted()
+    {
+        if (Volatile.Read(ref disposed) != 0)
+        {
+            return;
+        }
+
+        lock (startLock)
+        {
+            if (worker != null || Volatile.Read(ref disposed) != 0)
+            {
+                return;
+            }
+
+            Interlocked.Increment(ref workerStartCount);
+            worker = Task.Run(() => RunAsync(stopCts.Token), CancellationToken.None);
+        }
+    }
+
+    private Task? GetWorker()
+    {
+        lock (startLock)
+        {
+            return worker;
+        }
+    }
+
+    private async Task CancelWithoutThrowingAsync()
+    {
+        try
+        {
+            await stopCts.CancelAsync();
+        }
+        catch
+        {
+        }
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)
@@ -89,12 +140,35 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
                     batch.Add(next);
                 }
 
-                await exporter.ExportAsync(batch, cancellationToken);
+                if (!await TryExportBatchAsync(batch, cancellationToken))
+                {
+                    batch.Clear();
+                    break;
+                }
+
                 batch.Clear();
             }
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    private async Task<bool> TryExportBatchAsync(List<TelemetryRecord> batch, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await exporter.ExportAsync(batch, cancellationToken);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception)
+        {
+            Interlocked.Add(ref droppedRecords, batch.Count);
+            return true;
         }
     }
 }

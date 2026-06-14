@@ -1,6 +1,7 @@
 using FluentAssertions;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Pipeline;
+using System.Reflection;
 using Xunit;
 
 namespace NinaOtel.Core.Tests.Pipeline;
@@ -33,19 +34,127 @@ public sealed class TelemetryPipelineTests
         exporter.Records.Should().ContainSingle(r => r.Name == "ready");
     }
 
+    [Fact]
+    public async Task ExporterFailure_DoesNotStopWorkerAndCountsDroppedBatch()
+    {
+        var exporter = new FailingOnceExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Important);
+        var second = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "second", TelemetryPriority.Routine);
+
+        await pipeline.StartAsync(CancellationToken.None);
+        pipeline.TryPublish(first).Should().BeTrue();
+        await exporter.WaitForAttemptAsync(TimeSpan.FromSeconds(2));
+
+        pipeline.TryPublish(second).Should().BeTrue();
+
+        await exporter.WaitForCountAsync(1, TimeSpan.FromSeconds(2));
+        pipeline.DroppedRecords.Should().BeGreaterThanOrEqualTo(1);
+        exporter.Records.Should().ContainSingle(r => r.Name == "second");
+
+        Func<Task> dispose = async () => await pipeline.DisposeAsync();
+        await dispose.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task DisposeAsync_DrainsQueuedRecordsBeforeReturning()
+    {
+        var exporter = new BlockingFirstExportExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Routine);
+        var second = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "second", TelemetryPriority.Routine);
+        var third = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "third", TelemetryPriority.Routine);
+
+        await pipeline.StartAsync(CancellationToken.None);
+        pipeline.TryPublish(first).Should().BeTrue();
+        await exporter.WaitForFirstExportStartedAsync(TimeSpan.FromSeconds(2));
+
+        pipeline.TryPublish(second).Should().BeTrue();
+        pipeline.TryPublish(third).Should().BeTrue();
+
+        var disposeTask = pipeline.DisposeAsync().AsTask();
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        exporter.ReleaseFirstExport();
+        await disposeTask.WaitAsync(TimeSpan.FromSeconds(2));
+
+        exporter.Records.Should().Contain(r => r.Name == "first");
+        exporter.Records.Should().Contain(r => r.Name == "second");
+        exporter.Records.Should().Contain(r => r.Name == "third");
+    }
+
+    [Fact]
+    public async Task StartAsync_IsIdempotentForConcurrentCalls()
+    {
+        var exporter = new RecordingExporter();
+        await using var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callerCount = 64;
+        var readyCallers = 0;
+
+        var startTasks = Enumerable.Range(0, callerCount)
+            .Select(_ => Task.Run(async () =>
+            {
+                Interlocked.Increment(ref readyCallers);
+                await release.Task;
+                await pipeline.StartAsync(CancellationToken.None);
+            }))
+            .ToArray();
+
+        await WaitUntilAsync(() => Volatile.Read(ref readyCallers) == callerCount, TimeSpan.FromSeconds(2));
+        release.SetResult();
+        await Task.WhenAll(startTasks).WaitAsync(TimeSpan.FromSeconds(2));
+
+        GetWorkerStartCount(pipeline).Should().Be(1);
+    }
+
+    private static int GetWorkerStartCount(TelemetryPipeline pipeline)
+    {
+        var property = typeof(TelemetryPipeline).GetProperty("WorkerStartCount", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        property.Should().NotBeNull("the pipeline should expose a test-visible worker start count");
+        return (int)property!.GetValue(pipeline)!;
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(10));
+        }
+
+        condition().Should().BeTrue();
+    }
+
     private sealed class RecordingExporter : ITelemetryExporter
     {
-        private readonly TaskCompletionSource exported = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int targetCount = 1;
+        private readonly object sync = new();
+        private readonly List<TelemetryRecord> records = [];
+        private readonly List<(int Count, TaskCompletionSource Source)> waiters = [];
 
-        public List<TelemetryRecord> Records { get; } = [];
+        public IReadOnlyList<TelemetryRecord> Records
+        {
+            get
+            {
+                lock (sync)
+                {
+                    return records.ToArray();
+                }
+            }
+        }
 
         public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
         {
-            Records.AddRange(records);
-            if (Records.Count >= targetCount)
+            lock (sync)
             {
-                exported.TrySetResult();
+                this.records.AddRange(records);
+                CompleteSatisfiedWaiters();
             }
 
             return Task.CompletedTask;
@@ -53,9 +162,108 @@ public sealed class TelemetryPipelineTests
 
         public async Task WaitForCountAsync(int count, TimeSpan timeout)
         {
-            targetCount = count;
+            TaskCompletionSource waiter;
+
+            lock (sync)
+            {
+                if (records.Count >= count)
+                {
+                    return;
+                }
+
+                waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                waiters.Add((count, waiter));
+            }
+
             using var cts = new CancellationTokenSource(timeout);
-            await exported.Task.WaitAsync(cts.Token);
+            await waiter.Task.WaitAsync(cts.Token);
+        }
+
+        private void CompleteSatisfiedWaiters()
+        {
+            for (var index = waiters.Count - 1; index >= 0; index--)
+            {
+                var waiter = waiters[index];
+                if (records.Count < waiter.Count)
+                {
+                    continue;
+                }
+
+                waiters.RemoveAt(index);
+                waiter.Source.TrySetResult();
+            }
+        }
+    }
+
+    private sealed class FailingOnceExporter : ITelemetryExporter
+    {
+        private readonly RecordingExporter inner = new();
+        private readonly TaskCompletionSource attempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int attempts;
+
+        public IReadOnlyList<TelemetryRecord> Records => inner.Records;
+
+        public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref attempts) == 1)
+            {
+                attempted.TrySetResult();
+                throw new InvalidOperationException("first export failed");
+            }
+
+            return inner.ExportAsync(records, cancellationToken);
+        }
+
+        public async Task WaitForAttemptAsync(TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await attempted.Task.WaitAsync(cts.Token);
+        }
+
+        public Task WaitForCountAsync(int count, TimeSpan timeout)
+        {
+            return inner.WaitForCountAsync(count, timeout);
+        }
+    }
+
+    private sealed class BlockingFirstExportExporter : ITelemetryExporter
+    {
+        private readonly RecordingExporter inner = new();
+        private readonly TaskCompletionSource firstExportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int attempts;
+
+        public IReadOnlyList<TelemetryRecord> Records => inner.Records;
+
+        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref attempts) == 1)
+            {
+                firstExportStarted.TrySetResult();
+                var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                using var registration = cancellationToken.UnsafeRegister(static state =>
+                {
+                    ((TaskCompletionSource)state!).TrySetResult();
+                }, canceled);
+
+                if (await Task.WhenAny(releaseFirstExport.Task, canceled.Task) == canceled.Task)
+                {
+                    throw new OperationCanceledException(cancellationToken);
+                }
+            }
+
+            await inner.ExportAsync(records, cancellationToken);
+        }
+
+        public void ReleaseFirstExport()
+        {
+            releaseFirstExport.TrySetResult();
+        }
+
+        public async Task WaitForFirstExportStartedAsync(TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await firstExportStarted.Task.WaitAsync(cts.Token);
         }
     }
 }
