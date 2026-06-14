@@ -1,4 +1,5 @@
 using NinaOtel.Abstractions.Telemetry;
+using System.Collections.ObjectModel;
 
 namespace NinaOtel.Abstractions.Addons;
 
@@ -6,7 +7,55 @@ public sealed record AddonMetadata(
     string Id,
     string DisplayName,
     Version Version,
-    string SourceType);
+    string SourceType,
+    int SupportedConfigVersion = 1);
+
+public sealed record AddonConfiguration
+{
+    private static readonly IReadOnlyDictionary<string, string> EmptySettings =
+        new ReadOnlyDictionary<string, string>(new Dictionary<string, string>());
+
+    private IReadOnlyDictionary<string, string> _settings = EmptySettings;
+
+    public AddonConfiguration()
+    {
+    }
+
+    public AddonConfiguration(
+        int configVersion = 1,
+        bool rawForwardingEnabled = false,
+        IReadOnlyDictionary<string, string>? settings = null,
+        bool enabled = true)
+    {
+        ConfigVersion = configVersion;
+        RawForwardingEnabled = rawForwardingEnabled;
+        Settings = settings ?? EmptySettings;
+        Enabled = enabled;
+    }
+
+    public int ConfigVersion { get; init; } = 1;
+    public bool RawForwardingEnabled { get; init; }
+    public bool Enabled { get; init; } = true;
+    public IReadOnlyDictionary<string, string> Settings
+    {
+        get => _settings;
+        init => _settings = SnapshotSettings(value);
+    }
+
+    public static AddonConfiguration Default { get; } = new();
+
+    private static IReadOnlyDictionary<string, string> SnapshotSettings(
+        IReadOnlyDictionary<string, string>? settings)
+    {
+        if (settings is null || settings.Count == 0)
+        {
+            return EmptySettings;
+        }
+
+        return new ReadOnlyDictionary<string, string>(
+            new Dictionary<string, string>(settings));
+    }
+}
 
 public sealed record AddonValidationResult(
     bool IsValid,
@@ -50,6 +99,7 @@ public sealed record AddonValidationResult(
 public interface IAddonContext
 {
     ITelemetrySink Sink { get; }
+    AddonConfiguration Configuration { get; }
     TimeProvider TimeProvider { get; }
     CancellationToken ShutdownToken { get; }
     void ReportHealth(string addonId, string status, string message, TelemetryPriority priority);
@@ -58,7 +108,7 @@ public interface IAddonContext
 public interface ITelemetryAddon
 {
     AddonMetadata Metadata { get; }
-    AddonValidationResult Validate();
+    AddonValidationResult Validate(AddonConfiguration configuration);
     Task StartAsync(IAddonContext context, CancellationToken cancellationToken);
     Task StopAsync(CancellationToken cancellationToken);
 }

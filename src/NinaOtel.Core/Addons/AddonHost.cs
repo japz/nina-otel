@@ -10,6 +10,7 @@ public sealed class AddonHost
     private readonly TimeProvider timeProvider;
     private readonly TimeSpan startTimeout;
     private readonly TimeSpan stopTimeout;
+    private readonly IReadOnlyDictionary<string, AddonConfiguration> addonConfigurations;
     private readonly Func<Func<Task>, Task> startWorkScheduler;
     private readonly Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler;
     private readonly Func<CancellationToken, Task> startCallbackCommitObserver;
@@ -22,13 +23,15 @@ public sealed class AddonHost
         ITelemetrySink sink,
         TimeProvider timeProvider,
         TimeSpan startTimeout,
-        TimeSpan stopTimeout)
+        TimeSpan stopTimeout,
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations = null)
         : this(
             sink,
             timeProvider,
             startTimeout,
             stopTimeout,
-            static startWork => Task.Run(startWork))
+            static startWork => Task.Run(startWork),
+            addonConfigurations)
     {
     }
 
@@ -56,9 +59,52 @@ public sealed class AddonHost
         TimeSpan startTimeout,
         TimeSpan stopTimeout,
         Func<Func<Task>, Task> startWorkScheduler,
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations)
+        : this(
+            sink,
+            timeProvider,
+            startTimeout,
+            stopTimeout,
+            startWorkScheduler,
+            static (startWork, cancellationToken) => Task.Run(startWork, cancellationToken),
+            static _ => Task.CompletedTask,
+            static (callbackWork, cancellationToken) => Task.Run(callbackWork, cancellationToken),
+            addonConfigurations)
+    {
+    }
+
+    private AddonHost(
+        ITelemetrySink sink,
+        TimeProvider timeProvider,
+        TimeSpan startTimeout,
+        TimeSpan stopTimeout,
+        Func<Func<Task>, Task> startWorkScheduler,
         Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
         Func<CancellationToken, Task> startCallbackCommitObserver,
         Func<Func<Task>, CancellationToken, Task> addonCallbackScheduler)
+        : this(
+            sink,
+            timeProvider,
+            startTimeout,
+            stopTimeout,
+            startWorkScheduler,
+            startLifecycleScheduler,
+            startCallbackCommitObserver,
+            addonCallbackScheduler,
+            null)
+    {
+    }
+
+    private AddonHost(
+        ITelemetrySink sink,
+        TimeProvider timeProvider,
+        TimeSpan startTimeout,
+        TimeSpan stopTimeout,
+        Func<Func<Task>, Task> startWorkScheduler,
+        Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
+        Func<CancellationToken, Task> startCallbackCommitObserver,
+        Func<Func<Task>, CancellationToken, Task> addonCallbackScheduler,
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations)
     {
         if (startTimeout <= TimeSpan.Zero)
         {
@@ -74,6 +120,7 @@ public sealed class AddonHost
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         this.startTimeout = startTimeout;
         this.stopTimeout = stopTimeout;
+        this.addonConfigurations = SnapshotAddonConfigurations(addonConfigurations);
         this.startWorkScheduler = startWorkScheduler ?? throw new ArgumentNullException(nameof(startWorkScheduler));
         this.startLifecycleScheduler =
             startLifecycleScheduler ?? throw new ArgumentNullException(nameof(startLifecycleScheduler));
@@ -120,51 +167,13 @@ public sealed class AddonHost
 
         RequestShutdownCancellationWithoutWaiting();
 
+        var stopTasks = new List<Task>(addons.Length);
         foreach (var runtime in addons)
         {
-            var stopTask = GetOrStartStopTask(runtime);
-            if (stopTask is null)
-            {
-                continue;
-            }
-
-            try
-            {
-                await stopTask.WaitAsync(stopTimeout, cancellationToken);
-                if (TryPublishStopResult(runtime))
-                {
-                    PublishHealth(runtime, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
-                }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                ObserveLateTerminalStopFault(stopTask, runtime, "stop_error");
-                throw;
-            }
-            catch (TimeoutException)
-            {
-                ObserveLateFault(stopTask, runtime, "stop_error");
-                if (TryPublishStopResult(runtime))
-                {
-                    PublishHealth(runtime, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                ObserveLateFault(stopTask, runtime, "stop_error");
-                if (TryPublishStopResult(runtime))
-                {
-                    PublishHealth(runtime, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (TryPublishStopResult(runtime))
-                {
-                    PublishHealth(runtime, "stop_error", ex.Message, TelemetryPriority.Important);
-                }
-            }
+            stopTasks.Add(StopOneAsync(runtime, cancellationToken));
         }
+
+        await Task.WhenAll(stopTasks).ConfigureAwait(false);
     }
 
     private void ScheduleStart(AddonRuntime runtime)
@@ -403,13 +412,15 @@ public sealed class AddonHost
 
         var metadata = metadataResult.Value!;
         SetMetadataSnapshot(runtime, metadata);
+        var configuration = ResolveAddonConfiguration(metadata.Id);
         cancellationToken.ThrowIfCancellationRequested();
         if (ShouldCancelCommittedStartBeforeAddonCallbacks(runtime, cancellationToken))
         {
             return StartLifecycleResult.Skipped;
         }
 
-        var validationResult = await InvokeValidationAsync(runtime, addon, cancellationToken).ConfigureAwait(false);
+        var validationResult = await InvokeValidationAsync(runtime, addon, configuration, cancellationToken)
+            .ConfigureAwait(false);
         if (!validationResult.Entered)
         {
             return StartLifecycleResult.Skipped;
@@ -425,7 +436,7 @@ public sealed class AddonHost
             return StartLifecycleResult.ValidationFailed(message);
         }
 
-        var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
+        var context = new AddonContext(sink, timeProvider, shutdownCts.Token, configuration);
         var startEntered = await InvokeAddonStartAsync(runtime, context, cancellationToken).ConfigureAwait(false);
         return startEntered
             ? StartLifecycleResult.Started
@@ -441,8 +452,9 @@ public sealed class AddonHost
     private Task<AddonCallbackResult<AddonValidationResult>> InvokeValidationAsync(
         AddonRuntime runtime,
         ITelemetryAddon addon,
+        AddonConfiguration configuration,
         CancellationToken cancellationToken)
-        => InvokeAddonCallbackAsync(runtime, addon.Validate, cancellationToken);
+        => InvokeAddonCallbackAsync(runtime, () => addon.Validate(configuration), cancellationToken);
 
     private async Task<bool> InvokeAddonStartAsync(
         AddonRuntime runtime,
@@ -563,6 +575,52 @@ public sealed class AddonHost
             await addon.StopAsync(timeoutCts.Token).ConfigureAwait(false);
         });
 
+    private async Task StopOneAsync(AddonRuntime runtime, CancellationToken cancellationToken)
+    {
+        var stopTask = GetOrStartStopTask(runtime);
+        if (stopTask is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await stopTask.WaitAsync(stopTimeout, cancellationToken).ConfigureAwait(false);
+            if (TryPublishStopResult(runtime))
+            {
+                PublishHealth(runtime, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            ObserveLateTerminalStopFault(stopTask, runtime, "stop_error");
+            throw;
+        }
+        catch (TimeoutException)
+        {
+            ObserveLateFault(stopTask, runtime, "stop_error");
+            if (TryPublishStopResult(runtime))
+            {
+                PublishHealth(runtime, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            ObserveLateFault(stopTask, runtime, "stop_error");
+            if (TryPublishStopResult(runtime))
+            {
+                PublishHealth(runtime, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (TryPublishStopResult(runtime))
+            {
+                PublishHealth(runtime, "stop_error", ex.Message, TelemetryPriority.Important);
+            }
+        }
+    }
+
     private bool TryPublishStopResult(AddonRuntime runtime)
     {
         lock (syncRoot)
@@ -597,6 +655,22 @@ public sealed class AddonHost
         {
             runtime.Metadata = metadata;
         }
+    }
+
+    private AddonConfiguration ResolveAddonConfiguration(string addonId)
+        => addonConfigurations.TryGetValue(addonId, out var configuration)
+            ? configuration
+            : AddonConfiguration.Default;
+
+    private static IReadOnlyDictionary<string, AddonConfiguration> SnapshotAddonConfigurations(
+        IReadOnlyDictionary<string, AddonConfiguration>? configurations)
+    {
+        if (configurations is null || configurations.Count == 0)
+        {
+            return new Dictionary<string, AddonConfiguration>();
+        }
+
+        return new Dictionary<string, AddonConfiguration>(configurations);
     }
 
     private void MarkStartSkipped(AddonRuntime runtime)

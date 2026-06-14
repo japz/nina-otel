@@ -137,6 +137,38 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StartAsync_PassesConfiguredAddonConfigurationToValidateAndContext()
+    {
+        var sink = new RecordingSink();
+        var configuration = new AddonConfiguration(
+            configVersion: 2,
+            rawForwardingEnabled: true,
+            settings: new Dictionary<string, string>
+            {
+                ["endpoint"] = "tcp://camera",
+            });
+        var host = new AddonHost(
+            sink,
+            TimeProvider.System,
+            LifecycleTimeout,
+            LifecycleTimeout,
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = configuration,
+            });
+        var addon = new ConfigurationRecordingAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "configured", "started");
+
+        addon.ValidatedConfiguration.Should().NotBeNull();
+        addon.ValidatedConfiguration!.ConfigVersion.Should().Be(2);
+        addon.ValidatedConfiguration.RawForwardingEnabled.Should().BeTrue();
+        addon.ValidatedConfiguration.Settings["endpoint"].Should().Be("tcp://camera");
+        addon.StartConfiguration.Should().BeSameAs(addon.ValidatedConfiguration);
+    }
+
+    [Fact]
     public async Task StopAsync_ReportsStopTimeoutAndReturns()
     {
         var sink = new RecordingSink();
@@ -149,6 +181,33 @@ public sealed class AddonHostTests
         await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
 
         sink.Records.ContainHealth("hanging-stop", "stop_timeout");
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenMultipleAddonsHang_CompletesWithinOneStopTimeout()
+    {
+        var stopTimeout = TimeSpan.FromMilliseconds(100);
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, stopTimeout);
+        var addons = new[]
+        {
+            new HangingStopAddon("hanging-stop-1", "Hanging Stop 1"),
+            new HangingStopAddon("hanging-stop-2", "Hanging Stop 2"),
+            new HangingStopAddon("hanging-stop-3", "Hanging Stop 3"),
+        };
+
+        await host.StartAsync(addons, CancellationToken.None);
+        foreach (var addon in addons)
+        {
+            await WaitForHealthRecordAsync(sink, addon.Metadata.Id, "started");
+        }
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(220));
+
+        foreach (var addon in addons)
+        {
+            sink.Records.ContainHealth(addon.Metadata.Id, "stop_timeout");
+        }
     }
 
     [Fact]
@@ -782,7 +841,7 @@ public sealed class AddonHostTests
         public int StartCalls { get; private set; }
         public int StopCalls { get; private set; }
 
-        public virtual AddonValidationResult Validate() => AddonValidationResult.Success;
+        public virtual AddonValidationResult Validate(AddonConfiguration configuration) => AddonValidationResult.Success;
 
         public async Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
         {
@@ -809,10 +868,29 @@ public sealed class AddonHostTests
             => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
-    private sealed class HangingStopAddon() : TestAddon("hanging-stop", "Hanging Stop")
+    private sealed class HangingStopAddon(string id = "hanging-stop", string displayName = "Hanging Stop")
+        : TestAddon(id, displayName)
     {
         protected override Task StopCoreAsync(CancellationToken cancellationToken)
             => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
+
+    private sealed class ConfigurationRecordingAddon() : TestAddon("configured", "Configured")
+    {
+        public AddonConfiguration? ValidatedConfiguration { get; private set; }
+        public AddonConfiguration? StartConfiguration { get; private set; }
+
+        public override AddonValidationResult Validate(AddonConfiguration configuration)
+        {
+            ValidatedConfiguration = configuration;
+            return AddonValidationResult.Success;
+        }
+
+        protected override Task StartCoreAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            StartConfiguration = context.Configuration;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RecordingLifecycleAddon() : TestAddon("queued-start", "Queued Start");
@@ -833,7 +911,7 @@ public sealed class AddonHostTests
             }
         }
 
-        public AddonValidationResult Validate()
+        public AddonValidationResult Validate(AddonConfiguration configuration)
         {
             ValidateCalls++;
             return AddonValidationResult.Success;
@@ -857,7 +935,7 @@ public sealed class AddonHostTests
     {
         public int ValidateCalls { get; private set; }
 
-        public override AddonValidationResult Validate()
+        public override AddonValidationResult Validate(AddonConfiguration configuration)
         {
             ValidateCalls++;
             validationCanReturn.Wait();
@@ -881,7 +959,7 @@ public sealed class AddonHostTests
             }
         }
 
-        public AddonValidationResult Validate()
+        public AddonValidationResult Validate(AddonConfiguration configuration)
         {
             ValidateCalls++;
             return AddonValidationResult.Success;
@@ -903,7 +981,7 @@ public sealed class AddonHostTests
 
         public int StartCalls { get; private set; }
 
-        public AddonValidationResult Validate() => AddonValidationResult.Success;
+        public AddonValidationResult Validate(AddonConfiguration configuration) => AddonValidationResult.Success;
 
         public Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
         {
@@ -942,7 +1020,7 @@ public sealed class AddonHostTests
 
     private sealed class InvalidAddon() : TestAddon("invalid", "Invalid Addon")
     {
-        public override AddonValidationResult Validate()
+        public override AddonValidationResult Validate(AddonConfiguration configuration)
             => AddonValidationResult.Failure("Missing endpoint", "Disabled");
     }
 

@@ -8,14 +8,17 @@ public sealed class AddonContext : IAddonContext
     public AddonContext(
         ITelemetrySink sink,
         TimeProvider timeProvider,
-        CancellationToken shutdownToken)
+        CancellationToken shutdownToken,
+        AddonConfiguration? configuration = null)
     {
         Sink = sink ?? throw new ArgumentNullException(nameof(sink));
         TimeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         ShutdownToken = shutdownToken;
+        Configuration = configuration ?? AddonConfiguration.Default;
     }
 
     public ITelemetrySink Sink { get; }
+    public AddonConfiguration Configuration { get; }
     public TimeProvider TimeProvider { get; }
     public CancellationToken ShutdownToken { get; }
 

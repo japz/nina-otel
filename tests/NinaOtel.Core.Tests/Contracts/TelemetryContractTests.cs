@@ -84,4 +84,31 @@ public sealed class TelemetryContractTests
         result.Errors.Should().ContainSingle()
             .Which.Should().Be("Missing id");
     }
+
+    [Fact]
+    public void AddonConfiguration_SnapshotsSettingsAndMetadataDefaultsSupportedConfigVersion()
+    {
+        var settings = new Dictionary<string, string>
+        {
+            ["endpoint"] = "tcp://camera",
+        };
+
+        var configuration = new AddonConfiguration(settings: settings);
+        var metadata = new AddonMetadata("camera", "Camera", new Version(1, 0, 0), "test");
+
+        settings["endpoint"] = "mutated";
+        settings["new"] = "ignored";
+
+        configuration.ConfigVersion.Should().Be(1);
+        configuration.Settings["endpoint"].Should().Be("tcp://camera");
+        configuration.Settings.Should().NotContainKey("new");
+        metadata.SupportedConfigVersion.Should().Be(1);
+
+        if (configuration.Settings is IDictionary<string, string> mutableSettings)
+        {
+            var mutate = () => mutableSettings["endpoint"] = "mutated again";
+
+            mutate.Should().Throw<NotSupportedException>();
+        }
+    }
 }
