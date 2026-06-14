@@ -1,0 +1,50 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{D08E53DF-0484-48CA-B0E7-60849BFB9F43}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NinaOtel.Abstractions", "src\NinaOtel.Abstractions\NinaOtel.Abstractions.csproj", "{C7D4E2FD-821D-4B56-9AB8-28928B3F4A60}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NinaOtel.Core", "src\NinaOtel.Core\NinaOtel.Core.csproj", "{AF9F1B32-60B4-4D17-B69F-B0A0DEFDDEE3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NinaOtel.Plugin", "src\NinaOtel.Plugin\NinaOtel.Plugin.csproj", "{847A67E1-6304-4216-849E-FB68B1DA1CA4}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{5F928167-D0D4-4B66-8F24-D1D004F01DD3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NinaOtel.Core.Tests", "tests\NinaOtel.Core.Tests\NinaOtel.Core.Tests.csproj", "{E6C6A630-0461-4BAB-B52A-8223EF21F00F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C7D4E2FD-821D-4B56-9AB8-28928B3F4A60}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C7D4E2FD-821D-4B56-9AB8-28928B3F4A60}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C7D4E2FD-821D-4B56-9AB8-28928B3F4A60}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C7D4E2FD-821D-4B56-9AB8-28928B3F4A60}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AF9F1B32-60B4-4D17-B69F-B0A0DEFDDEE3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AF9F1B32-60B4-4D17-B69F-B0A0DEFDDEE3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AF9F1B32-60B4-4D17-B69F-B0A0DEFDDEE3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AF9F1B32-60B4-4D17-B69F-B0A0DEFDDEE3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{847A67E1-6304-4216-849E-FB68B1DA1CA4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{847A67E1-6304-4216-849E-FB68B1DA1CA4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{847A67E1-6304-4216-849E-FB68B1DA1CA4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{847A67E1-6304-4216-849E-FB68B1DA1CA4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E6C6A630-0461-4BAB-B52A-8223EF21F00F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6C6A630-0461-4BAB-B52A-8223EF21F00F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6C6A630-0461-4BAB-B52A-8223EF21F00F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6C6A630-0461-4BAB-B52A-8223EF21F00F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{C7D4E2FD-821D-4B56-9AB8-28928B3F4A60} = {D08E53DF-0484-48CA-B0E7-60849BFB9F43}
+		{AF9F1B32-60B4-4D17-B69F-B0A0DEFDDEE3} = {D08E53DF-0484-48CA-B0E7-60849BFB9F43}
+		{847A67E1-6304-4216-849E-FB68B1DA1CA4} = {D08E53DF-0484-48CA-B0E7-60849BFB9F43}
+		{E6C6A630-0461-4BAB-B52A-8223EF21F00F} = {5F928167-D0D4-4B66-8F24-D1D004F01DD3}
+	EndGlobalSection
+EndGlobal
