@@ -87,6 +87,61 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StartAsync_TimedOutStartTaskLaterFaults_ReportsLateStartError()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        var addon = new LateFaultingStartAddon();
+
+        await host.StartAsync([addon], CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+        await WaitForHealthRecordAsync(sink, "late-start-fault", "start_timeout");
+
+        addon.FaultStart(new InvalidOperationException("late start failed"));
+
+        var record = await WaitForHealthRecordAsync(sink, "late-start-fault", "start_error");
+        record.Attributes["message"].Should().Be("late start failed");
+    }
+
+    [Fact]
+    public async Task StopAsync_TimedOutStopTaskLaterFaults_ReportsLateStopError()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        var addon = new LateFaultingStopAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "late-stop-fault", "started");
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+        sink.Records.ContainHealth("late-stop-fault", "stop_timeout");
+
+        addon.FaultStop(new InvalidOperationException("late stop failed"));
+
+        var record = await WaitForHealthRecordAsync(sink, "late-stop-fault", "stop_error");
+        record.Attributes["message"].Should().Be("late stop failed");
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenCallerCancellationRequested_ThrowsCancellation()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        var addon = new HangingStopAddon();
+        using var callerCts = new CancellationTokenSource();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "hanging-stop", "started");
+        await callerCts.CancelAsync();
+
+        var stop = () => host.StopAsync(callerCts.Token);
+
+        await stop.Should().ThrowAsync<OperationCanceledException>();
+        sink.Records.Any(record =>
+            record.Source == "addon.hanging-stop" &&
+            record.Attributes.TryGetValue("status", out var status) &&
+            Equals(status, "stop_timeout")).Should().BeFalse();
+    }
+
+    [Fact]
     public void AddonContext_ReportHealthPublishesExpectedRecord()
     {
         var sink = new RecordingSink();
@@ -230,6 +285,30 @@ public sealed class AddonHostTests
     {
         public override Task StopAsync(CancellationToken cancellationToken)
             => throw new InvalidOperationException("stop failed");
+    }
+
+    private sealed class LateFaultingStartAddon() : TestAddon("late-start-fault", "Late Start Fault")
+    {
+        private readonly TaskCompletionSource startCompletion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void FaultStart(Exception exception)
+            => startCompletion.SetException(exception);
+
+        protected override Task StartCoreAsync(IAddonContext context, CancellationToken cancellationToken)
+            => startCompletion.Task;
+    }
+
+    private sealed class LateFaultingStopAddon() : TestAddon("late-stop-fault", "Late Stop Fault")
+    {
+        private readonly TaskCompletionSource stopCompletion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void FaultStop(Exception exception)
+            => stopCompletion.SetException(exception);
+
+        public override Task StopAsync(CancellationToken cancellationToken)
+            => stopCompletion.Task;
     }
 
     private sealed class IgnoringCancellationAddon() : TestAddon("ignores-cancellation", "Ignores Cancellation")

@@ -74,18 +74,27 @@ public sealed class AddonHost
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(stopTimeout);
+            Task? stopTask = null;
 
             try
             {
-                await addon.StopAsync(timeoutCts.Token).WaitAsync(stopTimeout, cancellationToken);
+                stopTask = addon.StopAsync(timeoutCts.Token);
+                await stopTask.WaitAsync(stopTimeout, cancellationToken);
                 PublishHealth(addon, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                ObserveLateFault(stopTask, addon, "stop_error");
+                throw;
             }
             catch (TimeoutException)
             {
+                ObserveLateFault(stopTask, addon, "stop_error");
                 PublishHealth(addon, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
             }
             catch (OperationCanceledException)
             {
+                ObserveLateFault(stopTask, addon, "stop_error");
                 PublishHealth(addon, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
             }
             catch (Exception ex)
@@ -99,19 +108,23 @@ public sealed class AddonHost
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
         timeoutCts.CancelAfter(startTimeout);
+        Task? startTask = null;
 
         try
         {
             var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
-            await addon.StartAsync(context, timeoutCts.Token).WaitAsync(startTimeout, shutdownCts.Token);
+            startTask = addon.StartAsync(context, timeoutCts.Token);
+            await startTask.WaitAsync(startTimeout, shutdownCts.Token);
             PublishHealth(addon, "started", "Add-on started.", TelemetryPriority.Routine);
         }
         catch (TimeoutException)
         {
+            ObserveLateFault(startTask, addon, "start_error");
             PublishHealth(addon, "start_timeout", "Add-on start timed out.", TelemetryPriority.Important);
         }
         catch (OperationCanceledException)
         {
+            ObserveLateFault(startTask, addon, "start_error");
             PublishHealth(addon, "start_timeout", "Add-on start was canceled.", TelemetryPriority.Important);
         }
         catch (Exception ex)
@@ -141,6 +154,44 @@ public sealed class AddonHost
             message = ex.Message;
             return false;
         }
+    }
+
+    private void ObserveLateFault(Task? task, ITelemetryAddon addon, string status)
+    {
+        if (task is null)
+        {
+            return;
+        }
+
+        if (task.IsFaulted)
+        {
+            PublishTaskFault(addon, status, task);
+            return;
+        }
+
+        if (task.IsCompleted)
+        {
+            return;
+        }
+
+        _ = task.ContinueWith(
+            completedTask =>
+            {
+                PublishTaskFault(addon, status, completedTask);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void PublishTaskFault(ITelemetryAddon addon, string status, Task task)
+    {
+        var exception = task.Exception?.GetBaseException();
+        PublishHealth(
+            addon,
+            status,
+            exception?.Message ?? "Add-on task faulted after timeout.",
+            TelemetryPriority.Important);
     }
 
     private void PublishHealth(ITelemetryAddon addon, string status, string message, TelemetryPriority priority)
