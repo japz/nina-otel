@@ -288,7 +288,9 @@ public sealed class AddonHostTests
         var sink = new RecordingSink();
         Task? scheduledStart = null;
         var callbacksCommitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseMetadata = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackQueued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackScheduleCount = 0;
         var host = CreateHostWithStartSchedulers(
             sink,
             startWork =>
@@ -300,17 +302,29 @@ public sealed class AddonHostTests
             async cancellationToken =>
             {
                 callbacksCommitted.SetResult();
-                await releaseMetadata.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+                await Task.CompletedTask;
+            },
+            async (callbackWork, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref callbackScheduleCount) == 1)
+                {
+                    callbackQueued.SetResult();
+                    await releaseCallback.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                await callbackWork();
             });
         var addon = new CallbackCountingAddon();
 
         await host.StartAsync([addon], CancellationToken.None);
         await callbacksCommitted.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
+        await callbackQueued.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
 
         var stopDuringCommittedStart = host.StopAsync(CancellationToken.None);
 
         await stopDuringCommittedStart.WaitAsync(TimeSpan.FromMilliseconds(250));
-        releaseMetadata.SetResult();
+        releaseCallback.SetResult();
         if (scheduledStart is not null)
         {
             await scheduledStart.WaitAsync(TimeSpan.FromMilliseconds(250));
@@ -610,6 +624,19 @@ public sealed class AddonHostTests
         Func<Func<Task>, Task> startWorkScheduler,
         Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
         Func<CancellationToken, Task> startCallbackCommitObserver)
+        => CreateHostWithStartSchedulers(
+            sink,
+            startWorkScheduler,
+            startLifecycleScheduler,
+            startCallbackCommitObserver,
+            static (callbackWork, cancellationToken) => Task.Run(callbackWork, cancellationToken));
+
+    private static AddonHost CreateHostWithStartSchedulers(
+        RecordingSink sink,
+        Func<Func<Task>, Task> startWorkScheduler,
+        Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
+        Func<CancellationToken, Task> startCallbackCommitObserver,
+        Func<Func<Task>, CancellationToken, Task> addonCallbackScheduler)
     {
         var constructor = typeof(AddonHost).GetConstructor(
             BindingFlags.Instance | BindingFlags.NonPublic,
@@ -622,6 +649,7 @@ public sealed class AddonHostTests
                 typeof(Func<Func<Task>, Task>),
                 typeof(Func<Func<Task>, CancellationToken, Task>),
                 typeof(Func<CancellationToken, Task>),
+                typeof(Func<Func<Task>, CancellationToken, Task>),
             ],
             modifiers: null);
 
@@ -636,6 +664,7 @@ public sealed class AddonHostTests
             startWorkScheduler,
             startLifecycleScheduler,
             startCallbackCommitObserver,
+            addonCallbackScheduler,
         ]);
     }
 

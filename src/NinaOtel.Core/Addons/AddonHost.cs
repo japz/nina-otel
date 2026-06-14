@@ -13,6 +13,7 @@ public sealed class AddonHost
     private readonly Func<Func<Task>, Task> startWorkScheduler;
     private readonly Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler;
     private readonly Func<CancellationToken, Task> startCallbackCommitObserver;
+    private readonly Func<Func<Task>, CancellationToken, Task> addonCallbackScheduler;
     private readonly CancellationTokenSource shutdownCts = new();
     private readonly List<AddonRuntime> knownAddons = [];
     private bool shutdownRequested;
@@ -44,7 +45,8 @@ public sealed class AddonHost
             stopTimeout,
             startWorkScheduler,
             static (startWork, cancellationToken) => Task.Run(startWork, cancellationToken),
-            static _ => Task.CompletedTask)
+            static _ => Task.CompletedTask,
+            static (callbackWork, cancellationToken) => Task.Run(callbackWork, cancellationToken))
     {
     }
 
@@ -55,7 +57,8 @@ public sealed class AddonHost
         TimeSpan stopTimeout,
         Func<Func<Task>, Task> startWorkScheduler,
         Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
-        Func<CancellationToken, Task> startCallbackCommitObserver)
+        Func<CancellationToken, Task> startCallbackCommitObserver,
+        Func<Func<Task>, CancellationToken, Task> addonCallbackScheduler)
     {
         if (startTimeout <= TimeSpan.Zero)
         {
@@ -76,6 +79,8 @@ public sealed class AddonHost
             startLifecycleScheduler ?? throw new ArgumentNullException(nameof(startLifecycleScheduler));
         this.startCallbackCommitObserver =
             startCallbackCommitObserver ?? throw new ArgumentNullException(nameof(startCallbackCommitObserver));
+        this.addonCallbackScheduler =
+            addonCallbackScheduler ?? throw new ArgumentNullException(nameof(addonCallbackScheduler));
     }
 
     public Task StartAsync(IEnumerable<ITelemetryAddon> addons, CancellationToken cancellationToken)
@@ -390,7 +395,7 @@ public sealed class AddonHost
         }
 
         var addon = runtime.Addon;
-        var metadata = CaptureMetadata(addon);
+        var metadata = await InvokeMetadataAsync(addon, cancellationToken).ConfigureAwait(false);
         SetMetadataSnapshot(runtime, metadata);
         cancellationToken.ThrowIfCancellationRequested();
         if (ShouldCancelCommittedStartBeforeAddonCallbacks(runtime, cancellationToken))
@@ -398,7 +403,7 @@ public sealed class AddonHost
             return StartLifecycleResult.Skipped;
         }
 
-        var validation = addon.Validate();
+        var validation = await InvokeValidationAsync(addon, cancellationToken).ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
         if (!validation.IsValid)
         {
@@ -412,7 +417,8 @@ public sealed class AddonHost
         {
             if (runtime.State != AddonRuntimeState.Starting ||
                 runtime.StartInvoked ||
-                runtime.StartCancellationRequested)
+                runtime.StartCancellationRequested ||
+                cancellationToken.IsCancellationRequested)
             {
                 return StartLifecycleResult.Skipped;
             }
@@ -421,8 +427,39 @@ public sealed class AddonHost
         }
 
         var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
-        await addon.StartAsync(context, cancellationToken).ConfigureAwait(false);
+        await InvokeAddonStartAsync(addon, context, cancellationToken).ConfigureAwait(false);
         return StartLifecycleResult.Started;
+    }
+
+    private Task<AddonIdentity> InvokeMetadataAsync(ITelemetryAddon addon, CancellationToken cancellationToken)
+        => InvokeAddonCallbackAsync(() => CaptureMetadata(addon), cancellationToken);
+
+    private Task<AddonValidationResult> InvokeValidationAsync(
+        ITelemetryAddon addon,
+        CancellationToken cancellationToken)
+        => InvokeAddonCallbackAsync(addon.Validate, cancellationToken);
+
+    private Task InvokeAddonStartAsync(
+        ITelemetryAddon addon,
+        IAddonContext context,
+        CancellationToken cancellationToken)
+        => addonCallbackScheduler(
+            () => addon.StartAsync(context, cancellationToken),
+            cancellationToken);
+
+    private async Task<T> InvokeAddonCallbackAsync<T>(Func<T> callback, CancellationToken cancellationToken)
+    {
+        T? result = default;
+
+        await addonCallbackScheduler(
+            () =>
+            {
+                result = callback();
+                return Task.CompletedTask;
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return result!;
     }
 
     private bool TryCommitStartCallbacks(AddonRuntime runtime, CancellationToken cancellationToken)
