@@ -61,12 +61,6 @@ public sealed class AddonHost
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!TryValidate(addon, out var validationMessage))
-            {
-                PublishHealth(addon, "validation_failed", validationMessage, TelemetryPriority.Important);
-                continue;
-            }
-
             var runtime = new AddonRuntime(addon);
 
             lock (syncRoot)
@@ -79,7 +73,7 @@ public sealed class AddonHost
                 knownAddons.Add(runtime);
             }
 
-            _ = startWorkScheduler(() => StartOneAsync(runtime));
+            ScheduleStart(runtime);
         }
 
         return Task.CompletedTask;
@@ -111,38 +105,90 @@ public sealed class AddonHost
                 await stopTask.WaitAsync(stopTimeout, cancellationToken);
                 if (TryPublishStopResult(runtime))
                 {
-                    PublishHealth(addon, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
+                    PublishHealth(runtime, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                ObserveLateFault(stopTask, addon, "stop_error");
+                ObserveLateFault(stopTask, runtime, "stop_error");
                 throw;
             }
             catch (TimeoutException)
             {
-                ObserveLateFault(stopTask, addon, "stop_error");
+                ObserveLateFault(stopTask, runtime, "stop_error");
                 if (TryPublishStopResult(runtime))
                 {
-                    PublishHealth(addon, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
+                    PublishHealth(runtime, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
                 }
             }
             catch (OperationCanceledException)
             {
-                ObserveLateFault(stopTask, addon, "stop_error");
+                ObserveLateFault(stopTask, runtime, "stop_error");
                 if (TryPublishStopResult(runtime))
                 {
-                    PublishHealth(addon, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
+                    PublishHealth(runtime, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
                 }
             }
             catch (Exception ex)
             {
                 if (TryPublishStopResult(runtime))
                 {
-                    PublishHealth(addon, "stop_error", ex.Message, TelemetryPriority.Important);
+                    PublishHealth(runtime, "stop_error", ex.Message, TelemetryPriority.Important);
                 }
             }
         }
+    }
+
+    private void ScheduleStart(AddonRuntime runtime)
+    {
+        Task scheduledTask;
+
+        try
+        {
+            scheduledTask = startWorkScheduler(() => RunStartWorkSafelyAsync(runtime));
+        }
+        catch (Exception ex)
+        {
+            PublishHealth(runtime, "start_error", ex.Message, TelemetryPriority.Important);
+            return;
+        }
+
+        ObserveScheduledStartTask(scheduledTask, runtime);
+    }
+
+    private async Task RunStartWorkSafelyAsync(AddonRuntime runtime)
+    {
+        try
+        {
+            await StartOneAsync(runtime).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            PublishHealth(runtime, "start_error", ex.Message, TelemetryPriority.Important);
+        }
+    }
+
+    private void ObserveScheduledStartTask(Task scheduledTask, AddonRuntime runtime)
+    {
+        if (scheduledTask.IsFaulted)
+        {
+            PublishTaskFault(runtime, "start_error", scheduledTask);
+            return;
+        }
+
+        if (scheduledTask.IsCompleted)
+        {
+            return;
+        }
+
+        _ = scheduledTask.ContinueWith(
+            completedTask =>
+            {
+                PublishTaskFault(runtime, "start_error", completedTask);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private void RequestShutdownCancellationWithoutWaiting()
@@ -194,14 +240,25 @@ public sealed class AddonHost
             runtime.State = AddonRuntimeState.Starting;
         }
 
-        var addon = runtime.Addon;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
         timeoutCts.CancelAfter(startTimeout);
-        var startTask = InvokeStartAsync(addon, timeoutCts.Token);
+        var startTask = InvokeStartAsync(runtime, timeoutCts.Token);
 
         try
         {
-            await startTask.WaitAsync(startTimeout, shutdownCts.Token);
+            var result = await startTask.WaitAsync(startTimeout, shutdownCts.Token);
+            if (result.Status == StartLifecycleStatus.ValidationFailed)
+            {
+                MarkStartSkipped(runtime);
+                PublishHealth(runtime, "validation_failed", result.Message, TelemetryPriority.Important);
+                return;
+            }
+
+            if (result.Status == StartLifecycleStatus.Skipped)
+            {
+                MarkStartSkipped(runtime);
+                return;
+            }
 
             lock (syncRoot)
             {
@@ -213,21 +270,24 @@ public sealed class AddonHost
                 runtime.State = AddonRuntimeState.Started;
             }
 
-            PublishHealth(addon, "started", "Add-on started.", TelemetryPriority.Routine);
+            PublishHealth(runtime, "started", "Add-on started.", TelemetryPriority.Routine);
         }
         catch (TimeoutException)
         {
-            ObserveLateFault(startTask, addon, "start_error");
-            PublishHealth(addon, "start_timeout", "Add-on start timed out.", TelemetryPriority.Important);
+            MarkStartSkippedIfStartWasNotInvoked(runtime);
+            ObserveLateFault(startTask, runtime, "start_error");
+            PublishHealth(runtime, "start_timeout", "Add-on start timed out.", TelemetryPriority.Important);
         }
         catch (OperationCanceledException)
         {
-            ObserveLateFault(startTask, addon, "start_error");
-            PublishHealth(addon, "start_timeout", "Add-on start was canceled.", TelemetryPriority.Important);
+            MarkStartSkippedIfStartWasNotInvoked(runtime);
+            ObserveLateFault(startTask, runtime, "start_error");
+            PublishHealth(runtime, "start_timeout", "Add-on start was canceled.", TelemetryPriority.Important);
         }
         catch (Exception ex)
         {
-            PublishHealth(addon, "start_error", ex.Message, TelemetryPriority.Important);
+            MarkStartSkippedIfStartWasNotInvoked(runtime);
+            PublishHealth(runtime, "start_error", ex.Message, TelemetryPriority.Important);
         }
     }
 
@@ -242,6 +302,16 @@ public sealed class AddonHost
                     return null;
 
                 case AddonRuntimeState.Starting:
+                    if (!runtime.StartInvoked)
+                    {
+                        runtime.State = AddonRuntimeState.StartSkipped;
+                        return null;
+                    }
+
+                    runtime.State = AddonRuntimeState.Stopping;
+                    runtime.StopTask ??= InvokeStopAsync(runtime.Addon);
+                    return runtime.StopTask;
+
                 case AddonRuntimeState.Started:
                     runtime.State = AddonRuntimeState.Stopping;
                     runtime.StopTask ??= InvokeStopAsync(runtime.Addon);
@@ -256,11 +326,37 @@ public sealed class AddonHost
         }
     }
 
-    private Task InvokeStartAsync(ITelemetryAddon addon, CancellationToken cancellationToken)
+    private Task<StartLifecycleResult> InvokeStartAsync(AddonRuntime runtime, CancellationToken cancellationToken)
         => Task.Run(async () =>
         {
+            var addon = runtime.Addon;
+            var metadata = CaptureMetadata(addon);
+            SetMetadataSnapshot(runtime, metadata);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var validation = addon.Validate();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!validation.IsValid)
+            {
+                var message = validation.Errors.Count == 0
+                    ? "Add-on validation failed."
+                    : string.Join("; ", validation.Errors);
+                return StartLifecycleResult.ValidationFailed(message);
+            }
+
+            lock (syncRoot)
+            {
+                if (runtime.State != AddonRuntimeState.Starting || shutdownRequested)
+                {
+                    return StartLifecycleResult.Skipped;
+                }
+
+                runtime.StartInvoked = true;
+            }
+
             var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
             await addon.StartAsync(context, cancellationToken).ConfigureAwait(false);
+            return StartLifecycleResult.Started;
         });
 
     private Task InvokeStopAsync(ITelemetryAddon addon)
@@ -285,30 +381,50 @@ public sealed class AddonHost
         }
     }
 
-    private bool TryValidate(ITelemetryAddon addon, out string message)
+    private static AddonIdentity CaptureMetadata(ITelemetryAddon addon)
     {
-        try
-        {
-            var validation = addon.Validate();
-            if (validation.IsValid)
-            {
-                message = "Add-on validation succeeded.";
-                return true;
-            }
+        var metadata = addon.Metadata;
+        var id = string.IsNullOrWhiteSpace(metadata.Id)
+            ? AddonIdentity.Unknown.Id
+            : metadata.Id;
+        var displayName = string.IsNullOrWhiteSpace(metadata.DisplayName)
+            ? null
+            : metadata.DisplayName;
 
-            message = validation.Errors.Count == 0
-                ? "Add-on validation failed."
-                : string.Join("; ", validation.Errors);
-            return false;
-        }
-        catch (Exception ex)
+        return new AddonIdentity(id, displayName);
+    }
+
+    private void SetMetadataSnapshot(AddonRuntime runtime, AddonIdentity metadata)
+    {
+        lock (syncRoot)
         {
-            message = ex.Message;
-            return false;
+            runtime.Metadata = metadata;
         }
     }
 
-    private void ObserveLateFault(Task? task, ITelemetryAddon addon, string status)
+    private void MarkStartSkipped(AddonRuntime runtime)
+    {
+        lock (syncRoot)
+        {
+            if (runtime.State == AddonRuntimeState.Starting)
+            {
+                runtime.State = AddonRuntimeState.StartSkipped;
+            }
+        }
+    }
+
+    private void MarkStartSkippedIfStartWasNotInvoked(AddonRuntime runtime)
+    {
+        lock (syncRoot)
+        {
+            if (runtime.State == AddonRuntimeState.Starting && !runtime.StartInvoked)
+            {
+                runtime.State = AddonRuntimeState.StartSkipped;
+            }
+        }
+    }
+
+    private void ObserveLateFault(Task? task, AddonRuntime runtime, string status)
     {
         if (task is null)
         {
@@ -317,7 +433,7 @@ public sealed class AddonHost
 
         if (task.IsFaulted)
         {
-            PublishTaskFault(addon, status, task);
+            PublishTaskFault(runtime, status, task);
             return;
         }
 
@@ -329,51 +445,92 @@ public sealed class AddonHost
         _ = task.ContinueWith(
             completedTask =>
             {
-                PublishTaskFault(addon, status, completedTask);
+                PublishTaskFault(runtime, status, completedTask);
             },
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
     }
 
-    private void PublishTaskFault(ITelemetryAddon addon, string status, Task task)
+    private void PublishTaskFault(AddonRuntime runtime, string status, Task task)
     {
         var exception = task.Exception?.GetBaseException();
         PublishHealth(
-            addon,
+            runtime,
             status,
             exception?.Message ?? "Add-on task faulted after timeout.",
             TelemetryPriority.Important);
     }
 
-    private void PublishHealth(ITelemetryAddon addon, string status, string message, TelemetryPriority priority)
+    private void PublishHealth(AddonRuntime runtime, string status, string message, TelemetryPriority priority)
     {
-        var attributes = new Dictionary<string, object?>
+        try
         {
-            ["addon.id"] = addon.Metadata.Id,
-            ["status"] = status,
-            ["message"] = message,
-        };
+            var metadata = GetMetadataSnapshot(runtime);
+            var attributes = new Dictionary<string, object?>
+            {
+                ["addon.id"] = metadata.Id,
+                ["status"] = status,
+                ["message"] = message,
+            };
 
-        if (!string.IsNullOrWhiteSpace(addon.Metadata.DisplayName))
-        {
-            attributes["addon.name"] = addon.Metadata.DisplayName;
+            if (!string.IsNullOrWhiteSpace(metadata.DisplayName))
+            {
+                attributes["addon.name"] = metadata.DisplayName;
+            }
+
+            sink.TryPublish(TelemetryRecord.Health(
+                timeProvider.GetUtcNow(),
+                $"addon.{metadata.Id}",
+                "ninaotel.addon.health",
+                priority,
+                attributes));
         }
+        catch
+        {
+        }
+    }
 
-        sink.TryPublish(TelemetryRecord.Health(
-            timeProvider.GetUtcNow(),
-            $"addon.{addon.Metadata.Id}",
-            "ninaotel.addon.health",
-            priority,
-            attributes));
+    private AddonIdentity GetMetadataSnapshot(AddonRuntime runtime)
+    {
+        lock (syncRoot)
+        {
+            return runtime.Metadata ?? AddonIdentity.Unknown;
+        }
     }
 
     private sealed class AddonRuntime(ITelemetryAddon addon)
     {
         public ITelemetryAddon Addon { get; } = addon;
         public int State = AddonRuntimeState.PendingStart;
+        public AddonIdentity? Metadata;
+        public bool StartInvoked;
         public Task? StopTask;
         public bool StopResultPublished;
+    }
+
+    private sealed record AddonIdentity(string Id, string? DisplayName)
+    {
+        public static AddonIdentity Unknown { get; } = new("unknown", null);
+    }
+
+    private sealed record StartLifecycleResult(StartLifecycleStatus Status, string Message)
+    {
+        public static StartLifecycleResult Started { get; } =
+            new(StartLifecycleStatus.Started, string.Empty);
+
+        public static StartLifecycleResult Skipped { get; } =
+            new(StartLifecycleStatus.Skipped, string.Empty);
+
+        public static StartLifecycleResult ValidationFailed(string message)
+            => new(StartLifecycleStatus.ValidationFailed, message);
+    }
+
+    private enum StartLifecycleStatus
+    {
+        Started,
+        ValidationFailed,
+        Skipped,
     }
 
     private static class AddonRuntimeState

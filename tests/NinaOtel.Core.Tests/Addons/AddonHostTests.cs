@@ -52,6 +52,91 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StartAsync_WhenValidationBlocks_ReturnsAndReportsStartTimeoutWithoutStarting()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        using var validationCanReturn = new ManualResetEventSlim(false);
+        var addon = new BlockingValidationAddon(validationCanReturn);
+
+        var startTask = Task.Run(() => host.StartAsync([addon], CancellationToken.None));
+
+        try
+        {
+            await startTask.WaitAsync(TimeSpan.FromMilliseconds(250));
+            var record = await WaitForHealthRecordAsync(sink, "blocking-validation", "start_timeout");
+
+            record.Priority.Should().Be(TelemetryPriority.Important);
+            addon.StartCalls.Should().Be(0);
+        }
+        finally
+        {
+            validationCanReturn.Set();
+            if (!startTask.IsCompleted)
+            {
+                await startTask.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StartAsync_AfterStopAsyncDoesNotValidateOrStartAddon()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        using var validationCanReturn = new ManualResetEventSlim(false);
+        var addon = new BlockingValidationAddon(validationCanReturn);
+
+        await host.StopAsync(CancellationToken.None);
+        var startTask = Task.Run(() => host.StartAsync([addon], CancellationToken.None));
+
+        try
+        {
+            await startTask.WaitAsync(TimeSpan.FromMilliseconds(250));
+
+            addon.ValidateCalls.Should().Be(0);
+            addon.StartCalls.Should().Be(0);
+        }
+        finally
+        {
+            validationCanReturn.Set();
+            if (!startTask.IsCompleted)
+            {
+                await startTask.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task StartAsync_WhenMetadataBlocks_ReturnsAndReportsStartTimeout()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        using var metadataCanReturn = new ManualResetEventSlim(false);
+        var addon = new BlockingMetadataAddon(metadataCanReturn);
+
+        var startTask = Task.Run(() => host.StartAsync([addon], CancellationToken.None));
+
+        try
+        {
+            await startTask.WaitAsync(TimeSpan.FromMilliseconds(250));
+
+            var record = await WaitForHealthRecordAsync(sink, "unknown", "start_timeout");
+            record.Priority.Should().Be(TelemetryPriority.Important);
+            addon.ValidateCalls.Should().Be(0);
+            addon.StartCalls.Should().Be(0);
+        }
+        finally
+        {
+            metadataCanReturn.Set();
+            if (!startTask.IsCompleted)
+            {
+                await startTask.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+        }
+    }
+
+    [Fact]
     public async Task StopAsync_ReportsStopTimeoutAndReturns()
     {
         var sink = new RecordingSink();
@@ -172,8 +257,9 @@ public sealed class AddonHostTests
 
         await host.StartAsync([addon], CancellationToken.None);
 
+        var record = await WaitForHealthRecordAsync(sink, "invalid", "validation_failed");
+
         addon.StartCalls.Should().Be(0);
-        var record = sink.Records.SingleHealth("invalid", "validation_failed");
         record.Attributes["message"].Should().Be("Missing endpoint; Disabled");
         record.Attributes["addon.name"].Should().Be("Invalid Addon");
     }
@@ -487,6 +573,50 @@ public sealed class AddonHostTests
     }
 
     private sealed class RecordingLifecycleAddon() : TestAddon("queued-start", "Queued Start");
+
+    private sealed class BlockingValidationAddon(ManualResetEventSlim validationCanReturn)
+        : TestAddon("blocking-validation", "Blocking Validation")
+    {
+        public int ValidateCalls { get; private set; }
+
+        public override AddonValidationResult Validate()
+        {
+            ValidateCalls++;
+            validationCanReturn.Wait();
+            return AddonValidationResult.Success;
+        }
+    }
+
+    private sealed class BlockingMetadataAddon(ManualResetEventSlim metadataCanReturn) : ITelemetryAddon
+    {
+        public int MetadataCalls { get; private set; }
+        public int ValidateCalls { get; private set; }
+        public int StartCalls { get; private set; }
+
+        public AddonMetadata Metadata
+        {
+            get
+            {
+                MetadataCalls++;
+                metadataCanReturn.Wait();
+                return new AddonMetadata("blocking-metadata", "Blocking Metadata", new Version(1, 0, 0), "test");
+            }
+        }
+
+        public AddonValidationResult Validate()
+        {
+            ValidateCalls++;
+            return AddonValidationResult.Success;
+        }
+
+        public Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            StartCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
 
     private sealed class SynchronouslyBlockingStartAddon(ManualResetEventSlim startCanReturn) : ITelemetryAddon
     {
