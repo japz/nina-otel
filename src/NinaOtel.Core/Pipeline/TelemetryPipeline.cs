@@ -14,6 +14,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
     private Task? worker;
     private int disposed;
     private int workerStartCount;
+    private int inFlightRecords;
     private long droppedRecords;
 
     public TelemetryPipeline(ITelemetryExporter exporter, int capacity)
@@ -49,6 +50,12 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
 
     public bool TryPublish(TelemetryRecord record)
     {
+        if (Volatile.Read(ref disposed) != 0)
+        {
+            Interlocked.Increment(ref droppedRecords);
+            return false;
+        }
+
         if (channel.Writer.TryWrite(record))
         {
             return true;
@@ -77,6 +84,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
             catch (TimeoutException)
             {
                 CancelWithoutWaiting();
+                DropInFlightRecords();
                 DropReadableRecords();
                 // The worker may still observe this token after a drain timeout.
                 return;
@@ -84,6 +92,10 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
             catch
             {
             }
+        }
+        else
+        {
+            DropReadableRecords();
         }
 
         stopCts.Dispose();
@@ -147,6 +159,16 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         }
     }
 
+    private void DropInFlightRecords()
+    {
+        var count = Interlocked.Exchange(ref inFlightRecords, 0);
+
+        if (count > 0)
+        {
+            Interlocked.Add(ref droppedRecords, count);
+        }
+    }
+
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         var batch = new List<TelemetryRecord>(128);
@@ -177,19 +199,22 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
 
     private async Task<bool> TryExportBatchAsync(List<TelemetryRecord> batch, CancellationToken cancellationToken)
     {
+        Interlocked.Exchange(ref inFlightRecords, batch.Count);
+
         try
         {
             await exporter.ExportAsync(batch, cancellationToken);
+            Interlocked.Exchange(ref inFlightRecords, 0);
             return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            Interlocked.Add(ref droppedRecords, batch.Count);
+            DropInFlightRecords();
             return false;
         }
         catch (Exception)
         {
-            Interlocked.Add(ref droppedRecords, batch.Count);
+            DropInFlightRecords();
             return true;
         }
     }

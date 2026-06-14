@@ -35,6 +35,35 @@ public sealed class TelemetryPipelineTests
     }
 
     [Fact]
+    public async Task TryPublish_AfterDispose_ReturnsFalseAndCountsDrop()
+    {
+        var exporter = new RecordingExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "late", TelemetryPriority.Routine);
+
+        await pipeline.DisposeAsync();
+
+        pipeline.TryPublish(record).Should().BeFalse();
+        pipeline.DroppedRecords.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CountsQueuedRecordsWhenDisposedBeforeStart()
+    {
+        var exporter = new RecordingExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Routine);
+        var second = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "second", TelemetryPriority.Routine);
+
+        pipeline.TryPublish(first).Should().BeTrue();
+        pipeline.TryPublish(second).Should().BeTrue();
+
+        await pipeline.DisposeAsync();
+
+        pipeline.DroppedRecords.Should().Be(2);
+    }
+
+    [Fact]
     public async Task ExporterFailure_DoesNotStopWorkerAndCountsDroppedBatch()
     {
         var exporter = new FailingOnceExporter();
@@ -101,6 +130,22 @@ public sealed class TelemetryPipelineTests
         {
             exporter.UnblockCancellationCallback();
         }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CountsInFlightRecordsWhenDrainTimeoutAbandonsExporter()
+    {
+        var exporter = new NeverCompletingExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "in-flight", TelemetryPriority.Routine);
+
+        await pipeline.StartAsync(CancellationToken.None);
+        pipeline.TryPublish(record).Should().BeTrue();
+        await exporter.WaitForExportStartedAsync(TimeSpan.FromSeconds(2));
+
+        await pipeline.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+
+        pipeline.DroppedRecords.Should().BeGreaterThanOrEqualTo(1);
     }
 
     [Fact]
@@ -340,6 +385,23 @@ public sealed class TelemetryPipelineTests
         {
             using var cts = new CancellationTokenSource(timeout);
             await firstExportStarted.Task.WaitAsync(cts.Token);
+        }
+    }
+
+    private sealed class NeverCompletingExporter : ITelemetryExporter
+    {
+        private readonly TaskCompletionSource exportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            exportStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan);
+        }
+
+        public async Task WaitForExportStartedAsync(TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await exportStarted.Task.WaitAsync(cts.Token);
         }
     }
 }
