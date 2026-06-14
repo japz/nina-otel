@@ -138,7 +138,7 @@ public sealed class AddonHost
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                ObserveLateFault(stopTask, runtime, "stop_error");
+                ObserveLateTerminalStopFault(stopTask, runtime, "stop_error");
                 throw;
             }
             catch (TimeoutException)
@@ -413,22 +413,11 @@ public sealed class AddonHost
             return StartLifecycleResult.ValidationFailed(message);
         }
 
-        lock (syncRoot)
-        {
-            if (runtime.State != AddonRuntimeState.Starting ||
-                runtime.StartInvoked ||
-                runtime.StartCancellationRequested ||
-                cancellationToken.IsCancellationRequested)
-            {
-                return StartLifecycleResult.Skipped;
-            }
-
-            runtime.StartInvoked = true;
-        }
-
         var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
-        await InvokeAddonStartAsync(addon, context, cancellationToken).ConfigureAwait(false);
-        return StartLifecycleResult.Started;
+        var startEntered = await InvokeAddonStartAsync(runtime, context, cancellationToken).ConfigureAwait(false);
+        return startEntered
+            ? StartLifecycleResult.Started
+            : StartLifecycleResult.Skipped;
     }
 
     private Task<AddonIdentity> InvokeMetadataAsync(ITelemetryAddon addon, CancellationToken cancellationToken)
@@ -439,13 +428,36 @@ public sealed class AddonHost
         CancellationToken cancellationToken)
         => InvokeAddonCallbackAsync(addon.Validate, cancellationToken);
 
-    private Task InvokeAddonStartAsync(
-        ITelemetryAddon addon,
+    private async Task<bool> InvokeAddonStartAsync(
+        AddonRuntime runtime,
         IAddonContext context,
         CancellationToken cancellationToken)
-        => addonCallbackScheduler(
-            () => addon.StartAsync(context, cancellationToken),
-            cancellationToken);
+    {
+        var startEntered = false;
+
+        await addonCallbackScheduler(
+            () =>
+            {
+                lock (syncRoot)
+                {
+                    if (runtime.State != AddonRuntimeState.Starting ||
+                        runtime.StartInvoked ||
+                        runtime.StartCancellationRequested ||
+                        cancellationToken.IsCancellationRequested)
+                    {
+                        return Task.CompletedTask;
+                    }
+
+                    runtime.StartInvoked = true;
+                    startEntered = true;
+                }
+
+                return runtime.Addon.StartAsync(context, cancellationToken);
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return startEntered;
+    }
 
     private async Task<T> InvokeAddonCallbackAsync<T>(Func<T> callback, CancellationToken cancellationToken)
     {
@@ -586,6 +598,44 @@ public sealed class AddonHost
             CancellationToken.None,
             TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private void ObserveLateTerminalStopFault(Task task, AddonRuntime runtime, string status)
+    {
+        if (task.IsFaulted)
+        {
+            PublishTerminalStopTaskFault(runtime, status, task);
+            return;
+        }
+
+        if (task.IsCompleted)
+        {
+            return;
+        }
+
+        _ = task.ContinueWith(
+            completedTask =>
+            {
+                PublishTerminalStopTaskFault(runtime, status, completedTask);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void PublishTerminalStopTaskFault(AddonRuntime runtime, string status, Task task)
+    {
+        if (!TryPublishStopResult(runtime))
+        {
+            return;
+        }
+
+        var exception = task.Exception?.GetBaseException();
+        PublishHealth(
+            runtime,
+            status,
+            exception?.Message ?? "Add-on task faulted after timeout.",
+            TelemetryPriority.Important);
     }
 
     private void PublishTaskFault(AddonRuntime runtime, string status, Task task)

@@ -343,6 +343,56 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StopAsync_WhenShutdownAfterStartScheduledButBeforeStartEntered_DoesNotStopAddon()
+    {
+        var sink = new RecordingSink();
+        Task? scheduledStart = null;
+        var startCallbackQueued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseStartCallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackScheduleCount = 0;
+        var host = CreateHostWithStartSchedulers(
+            sink,
+            startWork =>
+            {
+                scheduledStart = Task.Run(startWork);
+                return scheduledStart;
+            },
+            static (lifecycleWork, cancellationToken) => Task.Run(lifecycleWork, cancellationToken),
+            static _ => Task.CompletedTask,
+            async (callbackWork, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref callbackScheduleCount) == 3)
+                {
+                    startCallbackQueued.SetResult();
+                    await releaseStartCallback.Task.WaitAsync(TimeSpan.FromSeconds(1));
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                await callbackWork();
+            });
+        var addon = new CallbackCountingAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await startCallbackQueued.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+        releaseStartCallback.SetResult();
+        if (scheduledStart is not null)
+        {
+            await scheduledStart.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+
+        addon.MetadataCalls.Should().Be(1);
+        addon.ValidateCalls.Should().Be(1);
+        addon.StartCalls.Should().Be(0);
+        addon.StopCalls.Should().Be(0);
+        sink.Records.Any(record =>
+            record.Source == "addon.callback-counting" &&
+            record.Attributes.TryGetValue("status", out var status) &&
+            Equals(status, "stopped")).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task StartAsync_AfterStopAsyncDoesNotInvokeAddonStart()
     {
         var sink = new RecordingSink();
@@ -497,6 +547,32 @@ public sealed class AddonHostTests
 
         addon.StopCalls.Should().Be(1);
         sink.Records.ContainHealth("controllable-stop", "stopped");
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenCallerCanceledStopLaterFaults_RetryPublishesOneStopError()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        var addon = new FaultableStopAddon();
+        using var callerCts = new CancellationTokenSource();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "faultable-stop", "started");
+
+        var firstStop = host.StopAsync(callerCts.Token);
+        await addon.WaitForStopInvocationAsync();
+        await callerCts.CancelAsync();
+        await firstStop.Invoking(stop => stop.WaitAsync(TimeSpan.FromMilliseconds(250)))
+            .Should()
+            .ThrowAsync<OperationCanceledException>();
+
+        addon.FaultStop(new InvalidOperationException("stop exploded"));
+        await WaitForHealthRecordAsync(sink, "faultable-stop", "stop_error");
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+
+        sink.Records.CountHealth("faultable-stop", "stop_error").Should().Be(1);
     }
 
     [Fact]
@@ -934,6 +1010,25 @@ public sealed class AddonHostTests
             return stopCompletion.Task;
         }
     }
+
+    private sealed class FaultableStopAddon() : TestAddon("faultable-stop", "Faultable Stop")
+    {
+        private readonly TaskCompletionSource stopInvoked =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource stopCompletion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WaitForStopInvocationAsync() => stopInvoked.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        public void FaultStop(Exception exception) => stopCompletion.TrySetException(exception);
+
+        protected override Task StopCoreAsync(CancellationToken cancellationToken)
+        {
+            stopInvoked.TrySetResult();
+            return stopCompletion.Task;
+        }
+    }
 }
 
 internal static class TelemetryRecordAssertions
@@ -962,6 +1057,9 @@ internal static class TelemetryRecordAssertions
         matchingRecords.Should().ContainSingle();
         return matchingRecords[0];
     }
+
+    public static int CountHealth(this IEnumerable<TelemetryRecord> records, string addonId, string status)
+        => records.Count(IsMatchingHealthRecord(addonId, status));
 
     private static Func<TelemetryRecord, bool> IsMatchingHealthRecord(string addonId, string status)
         => record =>
