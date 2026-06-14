@@ -283,7 +283,7 @@ public sealed class AddonHostTests
     }
 
     [Fact]
-    public async Task StartAsync_WhenShutdownAfterCallbackCommit_DoesNotSkipCommittedLifecycle()
+    public async Task StopAsync_WhenShutdownAfterCallbackCommit_PreventsLaterStart()
     {
         var sink = new RecordingSink();
         Task? scheduledStart = null;
@@ -309,24 +309,23 @@ public sealed class AddonHostTests
 
         var stopDuringCommittedStart = host.StopAsync(CancellationToken.None);
 
+        await stopDuringCommittedStart.WaitAsync(TimeSpan.FromMilliseconds(250));
         releaseMetadata.SetResult();
         if (scheduledStart is not null)
         {
             await scheduledStart.WaitAsync(TimeSpan.FromMilliseconds(250));
         }
 
-        await stopDuringCommittedStart.WaitAsync(TimeSpan.FromMilliseconds(250));
-        await WaitForHealthRecordAsync(sink, "callback-counting", "started");
         await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
 
-        addon.MetadataCalls.Should().Be(1);
-        addon.ValidateCalls.Should().Be(1);
-        addon.StartCalls.Should().Be(1);
-        addon.StopCalls.Should().Be(1);
+        addon.MetadataCalls.Should().Be(0);
+        addon.ValidateCalls.Should().Be(0);
+        addon.StartCalls.Should().Be(0);
+        addon.StopCalls.Should().Be(0);
         sink.Records.Any(record =>
             record.Source == "addon.callback-counting" &&
             record.Attributes.TryGetValue("status", out var status) &&
-            Equals(status, "start_timeout")).Should().BeFalse();
+            Equals(status, "started")).Should().BeFalse();
     }
 
     [Fact]

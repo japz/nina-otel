@@ -263,7 +263,8 @@ public sealed class AddonHost
             runtime.State = AddonRuntimeState.Starting;
         }
 
-        using var timeoutCts = new CancellationTokenSource(startTimeout);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
+        timeoutCts.CancelAfter(startTimeout);
         var startTask = InvokeStartAsync(runtime, timeoutCts.Token);
 
         try
@@ -332,6 +333,7 @@ public sealed class AddonHost
 
                     if (!runtime.StartInvoked)
                     {
+                        runtime.StartCancellationRequested = true;
                         return null;
                     }
 
@@ -382,11 +384,19 @@ public sealed class AddonHost
         }
 
         await startCallbackCommitObserver(cancellationToken).ConfigureAwait(false);
+        if (ShouldCancelCommittedStartBeforeAddonCallbacks(runtime, cancellationToken))
+        {
+            return StartLifecycleResult.Skipped;
+        }
 
         var addon = runtime.Addon;
         var metadata = CaptureMetadata(addon);
         SetMetadataSnapshot(runtime, metadata);
         cancellationToken.ThrowIfCancellationRequested();
+        if (ShouldCancelCommittedStartBeforeAddonCallbacks(runtime, cancellationToken))
+        {
+            return StartLifecycleResult.Skipped;
+        }
 
         var validation = addon.Validate();
         cancellationToken.ThrowIfCancellationRequested();
@@ -400,7 +410,9 @@ public sealed class AddonHost
 
         lock (syncRoot)
         {
-            if (runtime.State != AddonRuntimeState.Starting || runtime.StartInvoked)
+            if (runtime.State != AddonRuntimeState.Starting ||
+                runtime.StartInvoked ||
+                runtime.StartCancellationRequested)
             {
                 return StartLifecycleResult.Skipped;
             }
@@ -427,6 +439,22 @@ public sealed class AddonHost
 
             runtime.StartCallbacksCommitted = true;
             return true;
+        }
+    }
+
+    private bool ShouldCancelCommittedStartBeforeAddonCallbacks(
+        AddonRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return true;
+        }
+
+        lock (syncRoot)
+        {
+            return runtime.State != AddonRuntimeState.Starting ||
+                runtime.StartCancellationRequested;
         }
     }
 
@@ -576,6 +604,7 @@ public sealed class AddonHost
         public int State = AddonRuntimeState.PendingStart;
         public AddonIdentity? Metadata;
         public bool StartCallbacksCommitted;
+        public bool StartCancellationRequested;
         public bool StartInvoked;
         public Task? StopTask;
         public bool StopResultPublished;
