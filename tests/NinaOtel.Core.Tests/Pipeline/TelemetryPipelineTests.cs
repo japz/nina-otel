@@ -121,6 +121,36 @@ public sealed class TelemetryPipelineTests
     }
 
     [Fact]
+    public async Task DisposeAsync_ConcurrentCallersAwaitSameDrainWork()
+    {
+        var exporter = new BlockingFirstExportExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "shared-dispose", TelemetryPriority.Routine);
+
+        await pipeline.StartAsync(CancellationToken.None);
+        pipeline.TryPublish(record).Should().BeTrue();
+        await exporter.WaitForFirstExportStartedAsync(TimeSpan.FromSeconds(2));
+
+        var firstDispose = pipeline.DisposeAsync().AsTask();
+        var secondDispose = pipeline.DisposeAsync().AsTask();
+
+        try
+        {
+            secondDispose.IsCompleted.Should().BeFalse("concurrent disposers should await the active drain");
+
+            exporter.ReleaseFirstExport();
+            await Task.WhenAll(firstDispose, secondDispose).WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            exporter.ReleaseFirstExport();
+        }
+
+        exporter.Records.Should().ContainSingle(r => r.Name == "shared-dispose");
+        pipeline.DroppedRecords.Should().Be(0);
+    }
+
+    [Fact]
     public async Task DisposeAsync_ReturnsAfterDrainTimeoutEvenWhenCancellationCallbackBlocks()
     {
         var exporter = new BlockingCancellationCallbackExporter();
@@ -156,12 +186,45 @@ public sealed class TelemetryPipelineTests
 
             await pipeline.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
 
-            exporter.HasObservedCancellation.Should().BeTrue();
+            exporter.HasCancellationBeenRequested.Should().BeTrue();
         }
         finally
         {
             exporter.ReleaseExport();
         }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_DisposesCancellationSourceWhenTimeoutAbandonedWorkerEventuallyExits()
+    {
+        var exporter = new ReleaseAfterCancellationExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "eventual-exit", TelemetryPriority.Routine);
+        var stopCts = GetStopCts(pipeline);
+
+        await pipeline.StartAsync(CancellationToken.None);
+        pipeline.TryPublish(record).Should().BeTrue();
+        await exporter.WaitForExportStartedAsync(TimeSpan.FromSeconds(2));
+
+        await pipeline.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+
+        Action readBeforeExit = () => _ = stopCts.Token;
+        readBeforeExit.Should().NotThrow<ObjectDisposedException>("the worker still owns the token after timeout");
+
+        exporter.ReleaseExport();
+
+        await WaitUntilAsync(() =>
+        {
+            try
+            {
+                _ = stopCts.Token;
+                return false;
+            }
+            catch (ObjectDisposedException)
+            {
+                return true;
+            }
+        }, TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -238,6 +301,14 @@ public sealed class TelemetryPipelineTests
 
         property.Should().NotBeNull("the pipeline should expose a test-visible worker start count");
         return (int)property!.GetValue(pipeline)!;
+    }
+
+    private static CancellationTokenSource GetStopCts(TelemetryPipeline pipeline)
+    {
+        var field = typeof(TelemetryPipeline).GetField("stopCts", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        field.Should().NotBeNull("the pipeline should own a cancellation source");
+        return (CancellationTokenSource)field!.GetValue(pipeline)!;
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
@@ -384,8 +455,39 @@ public sealed class TelemetryPipelineTests
         private readonly TaskCompletionSource cancellationObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource exportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource releaseExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private CancellationToken observedCancellationToken;
 
-        public bool HasObservedCancellation => cancellationObserved.Task.IsCompleted;
+        public bool HasCancellationBeenRequested => observedCancellationToken.IsCancellationRequested;
+
+        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            observedCancellationToken = cancellationToken;
+            using var registration = cancellationToken.UnsafeRegister(static state =>
+            {
+                ((TaskCompletionSource)state!).TrySetResult();
+            }, cancellationObserved);
+
+            exportStarted.TrySetResult();
+            await releaseExport.Task;
+        }
+
+        public void ReleaseExport()
+        {
+            releaseExport.TrySetResult();
+        }
+
+        public async Task WaitForExportStartedAsync(TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await exportStarted.Task.WaitAsync(cts.Token);
+        }
+    }
+
+    private sealed class ReleaseAfterCancellationExporter : ITelemetryExporter
+    {
+        private readonly TaskCompletionSource cancellationObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource exportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
         {
@@ -395,7 +497,9 @@ public sealed class TelemetryPipelineTests
             }, cancellationObserved);
 
             exportStarted.TrySetResult();
+            await cancellationObserved.Task;
             await releaseExport.Task;
+            throw new OperationCanceledException(cancellationToken);
         }
 
         public void ReleaseExport()

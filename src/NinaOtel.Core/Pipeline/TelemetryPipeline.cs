@@ -7,10 +7,12 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
 {
     private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(2);
 
+    private readonly object disposalLock = new();
     private readonly object startLock = new();
     private readonly Channel<TelemetryRecord> channel;
     private readonly ITelemetryExporter exporter;
     private readonly CancellationTokenSource stopCts = new();
+    private Task? disposalTask;
     private Task? worker;
     private int disposed;
     private int workerStartCount;
@@ -65,13 +67,28 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         return false;
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
-        {
-            return;
-        }
+        return new ValueTask(EnsureDisposalStarted());
+    }
 
+    private Task EnsureDisposalStarted()
+    {
+        lock (disposalLock)
+        {
+            if (disposalTask != null)
+            {
+                return disposalTask;
+            }
+
+            Interlocked.Exchange(ref disposed, 1);
+            disposalTask = DisposeCoreAsync();
+            return disposalTask;
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
         channel.Writer.TryComplete();
         var workerToDrain = GetWorker();
 
@@ -86,6 +103,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
                 RequestCancellationWithoutWaiting();
                 DropInFlightRecords();
                 DropReadableRecords();
+                _ = DisposeStopCtsAfterWorkerCompletesAsync(workerToDrain);
                 // The worker may still observe this token after a drain timeout.
                 return;
             }
@@ -153,6 +171,19 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         catch
         {
         }
+    }
+
+    private async Task DisposeStopCtsAfterWorkerCompletesAsync(Task workerToDrain)
+    {
+        try
+        {
+            await workerToDrain.ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+
+        stopCts.Dispose();
     }
 
     private void DropReadableRecords()
