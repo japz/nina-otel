@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*.*.*
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Windows release
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore NinaOtel.sln
+
+      - name: Build
+        run: dotnet build NinaOtel.sln --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Test
+        run: dotnet test NinaOtel.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
+
+      - name: Package plugin and manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $output = "src/NinaOtel.Plugin/bin/Release/net8.0-windows"
+          $zip = "artifacts/NinaOtel.Plugin.zip"
+          $manifestPath = "artifacts/manifest.json"
+          New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
+          if (Test-Path $zip) {
+            Remove-Item -Force $zip
+          }
+          if (Test-Path $manifestPath) {
+            Remove-Item -Force $manifestPath
+          }
+
+          Compress-Archive -Path "$output/*" -DestinationPath $zip -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash
+
+          $dll = Join-Path $output "NinaOtel.Plugin.dll"
+          $fileVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($dll).FileVersion
+          $version = $fileVersion.Split(".")
+          if ($version.Count -ne 4) {
+            throw "Expected a four-part assembly file version, got '$fileVersion'."
+          }
+
+          $tag = $env:GITHUB_REF_NAME
+          $installerUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/NinaOtel.Plugin.zip"
+          $manifest = [ordered]@{
+            Name = "NinaOtel"
+            Identifier = "7311D7B5-0BBD-45AB-8E29-DB09B289A798"
+            Version = [ordered]@{
+              Major = $version[0]
+              Minor = $version[1]
+              Patch = $version[2]
+              Build = $version[3]
+            }
+            Author = "japz"
+            Homepage = "https://github.com/japz/nina-otel"
+            Repository = "https://github.com/japz/nina-otel"
+            License = "MPL-2.0"
+            LicenseURL = "https://github.com/japz/nina-otel/blob/main/LICENSE"
+            ChangelogURL = "https://github.com/japz/nina-otel/releases"
+            Tags = @("telemetry", "opentelemetry", "otlp", "observability")
+            MinimumApplicationVersion = [ordered]@{
+              Major = 3
+              Minor = 2
+              Patch = 0
+              Build = 9001
+            }
+            Descriptions = [ordered]@{
+              ShortDescription = "Exports NINA telemetry to an OTLP collector."
+              LongDescription = "NinaOtel exports NINA telemetry to an OpenTelemetry OTLP collector. It provides the plugin shell, options UI, telemetry pipeline, bounded buffering, and add-on host foundation for NINA, PHD2, scheduler, night summary, and device-specific telemetry."
+              FeaturedImageURL = ""
+              ScreenshotURL = ""
+              AltScreenshotURL = ""
+            }
+            Installer = [ordered]@{
+              URL = $installerUrl
+              Checksum = $hash
+              ChecksumType = "SHA256"
+              Type = "ARCHIVE"
+            }
+          }
+
+          $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath $manifestPath -Encoding utf8
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = $env:GITHUB_REF_NAME
+          gh release create $tag artifacts/NinaOtel.Plugin.zip artifacts/manifest.json --title "NinaOtel $tag" --notes "NinaOtel plugin build for NINA. The release includes the plugin archive and NINA catalog manifest."

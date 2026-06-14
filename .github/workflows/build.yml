@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
+      - renovate/**
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -16,10 +17,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2 # v5.3.0
         with:
           dotnet-version: 8.0.x
 
@@ -36,16 +37,15 @@ jobs:
         shell: pwsh
         run: |
           $output = "src/NinaOtel.Plugin/bin/Release/net8.0-windows"
-          $staging = "artifacts/NinaOtel.Plugin"
+          $zip = "artifacts/NinaOtel.Plugin.zip"
           New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
-          if (Test-Path $staging) {
-            Remove-Item -Recurse -Force $staging
+          if (Test-Path $zip) {
+            Remove-Item -Force $zip
           }
-          Copy-Item -Recurse $output $staging
-          Compress-Archive -Path $staging -DestinationPath "artifacts/NinaOtel.Plugin.zip" -Force
+          Compress-Archive -Path "$output/*" -DestinationPath $zip -Force
 
       - name: Upload plugin artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: NinaOtel.Plugin
           path: artifacts/NinaOtel.Plugin.zip

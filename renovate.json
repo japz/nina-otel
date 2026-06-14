@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "dependencyDashboard": true,
+  "enabledManagers": [
+    "github-actions",
+    "nuget"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "description": "Keep GitHub Actions grouped and SHA pinned.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github-actions",
+      "automerge": true,
+      "automergeType": "branch"
+    },
+    {
+      "description": "Allow low-risk NuGet patch/build updates to land only after CI passes.",
+      "matchManagers": [
+        "nuget"
+      ],
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "pin"
+      ],
+      "groupName": "nuget-patch-updates",
+      "automerge": true,
+      "automergeType": "branch"
+    },
+    {
+      "description": "Do not auto-apply wider NuGet updates while pull requests are disabled.",
+      "matchManagers": [
+        "nuget"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
+      "enabled": false
+    }
+  ]
+}
