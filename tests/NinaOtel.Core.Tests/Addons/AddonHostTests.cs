@@ -283,6 +283,53 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StartAsync_WhenShutdownAfterCallbackCommit_DoesNotSkipCommittedLifecycle()
+    {
+        var sink = new RecordingSink();
+        Task? scheduledStart = null;
+        var callbacksCommitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseMetadata = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var host = CreateHostWithStartSchedulers(
+            sink,
+            startWork =>
+            {
+                scheduledStart = Task.Run(startWork);
+                return scheduledStart;
+            },
+            static (lifecycleWork, cancellationToken) => Task.Run(lifecycleWork, cancellationToken),
+            async cancellationToken =>
+            {
+                callbacksCommitted.SetResult();
+                await releaseMetadata.Task.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken);
+            });
+        var addon = new CallbackCountingAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await callbacksCommitted.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
+
+        var stopDuringCommittedStart = host.StopAsync(CancellationToken.None);
+
+        releaseMetadata.SetResult();
+        if (scheduledStart is not null)
+        {
+            await scheduledStart.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+
+        await stopDuringCommittedStart.WaitAsync(TimeSpan.FromMilliseconds(250));
+        await WaitForHealthRecordAsync(sink, "callback-counting", "started");
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+
+        addon.MetadataCalls.Should().Be(1);
+        addon.ValidateCalls.Should().Be(1);
+        addon.StartCalls.Should().Be(1);
+        addon.StopCalls.Should().Be(1);
+        sink.Records.Any(record =>
+            record.Source == "addon.callback-counting" &&
+            record.Attributes.TryGetValue("status", out var status) &&
+            Equals(status, "start_timeout")).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task StartAsync_AfterStopAsyncDoesNotInvokeAddonStart()
     {
         var sink = new RecordingSink();
@@ -553,6 +600,17 @@ public sealed class AddonHostTests
         RecordingSink sink,
         Func<Func<Task>, Task> startWorkScheduler,
         Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler)
+        => CreateHostWithStartSchedulers(
+            sink,
+            startWorkScheduler,
+            startLifecycleScheduler,
+            static _ => Task.CompletedTask);
+
+    private static AddonHost CreateHostWithStartSchedulers(
+        RecordingSink sink,
+        Func<Func<Task>, Task> startWorkScheduler,
+        Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
+        Func<CancellationToken, Task> startCallbackCommitObserver)
     {
         var constructor = typeof(AddonHost).GetConstructor(
             BindingFlags.Instance | BindingFlags.NonPublic,
@@ -564,6 +622,7 @@ public sealed class AddonHostTests
                 typeof(TimeSpan),
                 typeof(Func<Func<Task>, Task>),
                 typeof(Func<Func<Task>, CancellationToken, Task>),
+                typeof(Func<CancellationToken, Task>),
             ],
             modifiers: null);
 
@@ -577,6 +636,7 @@ public sealed class AddonHostTests
             TimeSpan.FromSeconds(1),
             startWorkScheduler,
             startLifecycleScheduler,
+            startCallbackCommitObserver,
         ]);
     }
 
@@ -659,6 +719,7 @@ public sealed class AddonHostTests
         public int MetadataCalls { get; private set; }
         public int ValidateCalls { get; private set; }
         public int StartCalls { get; private set; }
+        public int StopCalls { get; private set; }
 
         public AddonMetadata Metadata
         {
@@ -681,7 +742,11 @@ public sealed class AddonHostTests
             return Task.CompletedTask;
         }
 
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            StopCalls++;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class BlockingValidationAddon(ManualResetEventSlim validationCanReturn)

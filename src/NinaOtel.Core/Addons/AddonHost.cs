@@ -12,6 +12,7 @@ public sealed class AddonHost
     private readonly TimeSpan stopTimeout;
     private readonly Func<Func<Task>, Task> startWorkScheduler;
     private readonly Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler;
+    private readonly Func<CancellationToken, Task> startCallbackCommitObserver;
     private readonly CancellationTokenSource shutdownCts = new();
     private readonly List<AddonRuntime> knownAddons = [];
     private bool shutdownRequested;
@@ -42,7 +43,8 @@ public sealed class AddonHost
             startTimeout,
             stopTimeout,
             startWorkScheduler,
-            static (startWork, cancellationToken) => Task.Run(startWork, cancellationToken))
+            static (startWork, cancellationToken) => Task.Run(startWork, cancellationToken),
+            static _ => Task.CompletedTask)
     {
     }
 
@@ -52,7 +54,8 @@ public sealed class AddonHost
         TimeSpan startTimeout,
         TimeSpan stopTimeout,
         Func<Func<Task>, Task> startWorkScheduler,
-        Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler)
+        Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
+        Func<CancellationToken, Task> startCallbackCommitObserver)
     {
         if (startTimeout <= TimeSpan.Zero)
         {
@@ -71,6 +74,8 @@ public sealed class AddonHost
         this.startWorkScheduler = startWorkScheduler ?? throw new ArgumentNullException(nameof(startWorkScheduler));
         this.startLifecycleScheduler =
             startLifecycleScheduler ?? throw new ArgumentNullException(nameof(startLifecycleScheduler));
+        this.startCallbackCommitObserver =
+            startCallbackCommitObserver ?? throw new ArgumentNullException(nameof(startCallbackCommitObserver));
     }
 
     public Task StartAsync(IEnumerable<ITelemetryAddon> addons, CancellationToken cancellationToken)
@@ -258,13 +263,12 @@ public sealed class AddonHost
             runtime.State = AddonRuntimeState.Starting;
         }
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
-        timeoutCts.CancelAfter(startTimeout);
+        using var timeoutCts = new CancellationTokenSource(startTimeout);
         var startTask = InvokeStartAsync(runtime, timeoutCts.Token);
 
         try
         {
-            var result = await startTask.WaitAsync(startTimeout, shutdownCts.Token);
+            var result = await startTask.WaitAsync(startTimeout);
             if (result.Status == StartLifecycleStatus.ValidationFailed)
             {
                 MarkStartSkipped(runtime);
@@ -280,7 +284,7 @@ public sealed class AddonHost
 
             lock (syncRoot)
             {
-                if (runtime.State != AddonRuntimeState.Starting || shutdownRequested)
+                if (runtime.State != AddonRuntimeState.Starting)
                 {
                     return;
                 }
@@ -320,9 +324,14 @@ public sealed class AddonHost
                     return null;
 
                 case AddonRuntimeState.Starting:
-                    if (!runtime.StartInvoked)
+                    if (!runtime.StartCallbacksCommitted)
                     {
                         runtime.State = AddonRuntimeState.StartSkipped;
+                        return null;
+                    }
+
+                    if (!runtime.StartInvoked)
+                    {
                         return null;
                     }
 
@@ -367,10 +376,12 @@ public sealed class AddonHost
         AddonRuntime runtime,
         CancellationToken cancellationToken)
     {
-        if (ShouldSkipStartBeforeAddonCallbacks(runtime, cancellationToken))
+        if (!TryCommitStartCallbacks(runtime, cancellationToken))
         {
             return StartLifecycleResult.Skipped;
         }
+
+        await startCallbackCommitObserver(cancellationToken).ConfigureAwait(false);
 
         var addon = runtime.Addon;
         var metadata = CaptureMetadata(addon);
@@ -389,7 +400,7 @@ public sealed class AddonHost
 
         lock (syncRoot)
         {
-            if (runtime.State != AddonRuntimeState.Starting || shutdownRequested || runtime.StartInvoked)
+            if (runtime.State != AddonRuntimeState.Starting || runtime.StartInvoked)
             {
                 return StartLifecycleResult.Skipped;
             }
@@ -402,18 +413,20 @@ public sealed class AddonHost
         return StartLifecycleResult.Started;
     }
 
-    private bool ShouldSkipStartBeforeAddonCallbacks(AddonRuntime runtime, CancellationToken cancellationToken)
+    private bool TryCommitStartCallbacks(AddonRuntime runtime, CancellationToken cancellationToken)
     {
-        if (cancellationToken.IsCancellationRequested)
-        {
-            return true;
-        }
-
         lock (syncRoot)
         {
-            return runtime.State != AddonRuntimeState.Starting ||
+            if (cancellationToken.IsCancellationRequested ||
+                runtime.State != AddonRuntimeState.Starting ||
                 shutdownRequested ||
-                runtime.StartInvoked;
+                runtime.StartCallbacksCommitted)
+            {
+                return false;
+            }
+
+            runtime.StartCallbacksCommitted = true;
+            return true;
         }
     }
 
@@ -562,6 +575,7 @@ public sealed class AddonHost
         public ITelemetryAddon Addon { get; } = addon;
         public int State = AddonRuntimeState.PendingStart;
         public AddonIdentity? Metadata;
+        public bool StartCallbacksCommitted;
         public bool StartInvoked;
         public Task? StopTask;
         public bool StopResultPublished;
