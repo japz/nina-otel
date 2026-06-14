@@ -11,6 +11,7 @@ public sealed class AddonHost
     private readonly TimeSpan startTimeout;
     private readonly TimeSpan stopTimeout;
     private readonly Func<Func<Task>, Task> startWorkScheduler;
+    private readonly Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler;
     private readonly CancellationTokenSource shutdownCts = new();
     private readonly List<AddonRuntime> knownAddons = [];
     private bool shutdownRequested;
@@ -35,6 +36,23 @@ public sealed class AddonHost
         TimeSpan startTimeout,
         TimeSpan stopTimeout,
         Func<Func<Task>, Task> startWorkScheduler)
+        : this(
+            sink,
+            timeProvider,
+            startTimeout,
+            stopTimeout,
+            startWorkScheduler,
+            static (startWork, cancellationToken) => Task.Run(startWork, cancellationToken))
+    {
+    }
+
+    private AddonHost(
+        ITelemetrySink sink,
+        TimeProvider timeProvider,
+        TimeSpan startTimeout,
+        TimeSpan stopTimeout,
+        Func<Func<Task>, Task> startWorkScheduler,
+        Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler)
     {
         if (startTimeout <= TimeSpan.Zero)
         {
@@ -51,6 +69,8 @@ public sealed class AddonHost
         this.startTimeout = startTimeout;
         this.stopTimeout = stopTimeout;
         this.startWorkScheduler = startWorkScheduler ?? throw new ArgumentNullException(nameof(startWorkScheduler));
+        this.startLifecycleScheduler =
+            startLifecycleScheduler ?? throw new ArgumentNullException(nameof(startLifecycleScheduler));
     }
 
     public Task StartAsync(IEnumerable<ITelemetryAddon> addons, CancellationToken cancellationToken)
@@ -97,8 +117,6 @@ public sealed class AddonHost
             {
                 continue;
             }
-
-            var addon = runtime.Addon;
 
             try
             {
@@ -327,37 +345,77 @@ public sealed class AddonHost
     }
 
     private Task<StartLifecycleResult> InvokeStartAsync(AddonRuntime runtime, CancellationToken cancellationToken)
-        => Task.Run(async () =>
+        => InvokeScheduledStartAsync(runtime, cancellationToken);
+
+    private async Task<StartLifecycleResult> InvokeScheduledStartAsync(
+        AddonRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        var result = StartLifecycleResult.Skipped;
+
+        await startLifecycleScheduler(
+            async () =>
+            {
+                result = await InvokeStartCoreAsync(runtime, cancellationToken).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return result;
+    }
+
+    private async Task<StartLifecycleResult> InvokeStartCoreAsync(
+        AddonRuntime runtime,
+        CancellationToken cancellationToken)
+    {
+        if (ShouldSkipStartBeforeAddonCallbacks(runtime, cancellationToken))
         {
-            var addon = runtime.Addon;
-            var metadata = CaptureMetadata(addon);
-            SetMetadataSnapshot(runtime, metadata);
-            cancellationToken.ThrowIfCancellationRequested();
+            return StartLifecycleResult.Skipped;
+        }
 
-            var validation = addon.Validate();
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!validation.IsValid)
+        var addon = runtime.Addon;
+        var metadata = CaptureMetadata(addon);
+        SetMetadataSnapshot(runtime, metadata);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var validation = addon.Validate();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!validation.IsValid)
+        {
+            var message = validation.Errors.Count == 0
+                ? "Add-on validation failed."
+                : string.Join("; ", validation.Errors);
+            return StartLifecycleResult.ValidationFailed(message);
+        }
+
+        lock (syncRoot)
+        {
+            if (runtime.State != AddonRuntimeState.Starting || shutdownRequested || runtime.StartInvoked)
             {
-                var message = validation.Errors.Count == 0
-                    ? "Add-on validation failed."
-                    : string.Join("; ", validation.Errors);
-                return StartLifecycleResult.ValidationFailed(message);
+                return StartLifecycleResult.Skipped;
             }
 
-            lock (syncRoot)
-            {
-                if (runtime.State != AddonRuntimeState.Starting || shutdownRequested)
-                {
-                    return StartLifecycleResult.Skipped;
-                }
+            runtime.StartInvoked = true;
+        }
 
-                runtime.StartInvoked = true;
-            }
+        var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
+        await addon.StartAsync(context, cancellationToken).ConfigureAwait(false);
+        return StartLifecycleResult.Started;
+    }
 
-            var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
-            await addon.StartAsync(context, cancellationToken).ConfigureAwait(false);
-            return StartLifecycleResult.Started;
-        });
+    private bool ShouldSkipStartBeforeAddonCallbacks(AddonRuntime runtime, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return true;
+        }
+
+        lock (syncRoot)
+        {
+            return runtime.State != AddonRuntimeState.Starting ||
+                shutdownRequested ||
+                runtime.StartInvoked;
+        }
+    }
 
     private Task InvokeStopAsync(ITelemetryAddon addon)
         => Task.Run(async () =>

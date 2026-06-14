@@ -234,6 +234,55 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StartAsync_WhenInnerLifecycleWorkRunsAfterShutdownDoesNotTouchAddonCallbacks()
+    {
+        var sink = new RecordingSink();
+        Task? scheduledStart = null;
+        var innerLifecycleQueued = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseInnerLifecycle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var innerLifecycleCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var host = CreateHostWithStartSchedulers(
+            sink,
+            startWork =>
+            {
+                scheduledStart = Task.Run(startWork);
+                return scheduledStart;
+            },
+            async (lifecycleWork, cancellationToken) =>
+            {
+                innerLifecycleQueued.SetResult();
+                await releaseInnerLifecycle.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+                try
+                {
+                    await lifecycleWork();
+                    innerLifecycleCompleted.SetResult();
+                }
+                catch (Exception ex)
+                {
+                    innerLifecycleCompleted.SetException(ex);
+                    throw;
+                }
+            });
+        var addon = new CallbackCountingAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await innerLifecycleQueued.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
+
+        await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+        releaseInnerLifecycle.SetResult();
+        await innerLifecycleCompleted.Task.WaitAsync(TimeSpan.FromMilliseconds(250));
+        if (scheduledStart is not null)
+        {
+            await scheduledStart.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+
+        addon.MetadataCalls.Should().Be(0);
+        addon.ValidateCalls.Should().Be(0);
+        addon.StartCalls.Should().Be(0);
+    }
+
+    [Fact]
     public async Task StartAsync_AfterStopAsyncDoesNotInvokeAddonStart()
     {
         var sink = new RecordingSink();
@@ -500,6 +549,37 @@ public sealed class AddonHostTests
         ]);
     }
 
+    private static AddonHost CreateHostWithStartSchedulers(
+        RecordingSink sink,
+        Func<Func<Task>, Task> startWorkScheduler,
+        Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler)
+    {
+        var constructor = typeof(AddonHost).GetConstructor(
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            [
+                typeof(ITelemetrySink),
+                typeof(TimeProvider),
+                typeof(TimeSpan),
+                typeof(TimeSpan),
+                typeof(Func<Func<Task>, Task>),
+                typeof(Func<Func<Task>, CancellationToken, Task>),
+            ],
+            modifiers: null);
+
+        constructor.Should().NotBeNull("inner lifecycle work needs deterministic scheduling in this regression test");
+
+        return (AddonHost)constructor!.Invoke(
+        [
+            sink,
+            TimeProvider.System,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(1),
+            startWorkScheduler,
+            startLifecycleScheduler,
+        ]);
+    }
+
     private sealed class RecordingSink : ITelemetrySink
     {
         private readonly object syncRoot = new();
@@ -573,6 +653,36 @@ public sealed class AddonHostTests
     }
 
     private sealed class RecordingLifecycleAddon() : TestAddon("queued-start", "Queued Start");
+
+    private sealed class CallbackCountingAddon : ITelemetryAddon
+    {
+        public int MetadataCalls { get; private set; }
+        public int ValidateCalls { get; private set; }
+        public int StartCalls { get; private set; }
+
+        public AddonMetadata Metadata
+        {
+            get
+            {
+                MetadataCalls++;
+                return new AddonMetadata("callback-counting", "Callback Counting", new Version(1, 0, 0), "test");
+            }
+        }
+
+        public AddonValidationResult Validate()
+        {
+            ValidateCalls++;
+            return AddonValidationResult.Success;
+        }
+
+        public Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            StartCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
 
     private sealed class BlockingValidationAddon(ManualResetEventSlim validationCanReturn)
         : TestAddon("blocking-validation", "Blocking Validation")
