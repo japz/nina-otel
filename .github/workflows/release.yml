@@ -105,4 +105,18 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $tag = $env:GITHUB_REF_NAME
-          gh release create $tag artifacts/NinaOtel.Plugin.zip artifacts/manifest.json --title "NinaOtel $tag" --notes "NinaOtel plugin build for NINA. The release includes the plugin archive and NINA catalog manifest."
+          $releaseArgs = @(
+            "release",
+            "create",
+            $tag,
+            "artifacts/NinaOtel.Plugin.zip",
+            "artifacts/manifest.json",
+            "--title",
+            "NinaOtel $tag",
+            "--notes",
+            "NinaOtel plugin build for NINA. This alpha release is intended for manual install/load testing and includes the plugin archive and NINA catalog manifest."
+          )
+          if ($tag -match "-(alpha|beta|rc)(\.|$)") {
+            $releaseArgs += "--prerelease"
+          }
+          gh @releaseArgs
