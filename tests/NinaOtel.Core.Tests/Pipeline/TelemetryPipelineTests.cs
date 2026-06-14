@@ -9,6 +9,15 @@ namespace NinaOtel.Core.Tests.Pipeline;
 public sealed class TelemetryPipelineTests
 {
     [Fact]
+    public void Constructor_RejectsNullExporter()
+    {
+        Action construct = () => new TelemetryPipeline(null!, capacity: 10);
+
+        construct.Should().Throw<ArgumentNullException>()
+            .WithParameterName("exporter");
+    }
+
+    [Fact]
     public async Task TryPublish_DoesNotBlockWhenQueueIsFull()
     {
         var exporter = new RecordingExporter();
@@ -129,6 +138,29 @@ public sealed class TelemetryPipelineTests
         finally
         {
             exporter.UnblockCancellationCallback();
+        }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_RequestsCancellationBeforeReturningAfterDrainTimeout()
+    {
+        var exporter = new CancellationObservingExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "blocked", TelemetryPriority.Routine);
+
+        try
+        {
+            await pipeline.StartAsync(CancellationToken.None);
+            pipeline.TryPublish(record).Should().BeTrue();
+            await exporter.WaitForExportStartedAsync(TimeSpan.FromSeconds(2));
+
+            await pipeline.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+
+            exporter.HasObservedCancellation.Should().BeTrue();
+        }
+        finally
+        {
+            exporter.ReleaseExport();
         }
     }
 
@@ -338,6 +370,37 @@ public sealed class TelemetryPipelineTests
         public void UnblockCancellationCallback()
         {
             cancellationCallbackCanReturn.Set();
+        }
+
+        public async Task WaitForExportStartedAsync(TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await exportStarted.Task.WaitAsync(cts.Token);
+        }
+    }
+
+    private sealed class CancellationObservingExporter : ITelemetryExporter
+    {
+        private readonly TaskCompletionSource cancellationObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource exportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool HasObservedCancellation => cancellationObserved.Task.IsCompleted;
+
+        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            using var registration = cancellationToken.UnsafeRegister(static state =>
+            {
+                ((TaskCompletionSource)state!).TrySetResult();
+            }, cancellationObserved);
+
+            exportStarted.TrySetResult();
+            await releaseExport.Task;
+        }
+
+        public void ReleaseExport()
+        {
+            releaseExport.TrySetResult();
         }
 
         public async Task WaitForExportStartedAsync(TimeSpan timeout)

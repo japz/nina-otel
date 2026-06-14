@@ -24,7 +24,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(capacity), "Capacity must be positive.");
         }
 
-        this.exporter = exporter;
+        this.exporter = exporter ?? throw new ArgumentNullException(nameof(exporter));
         channel = Channel.CreateBounded<TelemetryRecord>(new BoundedChannelOptions(capacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
@@ -83,7 +83,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
             }
             catch (TimeoutException)
             {
-                CancelWithoutWaiting();
+                RequestCancellationWithoutWaiting();
                 DropInFlightRecords();
                 DropReadableRecords();
                 // The worker may still observe this token after a drain timeout.
@@ -128,16 +128,27 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         }
     }
 
-    private void CancelWithoutWaiting()
+    private void RequestCancellationWithoutWaiting()
     {
-        _ = Task.Run(CancelWithoutThrowingAsync);
+        Task cancellationTask;
+
+        try
+        {
+            cancellationTask = stopCts.CancelAsync();
+        }
+        catch
+        {
+            return;
+        }
+
+        _ = ObserveCancellationWithoutThrowingAsync(cancellationTask);
     }
 
-    private async Task CancelWithoutThrowingAsync()
+    private static async Task ObserveCancellationWithoutThrowingAsync(Task cancellationTask)
     {
         try
         {
-            await stopCts.CancelAsync();
+            await cancellationTask.ConfigureAwait(false);
         }
         catch
         {
