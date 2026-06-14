@@ -13,6 +13,7 @@ public sealed class AddonHost
     private readonly Func<Func<Task>, Task> startWorkScheduler;
     private readonly CancellationTokenSource shutdownCts = new();
     private readonly List<AddonRuntime> knownAddons = [];
+    private bool shutdownRequested;
 
     public AddonHost(
         ITelemetrySink sink,
@@ -70,6 +71,11 @@ public sealed class AddonHost
 
             lock (syncRoot)
             {
+                if (shutdownRequested)
+                {
+                    continue;
+                }
+
                 knownAddons.Add(runtime);
             }
 
@@ -81,32 +87,32 @@ public sealed class AddonHost
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        RequestShutdownCancellationWithoutWaiting();
-
         AddonRuntime[] addons;
         lock (syncRoot)
         {
+            shutdownRequested = true;
             addons = knownAddons.ToArray();
         }
 
+        RequestShutdownCancellationWithoutWaiting();
+
         foreach (var runtime in addons)
         {
-            if (!TryBeginStop(runtime))
+            var stopTask = GetOrStartStopTask(runtime);
+            if (stopTask is null)
             {
                 continue;
             }
 
             var addon = runtime.Addon;
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(stopTimeout);
-            Task? stopTask = null;
 
             try
             {
-                stopTask = addon.StopAsync(timeoutCts.Token);
                 await stopTask.WaitAsync(stopTimeout, cancellationToken);
-                MarkStopped(runtime);
-                PublishHealth(addon, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
+                if (TryPublishStopResult(runtime))
+                {
+                    PublishHealth(addon, "stopped", "Add-on stopped.", TelemetryPriority.Routine);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -116,19 +122,25 @@ public sealed class AddonHost
             catch (TimeoutException)
             {
                 ObserveLateFault(stopTask, addon, "stop_error");
-                MarkStopped(runtime);
-                PublishHealth(addon, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
+                if (TryPublishStopResult(runtime))
+                {
+                    PublishHealth(addon, "stop_timeout", "Add-on stop timed out.", TelemetryPriority.Important);
+                }
             }
             catch (OperationCanceledException)
             {
                 ObserveLateFault(stopTask, addon, "stop_error");
-                MarkStopped(runtime);
-                PublishHealth(addon, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
+                if (TryPublishStopResult(runtime))
+                {
+                    PublishHealth(addon, "stop_timeout", "Add-on stop was canceled.", TelemetryPriority.Important);
+                }
             }
             catch (Exception ex)
             {
-                MarkStopped(runtime);
-                PublishHealth(addon, "stop_error", ex.Message, TelemetryPriority.Important);
+                if (TryPublishStopResult(runtime))
+                {
+                    PublishHealth(addon, "stop_error", ex.Message, TelemetryPriority.Important);
+                }
             }
         }
     }
@@ -162,32 +174,46 @@ public sealed class AddonHost
 
     private async Task StartOneAsync(AddonRuntime runtime)
     {
-        if (Interlocked.CompareExchange(
-                ref runtime.State,
-                AddonRuntimeState.Starting,
-                AddonRuntimeState.PendingStart) != AddonRuntimeState.PendingStart)
+        lock (syncRoot)
         {
-            return;
+            if (shutdownRequested)
+            {
+                if (runtime.State == AddonRuntimeState.PendingStart)
+                {
+                    runtime.State = AddonRuntimeState.StartSkipped;
+                }
+
+                return;
+            }
+
+            if (runtime.State != AddonRuntimeState.PendingStart)
+            {
+                return;
+            }
+
+            runtime.State = AddonRuntimeState.Starting;
         }
 
         var addon = runtime.Addon;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
         timeoutCts.CancelAfter(startTimeout);
-        Task? startTask = null;
+        var startTask = InvokeStartAsync(addon, timeoutCts.Token);
 
         try
         {
-            var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
-            startTask = addon.StartAsync(context, timeoutCts.Token);
             await startTask.WaitAsync(startTimeout, shutdownCts.Token);
 
-            if (Interlocked.CompareExchange(
-                    ref runtime.State,
-                    AddonRuntimeState.Started,
-                    AddonRuntimeState.Starting) == AddonRuntimeState.Starting)
+            lock (syncRoot)
             {
-                PublishHealth(addon, "started", "Add-on started.", TelemetryPriority.Routine);
+                if (runtime.State != AddonRuntimeState.Starting || shutdownRequested)
+                {
+                    return;
+                }
+
+                runtime.State = AddonRuntimeState.Started;
             }
+
+            PublishHealth(addon, "started", "Add-on started.", TelemetryPriority.Routine);
         }
         catch (TimeoutException)
         {
@@ -205,44 +231,59 @@ public sealed class AddonHost
         }
     }
 
-    private static bool TryBeginStop(AddonRuntime runtime)
+    private Task? GetOrStartStopTask(AddonRuntime runtime)
     {
-        while (true)
+        lock (syncRoot)
         {
-            var state = Volatile.Read(ref runtime.State);
-            switch (state)
+            switch (runtime.State)
             {
                 case AddonRuntimeState.PendingStart:
-                    if (Interlocked.CompareExchange(
-                            ref runtime.State,
-                            AddonRuntimeState.StartSkipped,
-                            AddonRuntimeState.PendingStart) == AddonRuntimeState.PendingStart)
-                    {
-                        return false;
-                    }
-
-                    break;
+                    runtime.State = AddonRuntimeState.StartSkipped;
+                    return null;
 
                 case AddonRuntimeState.Starting:
                 case AddonRuntimeState.Started:
-                    if (Interlocked.CompareExchange(
-                            ref runtime.State,
-                            AddonRuntimeState.Stopping,
-                            state) == state)
-                    {
-                        return true;
-                    }
+                    runtime.State = AddonRuntimeState.Stopping;
+                    runtime.StopTask ??= InvokeStopAsync(runtime.Addon);
+                    return runtime.StopTask;
 
-                    break;
+                case AddonRuntimeState.Stopping:
+                    return runtime.StopTask;
 
                 default:
-                    return false;
+                    return null;
             }
         }
     }
 
-    private static void MarkStopped(AddonRuntime runtime)
-        => Volatile.Write(ref runtime.State, AddonRuntimeState.Stopped);
+    private Task InvokeStartAsync(ITelemetryAddon addon, CancellationToken cancellationToken)
+        => Task.Run(async () =>
+        {
+            var context = new AddonContext(sink, timeProvider, shutdownCts.Token);
+            await addon.StartAsync(context, cancellationToken).ConfigureAwait(false);
+        });
+
+    private Task InvokeStopAsync(ITelemetryAddon addon)
+        => Task.Run(async () =>
+        {
+            using var timeoutCts = new CancellationTokenSource(stopTimeout);
+            await addon.StopAsync(timeoutCts.Token).ConfigureAwait(false);
+        });
+
+    private bool TryPublishStopResult(AddonRuntime runtime)
+    {
+        lock (syncRoot)
+        {
+            if (runtime.StopResultPublished)
+            {
+                return false;
+            }
+
+            runtime.StopResultPublished = true;
+            runtime.State = AddonRuntimeState.Stopped;
+            return true;
+        }
+    }
 
     private bool TryValidate(ITelemetryAddon addon, out string message)
     {
@@ -331,6 +372,8 @@ public sealed class AddonHost
     {
         public ITelemetryAddon Addon { get; } = addon;
         public int State = AddonRuntimeState.PendingStart;
+        public Task? StopTask;
+        public bool StopResultPublished;
     }
 
     private static class AddonRuntimeState

@@ -29,6 +29,29 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StartAsync_WhenAddonBlocksBeforeReturningTask_ReportsStartTimeout()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        using var startCanReturn = new ManualResetEventSlim(false);
+        var addon = new SynchronouslyBlockingStartAddon(startCanReturn);
+
+        try
+        {
+            await host.StartAsync([addon], CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
+
+            var record = await WaitForHealthRecordAsync(sink, "sync-blocking-start", "start_timeout");
+
+            record.Priority.Should().Be(TelemetryPriority.Important);
+            addon.StartCalls.Should().Be(1);
+        }
+        finally
+        {
+            startCanReturn.Set();
+        }
+    }
+
+    [Fact]
     public async Task StopAsync_ReportsStopTimeoutAndReturns()
     {
         var sink = new RecordingSink();
@@ -41,6 +64,36 @@ public sealed class AddonHostTests
         await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
 
         sink.Records.ContainHealth("hanging-stop", "stop_timeout");
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenAddonBlocksBeforeReturningTask_ReportsStopTimeoutAndReturns()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        using var stopCanReturn = new ManualResetEventSlim(false);
+        var addon = new SynchronouslyBlockingStopAddon(stopCanReturn);
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "sync-blocking-stop", "started");
+
+        var stopTask = Task.Run(() => host.StopAsync(CancellationToken.None));
+
+        try
+        {
+            await stopTask.WaitAsync(TimeSpan.FromMilliseconds(250));
+
+            sink.Records.ContainHealth("sync-blocking-stop", "stop_timeout");
+            addon.StopCalls.Should().Be(1);
+        }
+        finally
+        {
+            stopCanReturn.Set();
+            if (!stopTask.IsCompleted)
+            {
+                await stopTask.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+        }
     }
 
     [Fact]
@@ -93,6 +146,21 @@ public sealed class AddonHostTests
             record.Source == "addon.queued-start" &&
             record.Attributes.TryGetValue("status", out var status) &&
             (Equals(status, "started") || Equals(status, "stopped"))).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task StartAsync_AfterStopAsyncDoesNotInvokeAddonStart()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        var addon = new RecordingLifecycleAddon();
+
+        await host.StopAsync(CancellationToken.None);
+        await host.StartAsync([addon], CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        addon.StartCalls.Should().Be(0);
+        addon.StopCalls.Should().Be(0);
     }
 
     [Fact]
@@ -192,6 +260,48 @@ public sealed class AddonHostTests
             record.Source == "addon.hanging-stop" &&
             record.Attributes.TryGetValue("status", out var status) &&
             Equals(status, "stop_timeout")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task StopAsync_AfterCallerCancellationRetriesExistingStopInvocation()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        var addon = new ControllableStopAddon();
+        using var callerCts = new CancellationTokenSource();
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "controllable-stop", "started");
+
+        var firstStop = host.StopAsync(callerCts.Token);
+        await addon.WaitForStopInvocationAsync();
+        await callerCts.CancelAsync();
+        await firstStop.Invoking(stop => stop.WaitAsync(TimeSpan.FromMilliseconds(250)))
+            .Should()
+            .ThrowAsync<OperationCanceledException>();
+
+        Task? secondStop = null;
+        try
+        {
+            secondStop = host.StopAsync(CancellationToken.None);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            secondStop.IsCompleted.Should().BeFalse("the retry should wait for the in-flight stop instead of skipping it");
+
+            addon.CompleteStop();
+            await secondStop.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+        finally
+        {
+            addon.CompleteStop();
+            if (secondStop is not null && !secondStop.IsCompleted)
+            {
+                await secondStop.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+        }
+
+        addon.StopCalls.Should().Be(1);
+        sink.Records.ContainHealth("controllable-stop", "stopped");
     }
 
     [Fact]
@@ -378,6 +488,35 @@ public sealed class AddonHostTests
 
     private sealed class RecordingLifecycleAddon() : TestAddon("queued-start", "Queued Start");
 
+    private sealed class SynchronouslyBlockingStartAddon(ManualResetEventSlim startCanReturn) : ITelemetryAddon
+    {
+        public AddonMetadata Metadata { get; } =
+            new("sync-blocking-start", "Synchronous Blocking Start", new Version(1, 0, 0), "test");
+
+        public int StartCalls { get; private set; }
+
+        public AddonValidationResult Validate() => AddonValidationResult.Success;
+
+        public Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            StartCalls++;
+            startCanReturn.Wait();
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class SynchronouslyBlockingStopAddon(ManualResetEventSlim stopCanReturn)
+        : TestAddon("sync-blocking-stop", "Synchronous Blocking Stop")
+    {
+        protected override Task StopCoreAsync(CancellationToken cancellationToken)
+        {
+            stopCanReturn.Wait();
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class BlockingShutdownCallbackAddon(ManualResetEventSlim callbackCanReturn)
         : TestAddon("blocking-shutdown-callback", "Blocking Shutdown Callback")
     {
@@ -442,6 +581,25 @@ public sealed class AddonHostTests
 
         protected override Task StopCoreAsync(CancellationToken cancellationToken)
             => Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
+    }
+
+    private sealed class ControllableStopAddon() : TestAddon("controllable-stop", "Controllable Stop")
+    {
+        private readonly TaskCompletionSource stopInvoked =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource stopCompletion =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WaitForStopInvocationAsync() => stopInvoked.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        public void CompleteStop() => stopCompletion.TrySetResult();
+
+        protected override Task StopCoreAsync(CancellationToken cancellationToken)
+        {
+            stopInvoked.TrySetResult();
+            return stopCompletion.Task;
+        }
     }
 }
 
