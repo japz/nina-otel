@@ -1,0 +1,52 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Windows build
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore NinaOtel.sln
+
+      - name: Build
+        run: dotnet build NinaOtel.sln --configuration Release --no-restore -p:ContinuousIntegrationBuild=true
+
+      - name: Test
+        run: dotnet test NinaOtel.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
+
+      - name: Package plugin
+        shell: pwsh
+        run: |
+          $output = "src/NinaOtel.Plugin/bin/Release/net8.0-windows"
+          $staging = "artifacts/NinaOtel.Plugin"
+          New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
+          if (Test-Path $staging) {
+            Remove-Item -Recurse -Force $staging
+          }
+          Copy-Item -Recurse $output $staging
+          Compress-Archive -Path $staging -DestinationPath "artifacts/NinaOtel.Plugin.zip" -Force
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinaOtel.Plugin
+          path: artifacts/NinaOtel.Plugin.zip
+          if-no-files-found: error
