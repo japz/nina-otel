@@ -62,7 +62,7 @@ public sealed class AddonHost
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        await shutdownCts.CancelAsync();
+        RequestShutdownCancellationWithoutWaiting();
 
         ITelemetryAddon[] addons;
         lock (syncRoot)
@@ -101,6 +101,33 @@ public sealed class AddonHost
             {
                 PublishHealth(addon, "stop_error", ex.Message, TelemetryPriority.Important);
             }
+        }
+    }
+
+    private void RequestShutdownCancellationWithoutWaiting()
+    {
+        Task cancellationTask;
+
+        try
+        {
+            cancellationTask = shutdownCts.CancelAsync();
+        }
+        catch
+        {
+            return;
+        }
+
+        _ = ObserveCancellationWithoutThrowingAsync(cancellationTask);
+    }
+
+    private static async Task ObserveCancellationWithoutThrowingAsync(Task cancellationTask)
+    {
+        try
+        {
+            await cancellationTask.ConfigureAwait(false);
+        }
+        catch
+        {
         }
     }
 

@@ -43,6 +43,32 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StopAsync_DoesNotWaitForBlockingShutdownTokenCallback()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        using var callbackCanReturn = new ManualResetEventSlim(false);
+        var addon = new BlockingShutdownCallbackAddon(callbackCanReturn);
+
+        await host.StartAsync([addon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "blocking-shutdown-callback", "started");
+
+        var stopTask = host.StopAsync(CancellationToken.None);
+
+        try
+        {
+            await stopTask.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+        finally
+        {
+            callbackCanReturn.Set();
+            await stopTask.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+
+        sink.Records.ContainHealth("blocking-shutdown-callback", "stopped");
+    }
+
+    [Fact]
     public async Task StartAsync_InvalidAddonReportsValidationFailureAndDoesNotStart()
     {
         var sink = new RecordingSink();
@@ -171,7 +197,7 @@ public sealed class AddonHostTests
         await host.StartAsync([addon], CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
         await host.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromMilliseconds(250));
 
-        sink.Records.ContainHealth("ignores-cancellation", "start_timeout");
+        await WaitForHealthRecordAsync(sink, "ignores-cancellation", "start_timeout");
         sink.Records.ContainHealth("ignores-cancellation", "stop_timeout");
     }
 
@@ -267,6 +293,21 @@ public sealed class AddonHostTests
     {
         public override Task StopAsync(CancellationToken cancellationToken)
             => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
+
+    private sealed class BlockingShutdownCallbackAddon(ManualResetEventSlim callbackCanReturn)
+        : TestAddon("blocking-shutdown-callback", "Blocking Shutdown Callback")
+    {
+        protected override Task StartCoreAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            context.ShutdownToken.Register(static state =>
+            {
+                var block = (ManualResetEventSlim)state!;
+                block.Wait();
+            }, callbackCanReturn);
+
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class InvalidAddon() : TestAddon("invalid", "Invalid Addon")
