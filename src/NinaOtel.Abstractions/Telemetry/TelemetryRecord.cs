@@ -1,3 +1,5 @@
+using System.Collections.ObjectModel;
+
 namespace NinaOtel.Abstractions.Telemetry;
 
 public enum TelemetrySignal
@@ -48,6 +50,15 @@ public sealed record TelemetryRecord(
     string? SpanId = null,
     string? ParentSpanId = null)
 {
+    private readonly IReadOnlyDictionary<string, object?> _attributes =
+        SnapshotAttributes(Attributes);
+
+    public IReadOnlyDictionary<string, object?> Attributes
+    {
+        get => _attributes;
+        init => _attributes = SnapshotAttributes(value);
+    }
+
     public static TelemetryRecord Metric(
         DateTimeOffset timestamp,
         string source,
@@ -116,5 +127,17 @@ public sealed record TelemetryRecord(
             ParentSpanId: parentSpanId);
 
     private static readonly IReadOnlyDictionary<string, object?> EmptyAttributes =
-        new Dictionary<string, object?>();
+        new ReadOnlyDictionary<string, object?>(new Dictionary<string, object?>());
+
+    private static IReadOnlyDictionary<string, object?> SnapshotAttributes(
+        IReadOnlyDictionary<string, object?>? attributes)
+    {
+        if (attributes is null || attributes.Count == 0)
+        {
+            return EmptyAttributes;
+        }
+
+        return new ReadOnlyDictionary<string, object?>(
+            new Dictionary<string, object?>(attributes));
+    }
 }
