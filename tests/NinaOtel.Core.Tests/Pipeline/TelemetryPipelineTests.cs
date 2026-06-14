@@ -83,6 +83,54 @@ public sealed class TelemetryPipelineTests
     }
 
     [Fact]
+    public async Task DisposeAsync_ReturnsAfterDrainTimeoutEvenWhenCancellationCallbackBlocks()
+    {
+        var exporter = new BlockingCancellationCallbackExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "blocked", TelemetryPriority.Routine);
+
+        try
+        {
+            await pipeline.StartAsync(CancellationToken.None);
+            pipeline.TryPublish(record).Should().BeTrue();
+            await exporter.WaitForExportStartedAsync(TimeSpan.FromSeconds(2));
+
+            await pipeline.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally
+        {
+            exporter.UnblockCancellationCallback();
+        }
+    }
+
+    [Fact]
+    public async Task DisposeAsync_CountsDroppedRecordsWhenDrainTimeoutCancelsInFlightAndQueuedRecords()
+    {
+        var exporter = new BlockingFirstExportExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Routine);
+        var second = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "second", TelemetryPriority.Routine);
+        var acceptedRecords = 0;
+
+        await pipeline.StartAsync(CancellationToken.None);
+        pipeline.TryPublish(first).Should().BeTrue();
+        acceptedRecords++;
+
+        await exporter.WaitForFirstExportStartedAsync(TimeSpan.FromSeconds(2));
+
+        pipeline.TryPublish(second).Should().BeTrue();
+        acceptedRecords++;
+
+        await pipeline.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+        await WaitUntilAsync(
+            () => pipeline.DroppedRecords >= acceptedRecords - exporter.Records.Count,
+            TimeSpan.FromSeconds(2));
+
+        exporter.Records.Should().BeEmpty();
+        pipeline.DroppedRecords.Should().BeGreaterThanOrEqualTo(acceptedRecords);
+    }
+
+    [Fact]
     public async Task StartAsync_IsIdempotentForConcurrentCalls()
     {
         var exporter = new RecordingExporter();
@@ -223,6 +271,34 @@ public sealed class TelemetryPipelineTests
         public Task WaitForCountAsync(int count, TimeSpan timeout)
         {
             return inner.WaitForCountAsync(count, timeout);
+        }
+    }
+
+    private sealed class BlockingCancellationCallbackExporter : ITelemetryExporter
+    {
+        private readonly ManualResetEventSlim cancellationCallbackCanReturn = new();
+        private readonly TaskCompletionSource exportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            using var registration = cancellationToken.UnsafeRegister(static state =>
+            {
+                ((ManualResetEventSlim)state!).Wait();
+            }, cancellationCallbackCanReturn);
+
+            exportStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan);
+        }
+
+        public void UnblockCancellationCallback()
+        {
+            cancellationCallbackCanReturn.Set();
+        }
+
+        public async Task WaitForExportStartedAsync(TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await exportStarted.Task.WaitAsync(cts.Token);
         }
     }
 

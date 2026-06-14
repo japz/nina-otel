@@ -27,7 +27,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         channel = Channel.CreateBounded<TelemetryRecord>(new BoundedChannelOptions(capacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
+            SingleReader = false,
             SingleWriter = false,
         });
     }
@@ -76,7 +76,8 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
             }
             catch (TimeoutException)
             {
-                await CancelWithoutThrowingAsync();
+                CancelWithoutWaiting();
+                DropReadableRecords();
                 // The worker may still observe this token after a drain timeout.
                 return;
             }
@@ -115,6 +116,11 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         }
     }
 
+    private void CancelWithoutWaiting()
+    {
+        _ = Task.Run(CancelWithoutThrowingAsync);
+    }
+
     private async Task CancelWithoutThrowingAsync()
     {
         try
@@ -123,6 +129,21 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         }
         catch
         {
+        }
+    }
+
+    private void DropReadableRecords()
+    {
+        var count = 0;
+
+        while (channel.Reader.TryRead(out _))
+        {
+            count++;
+        }
+
+        if (count > 0)
+        {
+            Interlocked.Add(ref droppedRecords, count);
         }
     }
 
@@ -163,6 +184,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            Interlocked.Add(ref droppedRecords, batch.Count);
             return false;
         }
         catch (Exception)
