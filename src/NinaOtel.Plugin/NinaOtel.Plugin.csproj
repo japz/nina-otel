@@ -5,6 +5,7 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <UseWPF Condition="'$(OS)' == 'Windows_NT'">true</UseWPF>
     <ImportWindowsDesktopTargets Condition="'$(OS)' == 'Windows_NT'">true</ImportWindowsDesktopTargets>
+    <DefineConstants Condition="'$(OS)' == 'Windows_NT'">$(DefineConstants);NINAOTEL_WPF</DefineConstants>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <RootNamespace>NinaOtel.Plugin</RootNamespace>
