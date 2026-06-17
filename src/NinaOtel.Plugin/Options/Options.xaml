@@ -6,6 +6,23 @@
     <DataTemplate x:Key="NinaOtel_Options">
         <StackPanel Orientation="Vertical" Margin="8">
             <TextBlock Text="NinaOtel" FontWeight="Bold" FontSize="16" />
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0" VerticalAlignment="Center">
+                <Ellipse
+                    Width="10"
+                    Height="10"
+                    Fill="{Binding NinaOtelOptionsViewModel.CollectorHealthBrush}"
+                    Margin="0,0,6,0"
+                    VerticalAlignment="Center" />
+                <TextBlock
+                    Text="{Binding NinaOtelOptionsViewModel.CollectorHealthSummary}"
+                    VerticalAlignment="Center" />
+            </StackPanel>
+            <TextBlock
+                Text="{Binding NinaOtelOptionsViewModel.CollectorHealthDebugInfo}"
+                Margin="16,2,0,0"
+                Foreground="#666666"
+                FontSize="11"
+                TextWrapping="Wrap" />
             <TextBlock Text="{Binding NinaOtelOptionsViewModel.Status}" Margin="0,8,0,0" />
             <Grid Margin="0,8,0,0">
                 <Grid.ColumnDefinitions>

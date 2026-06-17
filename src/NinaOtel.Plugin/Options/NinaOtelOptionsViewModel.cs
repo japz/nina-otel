@@ -1,3 +1,4 @@
+using NinaOtel.Core.Health;
 using NinaOtel.Core.Options;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -12,11 +13,14 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
     private readonly INinaOtelSettingsStore settingsStore;
     private readonly NinaOtelOptions defaults = NinaOtelOptions.CreateDefault();
+    private readonly SynchronizationContext? synchronizationContext = SynchronizationContext.Current;
     private string collectorEndpoint = string.Empty;
     private string appliedCollectorEndpoint = string.Empty;
     private OtlpProtocol collectorProtocol;
     private bool diskOnFailureEnabled;
     private string status = "NinaOtel foundation loaded";
+    private CollectorHealthState collectorHealthState = CollectorHealthState.Unknown;
+    private CollectorHealthSnapshot? collectorHealthSnapshot;
 
     public NinaOtelOptionsViewModel(INinaOtelSettingsStore settingsStore)
     {
@@ -29,6 +33,31 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     public IReadOnlyList<OtlpProtocol> AvailableProtocols { get; } = Enum.GetValues<OtlpProtocol>();
 
     public NinaOtelOptions Options => CreateOptions();
+
+    public CollectorHealthState CollectorHealthState => collectorHealthState;
+
+    public string CollectorHealthBrush => collectorHealthState switch
+    {
+        CollectorHealthState.Healthy => "#2E7D32",
+        CollectorHealthState.Unhealthy => "#C62828",
+        _ => "#808080",
+    };
+
+    public string CollectorHealthSummary => collectorHealthState switch
+    {
+        CollectorHealthState.Healthy => "Collector connected",
+        CollectorHealthState.Unhealthy => "Collector export failed",
+        _ => "Collector not checked yet",
+    };
+
+    public string CollectorHealthDebugInfo => collectorHealthSnapshot is null
+        ? string.Empty
+        : collectorHealthSnapshot.State switch
+        {
+            CollectorHealthState.Healthy => FormatHealthyDebugInfo(collectorHealthSnapshot),
+            CollectorHealthState.Unhealthy => FormatUnhealthyDebugInfo(collectorHealthSnapshot),
+            _ => string.Empty,
+        };
 
     public string CollectorEndpoint
     {
@@ -89,6 +118,31 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     {
         LoadFromSettings();
         Status = "Settings loaded";
+    }
+
+    public void UpdateCollectorHealth(CollectorHealthSnapshot snapshot)
+    {
+        try
+        {
+            var context = synchronizationContext;
+            if (context is not null && context != SynchronizationContext.Current)
+            {
+                context.Post(
+                    static state =>
+                    {
+                        var update = (CollectorHealthUpdate)state!;
+                        update.ViewModel.ApplyCollectorHealthSafely(update.Snapshot);
+                    },
+                    new CollectorHealthUpdate(this, snapshot));
+                return;
+            }
+
+            ApplyCollectorHealthSafely(snapshot);
+        }
+        catch
+        {
+            // Health updates originate from exporter background work and must not break export.
+        }
     }
 
     private void LoadFromSettings()
@@ -163,6 +217,27 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         return true;
     }
 
+    private void ApplyCollectorHealthSafely(CollectorHealthSnapshot snapshot)
+    {
+        try
+        {
+            collectorHealthSnapshot = snapshot;
+            if (collectorHealthState != snapshot.State)
+            {
+                collectorHealthState = snapshot.State;
+                RaisePropertyChanged(nameof(CollectorHealthState));
+            }
+
+            RaisePropertyChanged(nameof(CollectorHealthBrush));
+            RaisePropertyChanged(nameof(CollectorHealthSummary));
+            RaisePropertyChanged(nameof(CollectorHealthDebugInfo));
+        }
+        catch
+        {
+            // PropertyChanged subscribers are UI-owned; health reporting should never throw outward.
+        }
+    }
+
     private void RaisePropertyChanged([CallerMemberName] string propertyName = "") =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 
@@ -175,4 +250,14 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
         return null;
     }
+
+    private static string FormatHealthyDebugInfo(CollectorHealthSnapshot snapshot) =>
+        $"Endpoint: {snapshot.Endpoint}; Protocol: {snapshot.Protocol}; Exported: {snapshot.ExportedRecords} record(s); Checked: {snapshot.CheckedAt:O}";
+
+    private static string FormatUnhealthyDebugInfo(CollectorHealthSnapshot snapshot) =>
+        $"Endpoint: {snapshot.Endpoint}; Protocol: {snapshot.Protocol}; Failure: {snapshot.ErrorType}: {snapshot.ErrorMessage}; Checked: {snapshot.CheckedAt:O}";
+
+    private sealed record CollectorHealthUpdate(
+        NinaOtelOptionsViewModel ViewModel,
+        CollectorHealthSnapshot Snapshot);
 }

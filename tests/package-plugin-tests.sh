@@ -46,6 +46,24 @@ touch \
   "$build_output/NinaOtel.Abstractions.dll" \
   "$build_output/NINA.Core.dll" \
   "$build_output/NINA.Plugin.dll" \
+  "$build_output/OpenTelemetry.dll" \
+  "$build_output/OpenTelemetry.Api.dll" \
+  "$build_output/OpenTelemetry.Api.ProviderBuilderExtensions.dll" \
+  "$build_output/OpenTelemetry.Exporter.OpenTelemetryProtocol.dll" \
+  "$build_output/Microsoft.Extensions.Configuration.dll" \
+  "$build_output/Microsoft.Extensions.Configuration.Abstractions.dll" \
+  "$build_output/Microsoft.Extensions.Configuration.Binder.dll" \
+  "$build_output/Microsoft.Extensions.DependencyInjection.dll" \
+  "$build_output/Microsoft.Extensions.DependencyInjection.Abstractions.dll" \
+  "$build_output/Microsoft.Extensions.Diagnostics.Abstractions.dll" \
+  "$build_output/Microsoft.Extensions.Logging.dll" \
+  "$build_output/Microsoft.Extensions.Logging.Abstractions.dll" \
+  "$build_output/Microsoft.Extensions.Logging.Configuration.dll" \
+  "$build_output/Microsoft.Extensions.Options.dll" \
+  "$build_output/Microsoft.Extensions.Options.ConfigurationExtensions.dll" \
+  "$build_output/Microsoft.Extensions.Primitives.dll" \
+  "$build_output/Microsoft.Bcl.AsyncInterfaces.dll" \
+  "$build_output/System.Diagnostics.DiagnosticSource.dll" \
   "$build_output/Google.Protobuf.dll" \
   "$build_output/en-US/NINA.Core.resources.dll" \
   "$build_output/runtimes/win-x64/native/SQLite.Interop.dll"
@@ -54,12 +72,30 @@ touch \
 
 archive_entries="$(list_archive_entries "$zip_path" | sort)"
 expected_entries="$(cat <<'ENTRIES'
+Microsoft.Bcl.AsyncInterfaces.dll
+Microsoft.Extensions.Configuration.Abstractions.dll
+Microsoft.Extensions.Configuration.Binder.dll
+Microsoft.Extensions.Configuration.dll
+Microsoft.Extensions.DependencyInjection.Abstractions.dll
+Microsoft.Extensions.DependencyInjection.dll
+Microsoft.Extensions.Diagnostics.Abstractions.dll
+Microsoft.Extensions.Logging.Abstractions.dll
+Microsoft.Extensions.Logging.Configuration.dll
+Microsoft.Extensions.Logging.dll
+Microsoft.Extensions.Options.ConfigurationExtensions.dll
+Microsoft.Extensions.Options.dll
+Microsoft.Extensions.Primitives.dll
 NinaOtel.Abstractions.dll
 NinaOtel.Core.dll
 NinaOtel.Plugin.deps.json
 NinaOtel.Plugin.dll
 NinaOtel.Plugin.pdb
 NinaOtel.Plugin.runtimeconfig.json
+OpenTelemetry.Api.ProviderBuilderExtensions.dll
+OpenTelemetry.Api.dll
+OpenTelemetry.Exporter.OpenTelemetryProtocol.dll
+OpenTelemetry.dll
+System.Diagnostics.DiagnosticSource.dll
 ENTRIES
 )"
 

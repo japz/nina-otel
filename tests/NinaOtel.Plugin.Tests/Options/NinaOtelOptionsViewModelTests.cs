@@ -1,4 +1,5 @@
 using FluentAssertions;
+using NinaOtel.Core.Health;
 using NinaOtel.Core.Options;
 using NinaOtel.Plugin.Options;
 using Xunit;
@@ -20,6 +21,9 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Otlp.Endpoint.Should().Be(new Uri("http://localhost:4317/"));
         viewModel.Options.Otlp.Protocol.Should().Be(OtlpProtocol.Grpc);
         viewModel.Options.Buffer.DiskOnFailureEnabled.Should().BeTrue();
+        viewModel.CollectorHealthState.Should().Be(CollectorHealthState.Unknown);
+        viewModel.CollectorHealthBrush.Should().Be("#808080");
+        viewModel.CollectorHealthSummary.Should().Be("Collector not checked yet");
     }
 
     [Fact]
@@ -98,6 +102,46 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.CollectorEndpoint.Should().Be("http://profile-two:4317/");
         viewModel.CollectorProtocol.Should().Be(OtlpProtocol.HttpProtobuf);
         viewModel.DiskOnFailureEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void UpdateCollectorHealth_WhenExportSucceeds_ShowsHealthyStatus()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.UpdateCollectorHealth(CollectorHealthSnapshot.Healthy(
+            new Uri("http://collector.local:4317/"),
+            OtlpProtocol.Grpc,
+            exportedRecords: 3,
+            checkedAt: new DateTimeOffset(2026, 6, 17, 20, 0, 0, TimeSpan.Zero)));
+
+        viewModel.CollectorHealthState.Should().Be(CollectorHealthState.Healthy);
+        viewModel.CollectorHealthBrush.Should().Be("#2E7D32");
+        viewModel.CollectorHealthSummary.Should().Be("Collector connected");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("http://collector.local:4317/");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("Grpc");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("3 record(s)");
+    }
+
+    [Fact]
+    public void UpdateCollectorHealth_WhenExportFails_ShowsUnhealthyStatusAndDebugInfo()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.UpdateCollectorHealth(CollectorHealthSnapshot.Unhealthy(
+            new Uri("http://collector.local:4317/"),
+            OtlpProtocol.Grpc,
+            "SocketException",
+            "connection refused",
+            checkedAt: new DateTimeOffset(2026, 6, 17, 20, 0, 0, TimeSpan.Zero)));
+
+        viewModel.CollectorHealthState.Should().Be(CollectorHealthState.Unhealthy);
+        viewModel.CollectorHealthBrush.Should().Be("#C62828");
+        viewModel.CollectorHealthSummary.Should().Be("Collector export failed");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("SocketException");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("connection refused");
     }
 
     private sealed class InMemoryPluginSettingsStore : INinaOtelSettingsStore

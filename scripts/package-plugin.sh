@@ -27,7 +27,16 @@ file_count=0
 while IFS= read -r file; do
   cp "$file" "$stage_dir/"
   file_count=$((file_count + 1))
-done < <(find "$output_dir" -maxdepth 1 -type f -name 'NinaOtel.*' | sort)
+done < <(
+  find "$output_dir" -maxdepth 1 -type f | while IFS= read -r file; do
+    name="$(basename "$file")"
+    case "$name" in
+      NinaOtel.*|OpenTelemetry*.dll|Microsoft.Extensions*.dll|Microsoft.Bcl*.dll|System.Diagnostics.DiagnosticSource.dll)
+        printf '%s\n' "$file"
+        ;;
+    esac
+  done | sort
+)
 
 if [[ $file_count -eq 0 ]]; then
   printf 'No NinaOtel package files found in: %s\n' "$output_dir" >&2

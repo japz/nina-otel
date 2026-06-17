@@ -6,4 +6,8 @@
   <ItemGroup>
     <ProjectReference Include="..\NinaOtel.Abstractions\NinaOtel.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry" Version="1.16.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
+  </ItemGroup>
 </Project>

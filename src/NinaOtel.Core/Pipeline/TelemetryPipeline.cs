@@ -103,7 +103,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
                 RequestCancellationWithoutWaiting();
                 DropInFlightRecords();
                 DropReadableRecords();
-                _ = DisposeStopCtsAfterWorkerCompletesAsync(workerToDrain);
+                _ = DisposeOwnedResourcesAfterWorkerCompletesAsync(workerToDrain);
                 // The worker may still observe this token after a drain timeout.
                 return;
             }
@@ -116,6 +116,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
             DropReadableRecords();
         }
 
+        DisposeExporter();
         stopCts.Dispose();
     }
 
@@ -173,7 +174,7 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         }
     }
 
-    private async Task DisposeStopCtsAfterWorkerCompletesAsync(Task workerToDrain)
+    private async Task DisposeOwnedResourcesAfterWorkerCompletesAsync(Task workerToDrain)
     {
         try
         {
@@ -183,7 +184,16 @@ public sealed class TelemetryPipeline : ITelemetrySink, IAsyncDisposable
         {
         }
 
+        DisposeExporter();
         stopCts.Dispose();
+    }
+
+    private void DisposeExporter()
+    {
+        if (exporter is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
 
     private void DropReadableRecords()

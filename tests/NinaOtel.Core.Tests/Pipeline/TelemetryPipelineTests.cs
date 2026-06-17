@@ -73,6 +73,22 @@ public sealed class TelemetryPipelineTests
     }
 
     [Fact]
+    public async Task DisposeAsync_DisposesExporterAfterDrainingQueuedRecords()
+    {
+        var exporter = new DisposableRecordingExporter();
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "dispose-exporter", TelemetryPriority.Routine);
+
+        await pipeline.StartAsync(CancellationToken.None);
+        pipeline.TryPublish(record).Should().BeTrue();
+
+        await exporter.WaitForExportAsync(TimeSpan.FromSeconds(2));
+        await pipeline.DisposeAsync();
+
+        exporter.Disposed.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task ExporterFailure_DoesNotStopWorkerAndCountsDroppedBatch()
     {
         var exporter = new FailingOnceExporter();
@@ -420,6 +436,27 @@ public sealed class TelemetryPipelineTests
         {
             return inner.WaitForCountAsync(count, timeout);
         }
+    }
+
+    private sealed class DisposableRecordingExporter : ITelemetryExporter, IDisposable
+    {
+        private readonly TaskCompletionSource exportObserved = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool Disposed { get; private set; }
+
+        public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            exportObserved.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public async Task WaitForExportAsync(TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await exportObserved.Task.WaitAsync(cts.Token);
+        }
+
+        public void Dispose() => Disposed = true;
     }
 
     private sealed class BlockingCancellationCallbackExporter : ITelemetryExporter
