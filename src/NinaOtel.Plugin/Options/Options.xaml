@@ -7,18 +7,37 @@
         <StackPanel Orientation="Vertical" Margin="8">
             <TextBlock Text="NinaOtel" FontWeight="Bold" FontSize="16" />
             <TextBlock Text="{Binding NinaOtelOptionsViewModel.Status}" Margin="0,8,0,0" />
-            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                <TextBlock Text="Collector:" FontWeight="SemiBold" />
-                <TextBlock Text="{Binding NinaOtelOptionsViewModel.CollectorEndpoint}" Margin="8,0,0,0" />
-            </StackPanel>
-            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                <TextBlock Text="Protocol:" FontWeight="SemiBold" />
-                <TextBlock Text="{Binding NinaOtelOptionsViewModel.CollectorProtocol}" Margin="8,0,0,0" />
-            </StackPanel>
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="320" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Collector:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="0"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Text="{Binding NinaOtelOptionsViewModel.CollectorEndpoint, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Protocol:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <ComboBox
+                    Grid.Row="2"
+                    Grid.Column="2"
+                    Width="160"
+                    HorizontalAlignment="Left"
+                    ItemsSource="{Binding NinaOtelOptionsViewModel.AvailableProtocols}"
+                    SelectedItem="{Binding NinaOtelOptionsViewModel.CollectorProtocol, Mode=TwoWay}" />
+            </Grid>
             <CheckBox
                 Content="Disk spool on collector failure"
-                IsChecked="{Binding NinaOtelOptionsViewModel.DiskOnFailureEnabled, Mode=OneWay}"
-                IsEnabled="False"
+                IsChecked="{Binding NinaOtelOptionsViewModel.DiskOnFailureEnabled, Mode=TwoWay}"
                 Margin="0,8,0,0" />
         </StackPanel>
     </DataTemplate>

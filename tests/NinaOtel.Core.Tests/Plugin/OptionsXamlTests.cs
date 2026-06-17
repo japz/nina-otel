@@ -10,7 +10,7 @@ public sealed class OptionsXamlTests
         "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
 
     [Fact]
-    public void OptionsTemplate_DiskOnFailureCheckboxUsesOneWayBinding()
+    public void OptionsTemplate_DiskOnFailureCheckboxUsesTwoWayBinding()
     {
         var document = XDocument.Load(FindOptionsXamlPath());
         var checkbox = document
@@ -20,8 +20,9 @@ public sealed class OptionsXamlTests
         var binding = checkbox.Attribute("IsChecked")?.Value;
 
         binding.Should().Contain(
-            "Mode=OneWay",
-            "ToggleButton.IsChecked binds two-way by default and the source property is read-only");
+            "Mode=TwoWay",
+            "the source property is writable and NINA should persist edits to profile settings");
+        checkbox.Attribute("IsEnabled")?.Value.Should().NotBe("False");
     }
 
     private static string FindOptionsXamlPath()
