@@ -17,7 +17,7 @@
             </StackPanel>
             <CheckBox
                 Content="Disk spool on collector failure"
-                IsChecked="{Binding NinaOtelOptionsViewModel.DiskOnFailureEnabled}"
+                IsChecked="{Binding NinaOtelOptionsViewModel.DiskOnFailureEnabled, Mode=OneWay}"
                 IsEnabled="False"
                 Margin="0,8,0,0" />
         </StackPanel>
