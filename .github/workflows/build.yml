@@ -33,16 +33,13 @@ jobs:
       - name: Test
         run: dotnet test NinaOtel.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
 
+      - name: Test package filter
+        shell: bash
+        run: bash tests/package-plugin-tests.sh
+
       - name: Package plugin
-        shell: pwsh
-        run: |
-          $output = "src/NinaOtel.Plugin/bin/Release/net8.0-windows"
-          $zip = "artifacts/NinaOtel.Plugin.zip"
-          New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
-          if (Test-Path $zip) {
-            Remove-Item -Force $zip
-          }
-          Compress-Archive -Path "$output/*" -DestinationPath $zip -Force
+        shell: bash
+        run: bash scripts/package-plugin.sh "src/NinaOtel.Plugin/bin/Release/net8.0-windows" "artifacts/NinaOtel.Plugin.zip"
 
       - name: Upload plugin artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -31,7 +31,15 @@ jobs:
       - name: Test
         run: dotnet test NinaOtel.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
 
-      - name: Package plugin and manifest
+      - name: Test package filter
+        shell: bash
+        run: bash tests/package-plugin-tests.sh
+
+      - name: Package plugin
+        shell: bash
+        run: bash scripts/package-plugin.sh "src/NinaOtel.Plugin/bin/Release/net8.0-windows" "artifacts/NinaOtel.Plugin.zip"
+
+      - name: Generate manifest
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -40,14 +48,10 @@ jobs:
           $zip = "artifacts/NinaOtel.Plugin.zip"
           $manifestPath = "artifacts/manifest.json"
           New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
-          if (Test-Path $zip) {
-            Remove-Item -Force $zip
-          }
           if (Test-Path $manifestPath) {
             Remove-Item -Force $manifestPath
           }
 
-          Compress-Archive -Path "$output/*" -DestinationPath $zip -Force
           $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash
 
           $dll = Join-Path $output "NinaOtel.Plugin.dll"
