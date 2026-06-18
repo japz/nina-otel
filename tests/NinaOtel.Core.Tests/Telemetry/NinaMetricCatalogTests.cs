@@ -54,6 +54,23 @@ public sealed class NinaMetricCatalogTests
     }
 
     [Fact]
+    public void All_IncludesSafetyMonitorMetrics()
+    {
+        var metric = NinaMetricCatalog.All.Should()
+            .ContainSingle(static metric => metric.Name == "safety_issafe")
+            .Subject;
+
+        metric.Category.Should().Be("safety");
+        metric.ValueKind.Should().Be("double");
+        metric.ExportKind.Should().Be(NinaMetricExportKind.LiveObservableGauge);
+        metric.AttributeNames.Should().Contain(
+            "profile_name",
+            "host_name",
+            "safety_monitor_name");
+        NinaMetricCatalog.IsLiveObservableGauge("safety_issafe").Should().BeTrue();
+    }
+
+    [Fact]
     public void All_ClassifiesLiveEquipmentAndDeferredImageMetrics()
     {
         var cameraTemperature = NinaMetricCatalog.All.Should()

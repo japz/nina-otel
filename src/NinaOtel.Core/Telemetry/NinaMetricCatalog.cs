@@ -69,6 +69,8 @@ public static class NinaMetricCatalog
             Metric("rotator_mechanical_angle", "rotator", "Rotator mechanical angle in degrees.", "double", "rotator_name"),
             Metric("rotator_angle", "rotator", "Rotator sky angle in degrees.", "double", "rotator_name"),
 
+            Metric("safety_issafe", "safety", "Safety monitor safe state as 1 for safe and 0 for unsafe.", "double", "safety_monitor_name"),
+
             Metric("fwheel_filter", "filter_wheel", "Current filter wheel position.", "integer", "filter_wheel_name", "filter_name"),
 
             Metric("wx_cloud_cover", "weather", "Cloud cover in percent.", "double", "wx_device_name"),

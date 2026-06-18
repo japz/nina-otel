@@ -72,6 +72,18 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("guiderTelemetry.Dispose();");
     }
 
+    [Fact]
+    public void Plugin_ImportsStartsAndDisposesSafetyMonitorTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("ISafetyMonitorMediator safetyMonitorMediator");
+        source.Should().Contain("ArgumentNullException.ThrowIfNull(safetyMonitorMediator);");
+        source.Should().Contain("new SafetyMonitorTelemetryCollector(safetyMonitorMediator, pipeline, timeProvider)");
+        source.Should().Contain("safetyMonitorTelemetry.Start();");
+        source.Should().Contain("safetyMonitorTelemetry.Dispose();");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
