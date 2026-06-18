@@ -32,6 +32,7 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly FilterWheelTelemetryCollector filterWheelTelemetry;
     private readonly MountTelemetryCollector mountTelemetry;
     private readonly WeatherTelemetryCollector weatherTelemetry;
+    private readonly AstrometricTelemetryCollector astrometricTelemetry;
     private readonly SwitchTelemetryCollector switchTelemetry;
     private readonly GuiderTelemetryCollector guiderTelemetry;
     private readonly SafetyMonitorTelemetryCollector safetyMonitorTelemetry;
@@ -75,6 +76,7 @@ public sealed class NinaOtelPlugin : PluginBase
         filterWheelTelemetry = new FilterWheelTelemetryCollector(filterWheelMediator, pipeline, timeProvider);
         mountTelemetry = new MountTelemetryCollector(telescopeMediator, pipeline, timeProvider);
         weatherTelemetry = new WeatherTelemetryCollector(weatherDataMediator, pipeline, timeProvider);
+        astrometricTelemetry = new AstrometricTelemetryCollector(profileService, pipeline, timeProvider);
         switchTelemetry = new SwitchTelemetryCollector(switchMediator, pipeline, timeProvider);
         guiderTelemetry = new GuiderTelemetryCollector(guiderMediator, pipeline, timeProvider);
         safetyMonitorTelemetry = new SafetyMonitorTelemetryCollector(safetyMonitorMediator, pipeline, timeProvider);
@@ -100,6 +102,7 @@ public sealed class NinaOtelPlugin : PluginBase
         filterWheelTelemetry.Start();
         mountTelemetry.Start();
         weatherTelemetry.Start();
+        astrometricTelemetry.Start();
         switchTelemetry.Start();
         guiderTelemetry.Start();
         safetyMonitorTelemetry.Start();
@@ -119,6 +122,7 @@ public sealed class NinaOtelPlugin : PluginBase
         filterWheelTelemetry.Dispose();
         mountTelemetry.Dispose();
         weatherTelemetry.Dispose();
+        astrometricTelemetry.Dispose();
         switchTelemetry.Dispose();
         guiderTelemetry.Dispose();
         safetyMonitorTelemetry.Dispose();

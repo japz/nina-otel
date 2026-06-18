@@ -50,6 +50,17 @@ public sealed class NinaOtelPluginWiringTests
     }
 
     [Fact]
+    public void Plugin_UsesImportedProfileServiceToStartAndDisposeAstrometricTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("private readonly AstrometricTelemetryCollector astrometricTelemetry;");
+        source.Should().Contain("new AstrometricTelemetryCollector(profileService, pipeline, timeProvider)");
+        source.Should().Contain("astrometricTelemetry.Start();");
+        source.Should().Contain("astrometricTelemetry.Dispose();");
+    }
+
+    [Fact]
     public void Plugin_ImportsStartsAndDisposesSwitchTelemetryCollector()
     {
         var source = File.ReadAllText(FindPluginSourcePath());
