@@ -171,17 +171,18 @@ public sealed class SafetyMonitorTelemetryCollector : ISafetyMonitorConsumer, ID
         }
 
         var safetyMonitorName = NormalizeSafetyMonitorName(deviceInfo.Name);
-        var monitorNameChanged = lastPublishedSafetyMonitorName is not null &&
-            !string.Equals(lastPublishedSafetyMonitorName, safetyMonitorName, StringComparison.Ordinal);
+        var previousSafetyMonitorName = lastPublishedSafetyMonitorName;
+        var monitorNameChanged = previousSafetyMonitorName is not null &&
+            !string.Equals(previousSafetyMonitorName, safetyMonitorName, StringComparison.Ordinal);
         var safetyStateChanged = !monitorNameChanged &&
             activePeriodIsSafe is not null &&
             activePeriodIsSafe != deviceInfo.IsSafe;
 
         disconnectedEventLogged = false;
 
-        if (monitorNameChanged)
+        if (monitorNameChanged && previousSafetyMonitorName is not null)
         {
-            PublishClearGauge(timestamp, lastPublishedSafetyMonitorName);
+            PublishClearGauge(timestamp, previousSafetyMonitorName);
             hasPublishedGauge = false;
         }
 
