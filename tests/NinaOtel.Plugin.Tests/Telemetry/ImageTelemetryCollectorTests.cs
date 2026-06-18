@@ -330,7 +330,7 @@ public sealed class ImageTelemetryCollectorTests
         return (ImageSaveMediatorProxy)(object)mediator;
     }
 
-    private sealed class ImageSaveMediatorProxy : DispatchProxy
+    private class ImageSaveMediatorProxy : DispatchProxy
     {
         private EventHandler<ImageSavedEventArgs>? imageSaved;
 
@@ -364,7 +364,7 @@ public sealed class ImageTelemetryCollectorTests
         }
     }
 
-    private sealed class ImageStatisticsProxy : DispatchProxy
+    private class ImageStatisticsProxy : DispatchProxy
     {
         public Dictionary<string, object?> Values { get; set; } = [];
 
