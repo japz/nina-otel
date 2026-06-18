@@ -391,7 +391,7 @@ public sealed class FocuserTelemetryCollectorTests
     }
 
     private static AutoFocusInfo CreateAutoFocusInfo(double position, double temperature, string filter) =>
-        new(position, temperature, filter, DateTime.UtcNow);
+        new(temperature, position, filter, DateTime.UtcNow);
 
     private sealed class RecordingTelemetrySink : ITelemetrySink
     {
