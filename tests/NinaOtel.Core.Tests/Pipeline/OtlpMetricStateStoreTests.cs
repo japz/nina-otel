@@ -39,7 +39,7 @@ public sealed class OtlpMetricStateStoreTests
         store.InstrumentNames.Should().ContainSingle().Which.Should().Be("camera_sensor_temperature");
         var measurement = store.CollectMeasurements("camera_sensor_temperature").Should().ContainSingle().Subject;
         measurement.Value.Should().Be(-7.25);
-        measurement.Tags.ToDictionary(static tag => tag.Key, static tag => tag.Value)
+        measurement.Tags.ToArray().ToDictionary(static tag => tag.Key, static tag => tag.Value)
             .Should().Contain(new KeyValuePair<string, object?>("camera_name", "ASI2600MM"))
             .And.Contain(new KeyValuePair<string, object?>("ninaotel.source", "nina.camera"));
     }
@@ -90,7 +90,7 @@ public sealed class OtlpMetricStateStoreTests
         store.Apply([record]);
 
         var measurement = store.CollectMeasurements("camera_sensor_temperature").Should().ContainSingle().Subject;
-        var tags = measurement.Tags.ToDictionary(static tag => tag.Key, static tag => tag.Value);
+        var tags = measurement.Tags.ToArray().ToDictionary(static tag => tag.Key, static tag => tag.Value);
         tags.Should().Contain(new KeyValuePair<string, object?>("camera_name", "ASI2600MM"));
         tags.Should().Contain(new KeyValuePair<string, object?>("ninaotel.source", "nina.camera"));
         tags.Should().NotContainKey("image_file_name");

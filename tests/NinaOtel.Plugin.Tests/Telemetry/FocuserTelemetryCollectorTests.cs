@@ -263,8 +263,17 @@ public sealed class FocuserTelemetryCollectorTests
 
         public bool ThrowOnRegister { get; init; }
 
-        public event Func<object, EventArgs, Task>? Connected;
-        public event Func<object, EventArgs, Task>? Disconnected;
+        public event Func<object, EventArgs, Task>? Connected
+        {
+            add { }
+            remove { }
+        }
+
+        public event Func<object, EventArgs, Task>? Disconnected
+        {
+            add { }
+            remove { }
+        }
 
         public void RegisterHandler(IFocuserVM handler)
         {

@@ -8,7 +8,7 @@ NinaOtel is prepared for the NINA plugin catalog by producing two release assets
 The release workflow runs on tags matching `v*.*.*`. After a release is created, submit the generated `manifest.json` to the upstream manifest repository:
 
 ```text
-manifests/n/NinaOtel/3.2.0.9001/0.1.0.5/manifest.json
+manifests/n/NinaOtel/3.2.0.9001/0.1.0.6/manifest.json
 ```
 
 Use the four-part plugin version from `src/NinaOtel.Plugin/Properties/AssemblyInfo.cs` for the final path segment. The manifest `Name` and `Identifier` must continue to match the assembly metadata:
