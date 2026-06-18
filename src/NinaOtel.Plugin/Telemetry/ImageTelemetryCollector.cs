@@ -3,7 +3,10 @@ using NINA.Core.Model;
 using NINA.Image.ImageData;
 using NINA.Image.Interfaces;
 using NINA.WPF.Base.Interfaces.Mediator;
+using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace NinaOtel.Plugin.Telemetry;
 
@@ -74,6 +77,7 @@ public sealed class ImageTelemetryCollector : IDisposable
         var starAnalysis = args.StarDetectionAnalysis;
         var recordedRms = args.MetaData?.Image?.RecordedRMS;
 
+        PublishImageSaveSpan(args, attributes);
         PublishMetric(timestamp, "image_mean", NormalizeDouble(statistics?.Mean), attributes);
         PublishMetric(timestamp, "image_median", NormalizeDouble(statistics?.Median), attributes);
         PublishMetric(timestamp, "image_std_deviation", NormalizeDouble(statistics?.StDev), attributes);
@@ -134,6 +138,96 @@ public sealed class ImageTelemetryCollector : IDisposable
         return attributes;
     }
 
+    private void PublishImageSaveSpan(
+        ImageSavedEventArgs args,
+        IReadOnlyDictionary<string, object?> baseAttributes)
+    {
+        var saveCompletedAt = timeProvider.GetUtcNow();
+        var attributes = new Dictionary<string, object?>(baseAttributes, StringComparer.Ordinal);
+        AddIfPresent(attributes, "exposure_start", CreateExposureStartAttributeValue(args));
+
+        PublishSpan(
+            saveCompletedAt,
+            "nina.image_save",
+            SpanEventKind.Stop,
+            CreateImageSaveSpanId(args, attributes, saveCompletedAt),
+            attributes);
+    }
+
+    private static string CreateExposureStartAttributeValue(ImageSavedEventArgs args)
+    {
+        var exposureStart = args.MetaData?.Image?.ExposureStart;
+        if (exposureStart is null || exposureStart.Value == default)
+        {
+            return string.Empty;
+        }
+
+        return exposureStart.Value
+            .ToUniversalTime()
+            .ToString("O", CultureInfo.InvariantCulture);
+    }
+
+    private static string CreateImageSaveSpanId(
+        ImageSavedEventArgs args,
+        IReadOnlyDictionary<string, object?> attributes,
+        DateTimeOffset saveCompletedAt)
+    {
+        var imagePath = CreateImagePathValue(args);
+        var exposureStart = AttributeValue(attributes, "exposure_start");
+        var fallback = string.IsNullOrWhiteSpace(imagePath) && string.IsNullOrWhiteSpace(exposureStart)
+            ? saveCompletedAt.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+            : string.Empty;
+
+        return string.Join(
+            "|",
+            [
+                "nina.image_save",
+                $"path_hash={CreateStableHash(imagePath)}",
+                $"file={AttributeValue(attributes, "image_file_name")}",
+                $"target={AttributeValue(attributes, "target_name")}",
+                $"sequence={AttributeValue(attributes, "sequence_title")}",
+                $"camera={AttributeValue(attributes, "camera_name")}",
+                $"readout={AttributeValue(attributes, "readout_mode")}",
+                $"exposure_start={exposureStart}",
+                $"completed={fallback}",
+            ]);
+    }
+
+    private static string CreateImagePathValue(ImageSavedEventArgs args)
+    {
+        if (args.PathToImage is not { } imagePath)
+        {
+            return string.Empty;
+        }
+
+        var path = imagePath.IsFile
+            ? imagePath.LocalPath
+            : imagePath.ToString();
+
+        return string.IsNullOrWhiteSpace(path)
+            ? string.Empty
+            : path;
+    }
+
+    private static string CreateStableHash(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(hash)
+            .ToLowerInvariant()[..16];
+    }
+
+    private static string AttributeValue(
+        IReadOnlyDictionary<string, object?> attributes,
+        string name) =>
+        attributes.TryGetValue(name, out var value)
+            ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
+            : string.Empty;
+
     private static void AddIfPresent(
         Dictionary<string, object?> attributes,
         string name,
@@ -192,6 +286,29 @@ public sealed class ImageTelemetryCollector : IDisposable
                 Source,
                 name,
                 value,
+                TelemetryPriority.Normal,
+                attributes));
+        }
+        catch
+        {
+        }
+    }
+
+    private void PublishSpan(
+        DateTimeOffset timestamp,
+        string name,
+        SpanEventKind kind,
+        string spanId,
+        IReadOnlyDictionary<string, object?> attributes)
+    {
+        try
+        {
+            sink.TryPublish(TelemetryRecord.Span(
+                timestamp,
+                Source,
+                name,
+                kind,
+                spanId,
                 TelemetryPriority.Normal,
                 attributes));
         }

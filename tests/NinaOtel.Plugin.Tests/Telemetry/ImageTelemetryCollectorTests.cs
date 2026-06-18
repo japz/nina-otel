@@ -84,8 +84,10 @@ public sealed class ImageTelemetryCollectorTests
 
         proxy.RaiseImageSaved(CompleteImageSavedEvent(exposureStart));
 
-        sink.Records.Should().HaveCount(19);
-        sink.Records.Should().OnlyContain(record =>
+        sink.Records.Should().HaveCount(20);
+        var metrics = sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric).ToArray();
+        metrics.Should().HaveCount(19);
+        metrics.Should().OnlyContain(record =>
             record.Signal == TelemetrySignal.Metric &&
             record.Source == "nina.image" &&
             record.Timestamp == new DateTimeOffset(exposureStart) &&
@@ -97,29 +99,121 @@ public sealed class ImageTelemetryCollectorTests
             Equals(record.Attributes["readout_mode"], "High gain") &&
             !record.Attributes.ContainsKey("profile_name") &&
             !record.Attributes.ContainsKey("host_name"));
-        sink.Records.Select(static record => record.Name).Should().BeEquivalentTo(
+        metrics.Select(static record => record.Name).Should().BeEquivalentTo(
             RequiredImageMetricNames.Concat(["image_fwhm", "image_eccentricity"]));
-        sink.Records.Should().ContainSingle(record => record.Name == "image_mean" && record.NumericValue == 101.2);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_median" && record.NumericValue == 99.9);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_std_deviation" && record.NumericValue == 12.3);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_mad" && record.NumericValue == 3.4);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_min_adu" && record.NumericValue == 42);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_min_adu_count" && record.NumericValue == 2);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_max_adu" && record.NumericValue == 65535);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_max_adu_count" && record.NumericValue == 7);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_hfr" && record.NumericValue == 2.1);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_hfr_std_deviation" && record.NumericValue == 0.22);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_star_count" && record.NumericValue == 123);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_fwhm" && record.NumericValue == 3.3);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_eccentricity" && record.NumericValue == 0.42);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_rms_avg_ra_arcsec" && record.NumericValue == 0.61);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_rms_avg_dec_arcsec" && record.NumericValue == 0.72);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_rms_avg_arcsec" && record.NumericValue == 0.94);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_rms_peak_ra_arcsec" && record.NumericValue == 1.2);
-        sink.Records.Should().ContainSingle(record => record.Name == "image_rms_peak_dec_arcsec" && record.NumericValue == 1.6);
-        sink.Records.Should().ContainSingle(record =>
+        metrics.Should().ContainSingle(record => record.Name == "image_mean" && record.NumericValue == 101.2);
+        metrics.Should().ContainSingle(record => record.Name == "image_median" && record.NumericValue == 99.9);
+        metrics.Should().ContainSingle(record => record.Name == "image_std_deviation" && record.NumericValue == 12.3);
+        metrics.Should().ContainSingle(record => record.Name == "image_mad" && record.NumericValue == 3.4);
+        metrics.Should().ContainSingle(record => record.Name == "image_min_adu" && record.NumericValue == 42);
+        metrics.Should().ContainSingle(record => record.Name == "image_min_adu_count" && record.NumericValue == 2);
+        metrics.Should().ContainSingle(record => record.Name == "image_max_adu" && record.NumericValue == 65535);
+        metrics.Should().ContainSingle(record => record.Name == "image_max_adu_count" && record.NumericValue == 7);
+        metrics.Should().ContainSingle(record => record.Name == "image_hfr" && record.NumericValue == 2.1);
+        metrics.Should().ContainSingle(record => record.Name == "image_hfr_std_deviation" && record.NumericValue == 0.22);
+        metrics.Should().ContainSingle(record => record.Name == "image_star_count" && record.NumericValue == 123);
+        metrics.Should().ContainSingle(record => record.Name == "image_fwhm" && record.NumericValue == 3.3);
+        metrics.Should().ContainSingle(record => record.Name == "image_eccentricity" && record.NumericValue == 0.42);
+        metrics.Should().ContainSingle(record => record.Name == "image_rms_avg_ra_arcsec" && record.NumericValue == 0.61);
+        metrics.Should().ContainSingle(record => record.Name == "image_rms_avg_dec_arcsec" && record.NumericValue == 0.72);
+        metrics.Should().ContainSingle(record => record.Name == "image_rms_avg_arcsec" && record.NumericValue == 0.94);
+        metrics.Should().ContainSingle(record => record.Name == "image_rms_peak_ra_arcsec" && record.NumericValue == 1.2);
+        metrics.Should().ContainSingle(record => record.Name == "image_rms_peak_dec_arcsec" && record.NumericValue == 1.6);
+        metrics.Should().ContainSingle(record =>
             record.Name == "image_rms_peak_arcsec" &&
             ImageTelemetryAssertions.IsApproximately(record.NumericValue!.Value, 2.0));
+    }
+
+    [Fact]
+    public void ImageSaved_PublishesCompletedImageSaveSpanWithMetadataAndTimingContext()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        var saveCompletedAt = new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero);
+        using var collector = new ImageTelemetryCollector(
+            mediator,
+            sink,
+            new FixedTimeProvider(saveCompletedAt));
+        collector.Start();
+        var exposureStart = new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc);
+        var imageSavedEvent = CompleteImageSavedEvent(exposureStart);
+        var rawImagePath = imageSavedEvent.PathToImage!.LocalPath;
+
+        proxy.RaiseImageSaved(imageSavedEvent);
+
+        var span = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span)
+            .Which;
+        span.Source.Should().Be("nina.image");
+        span.Name.Should().Be("nina.image_save");
+        span.Timestamp.Should().Be(saveCompletedAt);
+        span.Priority.Should().Be(TelemetryPriority.Normal);
+        span.SpanKind.Should().Be(SpanEventKind.Stop);
+        span.SpanId.Should().NotBeNullOrWhiteSpace();
+        span.SpanId.Should().NotContain(rawImagePath);
+        span.SpanId.Should().NotContain(imageSavedEvent.PathToImage.ToString());
+        span.Attributes.Should().Contain("image_file_name", "M42_L_001.fit");
+        span.Attributes.Should().Contain("target_name", "M42");
+        span.Attributes.Should().Contain("sequence_title", "Orion sequence");
+        span.Attributes.Should().Contain("camera_name", "ASI2600MM");
+        span.Attributes.Should().Contain("readout_mode", "High gain");
+        span.Attributes.Should().Contain("exposure_start", "2026-06-18T20:15:30.0000000Z");
+
+        var firstSpanId = span.SpanId;
+        sink.Records.Clear();
+
+        proxy.RaiseImageSaved(imageSavedEvent);
+
+        sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span)
+            .Which.SpanId.Should().Be(firstSpanId);
+    }
+
+    [Fact]
+    public void ImageSaved_WhenOptionalMetadataAndPathAreMissing_DoesNotReuseCollapsedSpanIdForDistinctSaveEvents()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(
+            mediator,
+            sink,
+            new SequenceTimeProvider(
+                new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 6, 18, 22, 0, 1, TimeSpan.Zero),
+                new DateTimeOffset(2026, 6, 18, 22, 0, 2, TimeSpan.Zero),
+                new DateTimeOffset(2026, 6, 18, 22, 0, 3, TimeSpan.Zero)));
+        collector.Start();
+
+        proxy.RaiseImageSaved(SparseImageSavedEvent());
+        proxy.RaiseImageSaved(SparseImageSavedEvent());
+
+        var spanIds = sink.Records
+            .Where(static record => record.Signal == TelemetrySignal.Span)
+            .Select(static record => record.SpanId)
+            .ToArray();
+        spanIds.Should().HaveCount(2);
+        spanIds.Should().OnlyContain(static spanId => !string.IsNullOrWhiteSpace(spanId));
+        spanIds.Should().NotContain("nina.image_save||||||");
+        spanIds.Should().OnlyHaveUniqueItems();
+    }
+
+    [Fact]
+    public void ImageSaved_WhenSpanPublishFails_StillAttemptsImageMetrics()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new SpanThrowingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(mediator, sink, new FixedTimeProvider());
+        collector.Start();
+        var exposureStart = new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc);
+
+        var act = () => proxy.RaiseImageSaved(CompleteImageSavedEvent(exposureStart));
+
+        act.Should().NotThrow();
+        sink.SpanPublishAttempts.Should().Be(1);
+        sink.Records.Should().HaveCount(19);
+        sink.Records.Should().OnlyContain(static record => record.Signal == TelemetrySignal.Metric);
+        sink.Records.Select(static record => record.Name).Should().BeEquivalentTo(
+            RequiredImageMetricNames.Concat(["image_fwhm", "image_eccentricity"]));
     }
 
     [Fact]
@@ -166,8 +260,9 @@ public sealed class ImageTelemetryCollectorTests
             },
         });
 
-        sink.Records.Select(static record => record.Name).Should().BeEquivalentTo(RequiredImageMetricNames);
-        sink.Records.Should().OnlyContain(record => record.NumericValue == 0.0);
+        var metrics = sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric).ToArray();
+        metrics.Select(static record => record.Name).Should().BeEquivalentTo(RequiredImageMetricNames);
+        metrics.Should().OnlyContain(record => record.NumericValue == 0.0);
     }
 
     [Fact]
@@ -297,6 +392,15 @@ public sealed class ImageTelemetryCollectorTests
             StarDetectionAnalysis = starDetectionAnalysis,
         };
 
+    private static ImageSavedEventArgs SparseImageSavedEvent() =>
+        new()
+        {
+            MetaData = null!,
+            PathToImage = null!,
+            Statistics = ImageStatistics(),
+            StarDetectionAnalysis = null!,
+        };
+
     private static IImageStatistics ImageStatistics(
         double mean = 1,
         double median = 2,
@@ -420,10 +524,44 @@ public sealed class ImageTelemetryCollectorTests
             throw new InvalidOperationException("Sink unavailable.");
     }
 
-    private sealed class FixedTimeProvider : TimeProvider
+    private sealed class SpanThrowingTelemetrySink : ITelemetrySink
+    {
+        public List<TelemetryRecord> Records { get; } = [];
+
+        public int SpanPublishAttempts { get; private set; }
+
+        public bool TryPublish(TelemetryRecord record)
+        {
+            if (record.Signal == TelemetrySignal.Span)
+            {
+                SpanPublishAttempts++;
+                throw new InvalidOperationException("Span sink unavailable.");
+            }
+
+            Records.Add(record);
+            return true;
+        }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset? timestamp = null) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() =>
-            new(2026, 6, 18, 12, 0, 0, TimeSpan.Zero);
+            timestamp ?? new DateTimeOffset(2026, 6, 18, 12, 0, 0, TimeSpan.Zero);
+    }
+
+    private sealed class SequenceTimeProvider(params DateTimeOffset[] timestamps) : TimeProvider
+    {
+        private int index;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            if (index >= timestamps.Length)
+            {
+                return timestamps[^1];
+            }
+
+            return timestamps[index++];
+        }
     }
 }
 
