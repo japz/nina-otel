@@ -138,7 +138,9 @@ public static class NinaMetricCatalog
         }
 
         return IsSwitchReadOnlyGaugeName(metricName)
-            ? new HashSet<string>(GlobalAttributes.Concat(["switch_name", "switch_id"]), StringComparer.Ordinal)
+            ? new HashSet<string>(
+                GlobalAttributes.Concat(["switch_name", "switch_id", "switch_channel_name"]),
+                StringComparer.Ordinal)
             : null;
     }
 

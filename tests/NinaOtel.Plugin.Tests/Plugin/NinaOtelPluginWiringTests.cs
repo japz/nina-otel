@@ -49,6 +49,17 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("weatherTelemetry.Dispose();");
     }
 
+    [Fact]
+    public void Plugin_ImportsStartsAndDisposesSwitchTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("ISwitchMediator switchMediator");
+        source.Should().Contain("new SwitchTelemetryCollector(switchMediator, pipeline, timeProvider)");
+        source.Should().Contain("switchTelemetry.Start();");
+        source.Should().Contain("switchTelemetry.Dispose();");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

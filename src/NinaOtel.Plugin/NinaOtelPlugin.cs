@@ -31,6 +31,7 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly FilterWheelTelemetryCollector filterWheelTelemetry;
     private readonly MountTelemetryCollector mountTelemetry;
     private readonly WeatherTelemetryCollector weatherTelemetry;
+    private readonly SwitchTelemetryCollector switchTelemetry;
 
     [ImportingConstructor]
     public NinaOtelPlugin(
@@ -40,7 +41,8 @@ public sealed class NinaOtelPlugin : PluginBase
         IRotatorMediator rotatorMediator,
         IFilterWheelMediator filterWheelMediator,
         ITelescopeMediator telescopeMediator,
-        IWeatherDataMediator weatherDataMediator)
+        IWeatherDataMediator weatherDataMediator,
+        ISwitchMediator switchMediator)
     {
         ArgumentNullException.ThrowIfNull(profileService);
         ArgumentNullException.ThrowIfNull(cameraMediator);
@@ -49,6 +51,7 @@ public sealed class NinaOtelPlugin : PluginBase
         ArgumentNullException.ThrowIfNull(filterWheelMediator);
         ArgumentNullException.ThrowIfNull(telescopeMediator);
         ArgumentNullException.ThrowIfNull(weatherDataMediator);
+        ArgumentNullException.ThrowIfNull(switchMediator);
 
         this.profileService = profileService;
         NinaOtelOptionsViewModel = new NinaOtelOptionsViewModel(
@@ -62,6 +65,7 @@ public sealed class NinaOtelPlugin : PluginBase
         filterWheelTelemetry = new FilterWheelTelemetryCollector(filterWheelMediator, pipeline, timeProvider);
         mountTelemetry = new MountTelemetryCollector(telescopeMediator, pipeline, timeProvider);
         weatherTelemetry = new WeatherTelemetryCollector(weatherDataMediator, pipeline, timeProvider);
+        switchTelemetry = new SwitchTelemetryCollector(switchMediator, pipeline, timeProvider);
         lifecycleTelemetry = new CoreLifecycleTelemetryProducer(pipeline, timeProvider, options);
         addonHost = new AddonHost(
             pipeline,
@@ -83,6 +87,7 @@ public sealed class NinaOtelPlugin : PluginBase
         filterWheelTelemetry.Start();
         mountTelemetry.Start();
         weatherTelemetry.Start();
+        switchTelemetry.Start();
         lifecycleTelemetry.PluginInitialized();
         await addonHost.StartAsync(Array.Empty<ITelemetryAddon>(), shutdownCts.Token).ConfigureAwait(false);
         Logger.Info("NinaOtel foundation initialized.");
@@ -98,6 +103,7 @@ public sealed class NinaOtelPlugin : PluginBase
         filterWheelTelemetry.Dispose();
         mountTelemetry.Dispose();
         weatherTelemetry.Dispose();
+        switchTelemetry.Dispose();
         lifecycleTelemetry.PluginStopping();
         await addonHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
         lifecycleTelemetry.PluginStopped();

@@ -76,4 +76,18 @@ public sealed class NinaMetricCatalogTests
     {
         NinaMetricCatalog.SwitchReadOnlyGaugeName(23).Should().Be("switch_ro_sw23");
     }
+
+    [Fact]
+    public void GetLiveObservableGaugeAttributeNames_ForDynamicSwitchMetrics_IncludesSwitchChannelName()
+    {
+        var attributeNames = NinaMetricCatalog.GetLiveObservableGaugeAttributeNames("switch_ro_sw23");
+
+        attributeNames.Should().NotBeNull();
+        attributeNames.Should().Contain(
+            "profile_name",
+            "host_name",
+            "switch_name",
+            "switch_id",
+            "switch_channel_name");
+    }
 }
