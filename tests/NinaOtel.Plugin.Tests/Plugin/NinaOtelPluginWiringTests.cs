@@ -16,6 +16,17 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("rotatorTelemetry.Dispose();");
     }
 
+    [Fact]
+    public void Plugin_ImportsStartsAndDisposesFilterWheelTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("IFilterWheelMediator filterWheelMediator");
+        source.Should().Contain("new FilterWheelTelemetryCollector(filterWheelMediator, pipeline, timeProvider)");
+        source.Should().Contain("filterWheelTelemetry.Start();");
+        source.Should().Contain("filterWheelTelemetry.Dispose();");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
