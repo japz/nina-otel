@@ -182,7 +182,8 @@ public sealed class WeatherTelemetryCollectorTests
         collector.UpdateDeviceInfo(ConnectedInfo("AAG CloudWatcher"));
 
         sink.Records.Should().HaveCount(13);
-        sink.Records.Select(static record => record.Timestamp).Should().ContainSingle();
+        var batchTimestamp = sink.Records[0].Timestamp;
+        sink.Records.Should().OnlyContain(record => record.Timestamp == batchTimestamp);
         sink.Records.Should().OnlyContain(record =>
             record.Signal == TelemetrySignal.Metric &&
             record.Source == "nina.weather" &&
