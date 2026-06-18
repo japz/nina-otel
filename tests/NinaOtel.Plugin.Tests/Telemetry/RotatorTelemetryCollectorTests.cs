@@ -5,6 +5,7 @@ using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Interfaces.ViewModel;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Plugin.Telemetry;
+using System.Globalization;
 using Xunit;
 
 namespace NinaOtel.Plugin.Tests.Telemetry;
@@ -22,6 +23,20 @@ public sealed class RotatorTelemetryCollectorTests
         collector.Start();
 
         mediator.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
+    }
+
+    [Fact]
+    public void Start_SubscribesRotatorMovedOnce()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        collector.Start();
+
+        mediator.AddMovedCalls.Should().Be(1);
+        mediator.MovedSubscriberCount.Should().Be(1);
     }
 
     [Fact]
@@ -48,6 +63,234 @@ public sealed class RotatorTelemetryCollectorTests
     }
 
     [Fact]
+    public async Task Moved_WhenRaised_PublishesRotatorMovedSpan()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+                MechanicalPosition = 182.5f,
+                Position = 17.25f,
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(
+            mediator,
+            sink,
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 12, 0, 0, TimeSpan.Zero)));
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseMovedAsync(17.25f, 88.5f);
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Span &&
+            record.Source == "nina.rotator" &&
+            record.Name == "nina.rotator_moved" &&
+            record.SpanKind == SpanEventKind.Stop &&
+            record.Priority == TelemetryPriority.Normal &&
+            !string.IsNullOrWhiteSpace(record.SpanId) &&
+            Equals(record.Attributes["rotator_name"], "Pegasus Falcon") &&
+            Equals(record.Attributes["rotator_moved_from"], 17.25f) &&
+            Equals(record.Attributes["rotator_moved_to"], 88.5f));
+    }
+
+    [Fact]
+    public async Task Moved_WhenCurrentCultureUsesCommaDecimal_UsesInvariantSpanIdNumbers()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("nl-NL");
+        try
+        {
+            var mediator = new FakeRotatorMediator
+            {
+                CurrentInfo = new RotatorInfo
+                {
+                    Connected = true,
+                    Name = "Pegasus Falcon",
+                    MechanicalPosition = 182.5f,
+                    Position = 17.25f,
+                },
+            };
+            var sink = new RecordingTelemetrySink();
+            using var collector = new RotatorTelemetryCollector(
+                mediator,
+                sink,
+                new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 12, 0, 0, TimeSpan.Zero)));
+            collector.Start();
+            sink.Records.Clear();
+
+            await mediator.RaiseMovedAsync(17.25f, 88.5f);
+
+            var spanId = sink.Records.Should()
+                .ContainSingle(record => record.Name == "nina.rotator_moved")
+                .Which.SpanId;
+            spanId.Should().Contain("17.25");
+            spanId.Should().Contain("88.5");
+            spanId.Should().NotContain("17,25");
+            spanId.Should().NotContain("88,5");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
+    }
+
+    [Fact]
+    public async Task Moved_BeforeKnownRotatorName_UsesUnknownRotatorName()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+
+        await mediator.RaiseMovedAsync(1.25f, 2.5f);
+
+        sink.Records.Should().ContainSingle(record => record.Name == "nina.rotator_moved")
+            .Which.Attributes["rotator_name"].Should().Be("Unknown");
+    }
+
+    [Fact]
+    public async Task Moved_WhenSinkThrows_DoesNotThrow()
+    {
+        var mediator = new FakeRotatorMediator();
+        using var collector = new RotatorTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+        collector.Start();
+
+        var act = () => mediator.RaiseMovedAsync(1.25f, 2.5f);
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Moved_AfterDisposeWhenUnsubscribeFails_DoesNotPublishSpan()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+                MechanicalPosition = 182.5f,
+                Position = 17.25f,
+            },
+            ThrowOnMovedRemove = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        collector.Dispose();
+        await mediator.RaiseMovedAsync(17.25f, 88.5f);
+
+        mediator.MovedSubscriberCount.Should().Be(1);
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Moved_WithSameTimestampAndAttributes_PublishesDistinctSpanIds()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+                MechanicalPosition = 182.5f,
+                Position = 17.25f,
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        var timeProvider = new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 12, 0, 0, TimeSpan.Zero));
+        using var collector = new RotatorTelemetryCollector(mediator, sink, timeProvider);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseMovedAsync(17.25f, 88.5f);
+        await mediator.RaiseMovedAsync(17.25f, 88.5f);
+
+        var spanIds = sink.Records
+            .Where(static record => record.Name == "nina.rotator_moved")
+            .Select(static record => record.SpanId)
+            .ToArray();
+        spanIds.Should().HaveCount(2);
+        spanIds.Distinct(StringComparer.Ordinal).Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Moved_AfterDisconnect_UsesUnknownRotatorName()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new RotatorInfo
+        {
+            Connected = true,
+            Name = "Pegasus Falcon",
+            MechanicalPosition = 182.5f,
+            Position = 17.25f,
+        });
+        collector.UpdateDeviceInfo(new RotatorInfo
+        {
+            Connected = false,
+            Name = "Pegasus Falcon",
+        });
+        sink.Records.Clear();
+
+        await mediator.RaiseMovedAsync(17.25f, 88.5f);
+
+        sink.Records.Should().ContainSingle(record => record.Name == "nina.rotator_moved")
+            .Which.Attributes["rotator_name"].Should().Be("Unknown");
+    }
+
+    [Fact]
+    public async Task Start_WhenMovedSubscriptionThrowsAfterAttaching_UnsubscribesHandlerBeforeReturning()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            ThrowOnMovedAddAfterSubscribe = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        sink.Records.Clear();
+        await mediator.RaiseMovedAsync(1.25f, 2.5f);
+
+        mediator.RemoveMovedCalls.Should().Be(1);
+        mediator.MovedSubscriberCount.Should().Be(0);
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Start_WhenMovedSubscriptionThrowsAfterAttaching_PublishesHealthRecord()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            ThrowOnMovedAddAfterSubscribe = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.rotator" &&
+            record.Name == "rotator_collector.registration_failed" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Moved subscription failed."));
+    }
+
+    [Fact]
     public void Dispose_RemovesCollectorFromMediator()
     {
         var mediator = new FakeRotatorMediator();
@@ -59,6 +302,8 @@ public sealed class RotatorTelemetryCollectorTests
         collector.Dispose();
 
         mediator.Consumers.Should().BeEmpty();
+        mediator.RemoveMovedCalls.Should().Be(1);
+        mediator.MovedSubscriberCount.Should().Be(0);
     }
 
     [Fact]
@@ -72,6 +317,28 @@ public sealed class RotatorTelemetryCollectorTests
         var act = () => collector.Dispose();
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void UpdateDeviceInfo_AfterDisposeWhenMediatorRemovalFails_DoesNotPublishMetric()
+    {
+        var mediator = new FakeRotatorMediator { ThrowOnRemove = true };
+        var sink = new RecordingTelemetrySink();
+        var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        collector.Dispose();
+        mediator.Broadcast(new RotatorInfo
+        {
+            Connected = true,
+            Name = "Pegasus Falcon",
+            MechanicalPosition = 182.5f,
+            Position = 17.25f,
+        });
+
+        mediator.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
+        sink.Records.Should().BeEmpty();
     }
 
     [Fact]
@@ -89,6 +356,8 @@ public sealed class RotatorTelemetryCollectorTests
             record.Source == "nina.rotator" &&
             record.Name == "rotator_collector.registration_failed" &&
             Equals(record.Attributes["error_type"], nameof(InvalidOperationException)));
+        mediator.AddMovedCalls.Should().Be(0);
+        mediator.MovedSubscriberCount.Should().Be(0);
     }
 
     [Fact]
@@ -327,6 +596,18 @@ public sealed class RotatorTelemetryCollectorTests
 
         public bool ThrowOnRemove { get; init; }
 
+        public bool ThrowOnMovedRemove { get; init; }
+
+        public bool ThrowOnMovedAddAfterSubscribe { get; init; }
+
+        public int AddMovedCalls { get; private set; }
+
+        public int RemoveMovedCalls { get; private set; }
+
+        public int MovedSubscriberCount => moved?.GetInvocationList().Length ?? 0;
+
+        private Func<object, RotatorEventArgs, Task>? moved;
+
         public event Func<object, EventArgs, Task>? Connected
         {
             add { }
@@ -347,8 +628,25 @@ public sealed class RotatorTelemetryCollectorTests
 
         public event Func<object, RotatorEventArgs, Task>? Moved
         {
-            add => throw new NotSupportedException("Rotator telemetry must not subscribe to Moved.");
-            remove => throw new NotSupportedException("Rotator telemetry must not unsubscribe from Moved.");
+            add
+            {
+                AddMovedCalls++;
+                moved += value;
+                if (ThrowOnMovedAddAfterSubscribe)
+                {
+                    throw new InvalidOperationException("Moved subscription failed.");
+                }
+            }
+            remove
+            {
+                RemoveMovedCalls++;
+                if (ThrowOnMovedRemove)
+                {
+                    throw new InvalidOperationException("Moved unsubscription failed.");
+                }
+
+                moved -= value;
+            }
         }
 
         public event Func<object, RotatorEventArgs, Task>? MovedMechanical
@@ -396,6 +694,19 @@ public sealed class RotatorTelemetryCollectorTests
             }
         }
 
+        public async Task RaiseMovedAsync(float from, float to)
+        {
+            if (moved is null)
+            {
+                return;
+            }
+
+            foreach (var handler in moved.GetInvocationList().Cast<Func<object, RotatorEventArgs, Task>>())
+            {
+                await handler(this, new RotatorEventArgs(from, to));
+            }
+        }
+
         public RotatorInfo GetInfo() => new();
 
         public string Action(string actionName, string actionParameters) => string.Empty;
@@ -426,5 +737,10 @@ public sealed class RotatorTelemetryCollectorTests
 
         public float GetTargetMechanicalPosition(float position) =>
             throw new NotSupportedException("Rotator telemetry must not query target mechanical position.");
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => timestamp;
     }
 }

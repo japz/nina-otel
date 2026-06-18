@@ -1,6 +1,7 @@
 using NINA.Equipment.Equipment.MyRotator;
 using NINA.Equipment.Interfaces.Mediator;
 using NinaOtel.Abstractions.Telemetry;
+using System.Globalization;
 
 namespace NinaOtel.Plugin.Telemetry;
 
@@ -18,6 +19,9 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
     private bool hasPublishedSkyAngle;
     private string? lastConnectedRotatorName;
     private bool started;
+    private bool shouldUnsubscribeMoved;
+    private bool movedEventsEnabled;
+    private long rotatorMoveSequence;
 
     public RotatorTelemetryCollector(
         IRotatorMediator mediator,
@@ -42,9 +46,14 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             {
                 mediator.RegisterConsumer(this);
                 started = true;
+                shouldUnsubscribeMoved = true;
+                mediator.Moved += OnMoved;
+                movedEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                movedEventsEnabled = false;
+                TryUnsubscribeMoved();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -59,6 +68,11 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
 
         lock (syncRoot)
         {
+            if (disposed)
+            {
+                return;
+            }
+
             var rotatorName = NormalizeRotatorName(deviceInfo.Name);
             if (!deviceInfo.Connected)
             {
@@ -99,6 +113,8 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             }
 
             disposed = true;
+            movedEventsEnabled = false;
+            TryUnsubscribeMoved();
             if (!started)
             {
                 return;
@@ -113,6 +129,29 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
                 // Telemetry teardown must never interfere with NINA shutdown.
             }
         }
+    }
+
+    private Task OnMoved(object sender, RotatorEventArgs args)
+    {
+        try
+        {
+            if (args is null)
+            {
+                return Task.CompletedTask;
+            }
+
+            var record = CreateRotatorMovedRecord(args);
+            if (record is not null)
+            {
+                TryPublishSafely(record);
+            }
+        }
+        catch
+        {
+            // NINA rotator events must never fail because telemetry is unavailable.
+        }
+
+        return Task.CompletedTask;
     }
 
     private void PublishCurrentMetrics(RotatorInfo deviceInfo, string rotatorName)
@@ -211,6 +250,51 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             }));
     }
 
+    private TelemetryRecord? CreateRotatorMovedRecord(RotatorEventArgs args)
+    {
+        lock (syncRoot)
+        {
+            if (disposed || !movedEventsEnabled)
+            {
+                return null;
+            }
+
+            var timestamp = timeProvider.GetUtcNow();
+            var sequence = ++rotatorMoveSequence;
+            var attributes = CreateRotatorMovedAttributes(
+                ResolveCurrentRotatorName(),
+                args.From,
+                args.To);
+
+            return TelemetryRecord.Span(
+                timestamp,
+                SourceName,
+                "nina.rotator_moved",
+                SpanEventKind.Stop,
+                CreateRotatorMovedSpanId(timestamp, sequence, attributes),
+                TelemetryPriority.Normal,
+                attributes);
+        }
+    }
+
+    private void TryUnsubscribeMoved()
+    {
+        if (!shouldUnsubscribeMoved)
+        {
+            return;
+        }
+
+        try
+        {
+            mediator.Moved -= OnMoved;
+            shouldUnsubscribeMoved = false;
+        }
+        catch
+        {
+            // Telemetry teardown must never interfere with NINA shutdown.
+        }
+    }
+
     private void ResetPublishedState()
     {
         lastConnectedRotatorName = null;
@@ -240,6 +324,35 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
         {
             ["rotator_name"] = rotatorName,
         };
+
+    private string ResolveCurrentRotatorName() =>
+        lastConnectedRotatorName is null
+            ? UnknownRotatorName
+            : lastConnectedRotatorName;
+
+    private static Dictionary<string, object?> CreateRotatorMovedAttributes(
+        string rotatorName,
+        float from,
+        float to) =>
+        new()
+        {
+            ["rotator_name"] = rotatorName,
+            ["rotator_moved_from"] = from,
+            ["rotator_moved_to"] = to,
+        };
+
+    private static string CreateRotatorMovedSpanId(
+        DateTimeOffset timestamp,
+        long sequence,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        string.Join(
+            "|",
+            "rotator_moved",
+            timestamp.ToUniversalTime().ToString("O"),
+            sequence,
+            attributes["rotator_name"],
+            Convert.ToString(attributes["rotator_moved_from"], CultureInfo.InvariantCulture),
+            Convert.ToString(attributes["rotator_moved_to"], CultureInfo.InvariantCulture));
 
     private static string NormalizeRotatorName(string? rotatorName) =>
         string.IsNullOrWhiteSpace(rotatorName)
