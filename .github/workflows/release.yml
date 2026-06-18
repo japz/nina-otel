@@ -12,6 +12,8 @@ jobs:
   release:
     name: Windows release
     runs-on: windows-latest
+    env:
+      VSTEST_CONNECTION_TIMEOUT: 240
 
     steps:
       - name: Check out repository
