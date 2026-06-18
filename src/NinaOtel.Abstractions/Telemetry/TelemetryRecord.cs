@@ -59,6 +59,8 @@ public sealed record TelemetryRecord(
         init => _attributes = SnapshotAttributes(value);
     }
 
+    public string? TraceId { get; init; }
+
     public static TelemetryRecord Metric(
         DateTimeOffset timestamp,
         string source,

@@ -54,6 +54,11 @@ internal static class OtlpLogRecordMapper
             attributes.Add(new KeyValuePair<string, object?>("ninaotel.span.id", record.SpanId));
         }
 
+        if (!string.IsNullOrWhiteSpace(record.TraceId))
+        {
+            attributes.Add(new KeyValuePair<string, object?>("ninaotel.trace.id", record.TraceId));
+        }
+
         if (!string.IsNullOrWhiteSpace(record.ParentSpanId))
         {
             attributes.Add(new KeyValuePair<string, object?>("ninaotel.span.parent_id", record.ParentSpanId));

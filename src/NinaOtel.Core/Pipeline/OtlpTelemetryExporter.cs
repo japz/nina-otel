@@ -20,6 +20,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
     private readonly Meter meter;
     private readonly OtlpMetricStateStore metricStateStore;
     private readonly OtlpPointInTimeMetricExporter pointInTimeMetricExporter;
+    private readonly OtlpTraceExporter traceExporter;
     private readonly TrackingLogRecordExportProcessor logProcessor;
     private readonly TrackingMetricExporter metricExporter;
     private readonly BaseExportingMetricReader metricReader;
@@ -51,6 +52,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
         meter = new Meter(MeterName);
         metricStateStore = new OtlpMetricStateStore(meter);
         pointInTimeMetricExporter = new OtlpPointInTimeMetricExporter(otlpOptions);
+        traceExporter = new OtlpTraceExporter(otlpOptions);
         metricExporter = new TrackingMetricExporter(
             new OtlpMetricExporter(CreateExporterOptions(otlpOptions, "v1/metrics")));
         metricReader = new BaseExportingMetricReader(metricExporter);
@@ -89,16 +91,28 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
             throw new TelemetryExportException("OTLP metric reader failed to collect metrics.");
         }
 
+        TelemetryExportException? batchFailure = null;
         var metricFailure = metricExporter.GetBatchFailure();
         if (metricFailure is not null)
         {
-            throw metricFailure;
+            batchFailure ??= metricFailure;
         }
 
         var logFailure = logProcessor.GetBatchFailure();
         if (logFailure is not null)
         {
-            throw logFailure;
+            batchFailure ??= logFailure;
+        }
+
+        var traceFailure = await TryExportTracesAsync(records, cancellationToken).ConfigureAwait(false);
+        if (traceFailure is not null)
+        {
+            batchFailure ??= traceFailure;
+        }
+
+        if (batchFailure is not null)
+        {
+            throw batchFailure;
         }
 
         return;
@@ -107,6 +121,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
     public void Dispose()
     {
         meterProvider.Dispose();
+        traceExporter.Dispose();
         pointInTimeMetricExporter.Dispose();
         meter.Dispose();
         loggerFactory.Dispose();
@@ -116,6 +131,29 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
         IReadOnlyList<TelemetryRecord> records,
         CancellationToken cancellationToken) =>
         pointInTimeMetricExporter.ExportAsync(records, cancellationToken);
+
+    private async Task<TelemetryExportException?> TryExportTracesAsync(
+        IReadOnlyList<TelemetryRecord> records,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await traceExporter.ExportAsync(records, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (TelemetryExportException ex)
+        {
+            return ex;
+        }
+        catch (Exception ex)
+        {
+            return new TelemetryExportException("OTLP trace exporter threw while exporting.", ex);
+        }
+    }
 
     private static IReadOnlyList<TelemetryRecord> GetLiveMetricRecords(IReadOnlyList<TelemetryRecord> records)
     {

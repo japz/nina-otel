@@ -27,7 +27,10 @@ public sealed class OtlpLogRecordMapperTests
             Severity: TelemetrySeverity.Error,
             SpanKind: SpanEventKind.Start,
             SpanId: "span-1",
-            ParentSpanId: "parent-1");
+            ParentSpanId: "parent-1") with
+            {
+                TraceId = "trace-1",
+            };
 
         var payload = OtlpLogRecordMapper.Map(record);
 
@@ -46,6 +49,7 @@ public sealed class OtlpLogRecordMapperTests
         payload.Attributes.Should().Contain(new KeyValuePair<string, object?>("ninaotel.severity", "Error"));
         payload.Attributes.Should().Contain(new KeyValuePair<string, object?>("ninaotel.span.kind", "Start"));
         payload.Attributes.Should().Contain(new KeyValuePair<string, object?>("ninaotel.span.id", "span-1"));
+        payload.Attributes.Should().Contain(new KeyValuePair<string, object?>("ninaotel.trace.id", "trace-1"));
         payload.Attributes.Should().Contain(new KeyValuePair<string, object?>("ninaotel.span.parent_id", "parent-1"));
         payload.Attributes.Should().Contain(new KeyValuePair<string, object?>("{OriginalFormat}", payload.Message));
     }

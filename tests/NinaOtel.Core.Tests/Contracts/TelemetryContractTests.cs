@@ -8,6 +8,23 @@ namespace NinaOtel.Core.Tests.Contracts;
 public sealed class TelemetryContractTests
 {
     [Fact]
+    public void TelemetryRecord_PositionalConstructor_DoesNotIncludeTraceId()
+    {
+        var constructor = typeof(TelemetryRecord)
+            .GetConstructors()
+            .Single(static candidate =>
+            {
+                var parameters = candidate.GetParameters();
+                return parameters.Length > 0 && parameters[0].ParameterType == typeof(TelemetrySignal);
+            });
+
+        constructor.GetParameters()
+            .Select(static parameter => parameter.Name)
+            .Should()
+            .NotContain("TraceId");
+    }
+
+    [Fact]
     public void LogRecord_CarriesSourcePriorityAndAttributes()
     {
         var record = TelemetryRecord.Log(
@@ -70,6 +87,23 @@ public sealed class TelemetryContractTests
         }
 
         record.Attributes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SpanRecord_CanCarryTraceIdWithoutChangingFactorySignature()
+    {
+        var record = TelemetryRecord.Span(
+            DateTimeOffset.Parse("2026-06-14T01:02:03Z"),
+            "nina.sequence",
+            "nina.exposure",
+            SpanEventKind.Start,
+            "span-1",
+            TelemetryPriority.Normal) with
+            {
+                TraceId = "00112233445566778899aabbccddeeff",
+            };
+
+        record.TraceId.Should().Be("00112233445566778899aabbccddeeff");
     }
 
     [Fact]
