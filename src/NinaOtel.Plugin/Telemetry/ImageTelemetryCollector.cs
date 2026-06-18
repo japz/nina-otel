@@ -77,6 +77,7 @@ public sealed class ImageTelemetryCollector : IDisposable
         var starAnalysis = args.StarDetectionAnalysis;
         var recordedRms = args.MetaData?.Image?.RecordedRMS;
 
+        PublishExposureSpan(args, attributes);
         PublishImageSaveSpan(args, attributes);
         PublishMetric(timestamp, "image_mean", NormalizeDouble(statistics?.Mean), attributes);
         PublishMetric(timestamp, "image_median", NormalizeDouble(statistics?.Median), attributes);
@@ -154,6 +155,69 @@ public sealed class ImageTelemetryCollector : IDisposable
             attributes);
     }
 
+    private void PublishExposureSpan(
+        ImageSavedEventArgs args,
+        IReadOnlyDictionary<string, object?> baseAttributes)
+    {
+        if (!TryCreateExposureWindow(args, out var startedAt, out var stoppedAt, out var durationSeconds))
+        {
+            return;
+        }
+
+        var attributes = new Dictionary<string, object?>(baseAttributes, StringComparer.Ordinal);
+        attributes["exposure_start"] = startedAt.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+        attributes["exposure_duration_seconds"] = durationSeconds;
+        var spanId = CreateExposureSpanId(args, attributes);
+
+        PublishSpan(
+            startedAt,
+            "nina.exposure",
+            SpanEventKind.Start,
+            spanId,
+            attributes);
+        PublishSpan(
+            stoppedAt,
+            "nina.exposure",
+            SpanEventKind.Stop,
+            spanId,
+            attributes);
+    }
+
+    private static bool TryCreateExposureWindow(
+        ImageSavedEventArgs args,
+        out DateTimeOffset startedAt,
+        out DateTimeOffset stoppedAt,
+        out double durationSeconds)
+    {
+        startedAt = default;
+        stoppedAt = default;
+        durationSeconds = default;
+
+        var exposureStart = args.MetaData?.Image?.ExposureStart;
+        if (exposureStart is null || exposureStart.Value == default)
+        {
+            return false;
+        }
+
+        durationSeconds = args.Duration;
+        if (!double.IsFinite(durationSeconds) || durationSeconds <= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            startedAt = new DateTimeOffset(exposureStart.Value.ToUniversalTime());
+            stoppedAt = startedAt.AddSeconds(durationSeconds);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private static string CreateExposureStartAttributeValue(ImageSavedEventArgs args)
     {
         var exposureStart = args.MetaData?.Image?.ExposureStart;
@@ -190,6 +254,27 @@ public sealed class ImageTelemetryCollector : IDisposable
                 $"readout={AttributeValue(attributes, "readout_mode")}",
                 $"exposure_start={exposureStart}",
                 $"completed={fallback}",
+            ]);
+    }
+
+    private static string CreateExposureSpanId(
+        ImageSavedEventArgs args,
+        IReadOnlyDictionary<string, object?> attributes)
+    {
+        var imagePath = CreateImagePathValue(args);
+
+        return string.Join(
+            "|",
+            [
+                "nina.exposure",
+                $"path_hash={CreateStableHash(imagePath)}",
+                $"file={AttributeValue(attributes, "image_file_name")}",
+                $"target={AttributeValue(attributes, "target_name")}",
+                $"sequence={AttributeValue(attributes, "sequence_title")}",
+                $"camera={AttributeValue(attributes, "camera_name")}",
+                $"readout={AttributeValue(attributes, "readout_mode")}",
+                $"exposure_start={AttributeValue(attributes, "exposure_start")}",
+                $"duration={AttributeValue(attributes, "exposure_duration_seconds")}",
             ]);
     }
 

@@ -84,7 +84,7 @@ public sealed class ImageTelemetryCollectorTests
 
         proxy.RaiseImageSaved(CompleteImageSavedEvent(exposureStart));
 
-        sink.Records.Should().HaveCount(20);
+        sink.Records.Should().HaveCount(22);
         var metrics = sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric).ToArray();
         metrics.Should().HaveCount(19);
         metrics.Should().OnlyContain(record =>
@@ -142,7 +142,7 @@ public sealed class ImageTelemetryCollectorTests
         proxy.RaiseImageSaved(imageSavedEvent);
 
         var span = sink.Records.Should()
-            .ContainSingle(static record => record.Signal == TelemetrySignal.Span)
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.image_save")
             .Which;
         span.Source.Should().Be("nina.image");
         span.Name.Should().Be("nina.image_save");
@@ -165,8 +165,91 @@ public sealed class ImageTelemetryCollectorTests
         proxy.RaiseImageSaved(imageSavedEvent);
 
         sink.Records.Should()
-            .ContainSingle(static record => record.Signal == TelemetrySignal.Span)
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.image_save")
             .Which.SpanId.Should().Be(firstSpanId);
+    }
+
+    [Fact]
+    public void ImageSaved_WhenExposureDurationIsAvailable_PublishesExposureStartAndStopSpans()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(
+            mediator,
+            sink,
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero)));
+        collector.Start();
+        var exposureStart = new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc);
+        var imageSavedEvent = CompleteImageSavedEvent(exposureStart);
+        imageSavedEvent.Duration = 120.5;
+        var rawImagePath = imageSavedEvent.PathToImage!.LocalPath;
+
+        proxy.RaiseImageSaved(imageSavedEvent);
+
+        var exposureSpans = sink.Records
+            .Where(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.exposure")
+            .OrderBy(static record => record.SpanKind)
+            .ToArray();
+        exposureSpans.Should().HaveCount(2);
+        exposureSpans.Should().OnlyContain(static record =>
+            record.Source == "nina.image" &&
+            record.Priority == TelemetryPriority.Normal);
+        exposureSpans.Select(static record => record.SpanKind).Should().BeEquivalentTo(
+            [SpanEventKind.Start, SpanEventKind.Stop]);
+
+        var startSpan = exposureSpans.Should()
+            .ContainSingle(static record => record.SpanKind == SpanEventKind.Start)
+            .Which;
+        var stopSpan = exposureSpans.Should()
+            .ContainSingle(static record => record.SpanKind == SpanEventKind.Stop)
+            .Which;
+        startSpan.Timestamp.Should().Be(new DateTimeOffset(exposureStart));
+        stopSpan.Timestamp.Should().Be(new DateTimeOffset(exposureStart).AddSeconds(120.5));
+        stopSpan.SpanId.Should().Be(startSpan.SpanId);
+        startSpan.SpanId.Should().NotBeNullOrWhiteSpace();
+        startSpan.SpanId.Should().NotContain(rawImagePath);
+        startSpan.SpanId.Should().NotContain(imageSavedEvent.PathToImage.ToString());
+        startSpan.Attributes.Should().Contain("image_file_name", "M42_L_001.fit");
+        startSpan.Attributes.Should().Contain("target_name", "M42");
+        startSpan.Attributes.Should().Contain("sequence_title", "Orion sequence");
+        startSpan.Attributes.Should().Contain("camera_name", "ASI2600MM");
+        startSpan.Attributes.Should().Contain("readout_mode", "High gain");
+        startSpan.Attributes.Should().Contain("exposure_start", "2026-06-18T20:15:30.0000000Z");
+        startSpan.Attributes.Should().Contain("exposure_duration_seconds", 120.5);
+        stopSpan.Attributes.Should().BeEquivalentTo(startSpan.Attributes);
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidExposureDurations))]
+    public void ImageSaved_WhenExposureDurationIsNotValid_DoesNotPublishExposureSpan(double durationSeconds)
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        var imageSavedEvent = CompleteImageSavedEvent(new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc));
+        imageSavedEvent.Duration = durationSeconds;
+
+        proxy.RaiseImageSaved(imageSavedEvent);
+
+        sink.Records.Should().NotContain(static record => record.Name == "nina.exposure");
+        sink.Records.Should().ContainSingle(static record => record.Name == "nina.image_save");
+    }
+
+    [Fact]
+    public void ImageSaved_WhenExposureStartIsMissing_DoesNotPublishExposureSpan()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        var imageSavedEvent = CompleteImageSavedEvent(default);
+        imageSavedEvent.Duration = 120;
+
+        proxy.RaiseImageSaved(imageSavedEvent);
+
+        sink.Records.Should().NotContain(static record => record.Name == "nina.exposure");
+        sink.Records.Should().ContainSingle(static record => record.Name == "nina.image_save");
     }
 
     [Fact]
@@ -209,7 +292,7 @@ public sealed class ImageTelemetryCollectorTests
         var act = () => proxy.RaiseImageSaved(CompleteImageSavedEvent(exposureStart));
 
         act.Should().NotThrow();
-        sink.SpanPublishAttempts.Should().Be(1);
+        sink.SpanPublishAttempts.Should().Be(3);
         sink.Records.Should().HaveCount(19);
         sink.Records.Should().OnlyContain(static record => record.Signal == TelemetrySignal.Metric);
         sink.Records.Select(static record => record.Name).Should().BeEquivalentTo(
@@ -380,6 +463,7 @@ public sealed class ImageTelemetryCollectorTests
                 },
             },
             PathToImage = new Uri("file:///Users/jasper/images/M42_L_001.fit"),
+            Duration = 120,
             Statistics = ImageStatistics(
                 mean: 101.2,
                 median: 99.9,
@@ -391,6 +475,15 @@ public sealed class ImageTelemetryCollectorTests
                 maxOccurrences: 7),
             StarDetectionAnalysis = starDetectionAnalysis,
         };
+
+    public static TheoryData<double> InvalidExposureDurations { get; } =
+    [
+        0,
+        -1,
+        double.NaN,
+        double.PositiveInfinity,
+        double.NegativeInfinity,
+    ];
 
     private static ImageSavedEventArgs SparseImageSavedEvent() =>
         new()
