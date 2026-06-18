@@ -125,7 +125,29 @@ public static class NinaMetricCatalog
             : IsSwitchReadOnlyGaugeName(metricName);
     }
 
+    internal static bool TryGetExportKind(string metricName, out NinaMetricExportKind exportKind)
+    {
+        if (!string.IsNullOrWhiteSpace(metricName) &&
+            DefinitionsByName.TryGetValue(metricName, out var metric))
+        {
+            exportKind = metric.ExportKind;
+            return true;
+        }
+
+        if (IsSwitchReadOnlyGaugeName(metricName))
+        {
+            exportKind = NinaMetricExportKind.LiveObservableGauge;
+            return true;
+        }
+
+        exportKind = default;
+        return false;
+    }
+
     internal static IReadOnlySet<string>? GetLiveObservableGaugeAttributeNames(string metricName)
+        => GetMetricAttributeNames(metricName, NinaMetricExportKind.LiveObservableGauge);
+
+    internal static IReadOnlySet<string>? GetMetricAttributeNames(string metricName, NinaMetricExportKind exportKind)
     {
         if (string.IsNullOrWhiteSpace(metricName))
         {
@@ -134,12 +156,13 @@ public static class NinaMetricCatalog
 
         if (DefinitionsByName.TryGetValue(metricName, out var metric))
         {
-            return metric.ExportKind == NinaMetricExportKind.LiveObservableGauge
+            return metric.ExportKind == exportKind
                 ? new HashSet<string>(metric.AttributeNames, StringComparer.Ordinal)
                 : null;
         }
 
-        return IsSwitchReadOnlyGaugeName(metricName)
+        return exportKind == NinaMetricExportKind.LiveObservableGauge &&
+            IsSwitchReadOnlyGaugeName(metricName)
             ? new HashSet<string>(
                 GlobalAttributes.Concat(["switch_name", "switch_id", "switch_channel_name"]),
                 StringComparer.Ordinal)

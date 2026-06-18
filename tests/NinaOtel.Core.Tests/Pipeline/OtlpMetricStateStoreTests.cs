@@ -45,7 +45,7 @@ public sealed class OtlpMetricStateStoreTests
     }
 
     [Fact]
-    public void Apply_SkipsDeferredImageMetrics()
+    public void Apply_StoresDeferredImageMetricsAsOneShotMeasurements()
     {
         using var meter = new Meter("ninaotel.test");
         var store = new OtlpMetricStateStore(meter);
@@ -63,8 +63,14 @@ public sealed class OtlpMetricStateStoreTests
 
         var accepted = store.Apply([imageMetric]);
 
-        accepted.Should().Be(0);
-        store.InstrumentNames.Should().BeEmpty();
+        accepted.Should().Be(1);
+        store.InstrumentNames.Should().ContainSingle().Which.Should().Be("image_mean");
+        var measurement = store.CollectMeasurements("image_mean").Should().ContainSingle().Subject;
+        measurement.Value.Should().Be(1842.5);
+        var tags = measurement.Tags.ToArray().ToDictionary(static tag => tag.Key, static tag => tag.Value);
+        tags.Should().Contain(new KeyValuePair<string, object?>("image_file_name", "M42_L_001.fit"));
+        tags.Should().Contain(new KeyValuePair<string, object?>("camera_name", "ASI2600MM"));
+        tags.Should().Contain(new KeyValuePair<string, object?>("ninaotel.source", "nina.image"));
         store.CollectMeasurements("image_mean").Should().BeEmpty();
     }
 

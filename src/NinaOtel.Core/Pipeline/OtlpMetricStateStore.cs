@@ -62,27 +62,33 @@ internal sealed class OtlpMetricStateStore
     {
         if (record.Signal != TelemetrySignal.Metric ||
             !record.NumericValue.HasValue ||
-            !NinaMetricCatalog.IsLiveObservableGauge(record.Name))
+            !NinaMetricCatalog.TryGetExportKind(record.Name, out var exportKind))
         {
             return false;
         }
 
         lock (syncRoot)
         {
-            var tags = CreateTags(record);
-            if (double.IsNaN(record.NumericValue.Value))
+            var tags = CreateTags(record, exportKind);
+            if (exportKind == NinaMetricExportKind.LiveObservableGauge &&
+                double.IsNaN(record.NumericValue.Value))
             {
                 return instruments.TryGetValue(record.Name, out var existingInstrument) &&
                     existingInstrument.Remove(tags);
             }
 
-            var instrument = GetOrCreateInstrument(record.Name);
+            if (double.IsNaN(record.NumericValue.Value))
+            {
+                return false;
+            }
+
+            var instrument = GetOrCreateInstrument(record.Name, exportKind);
             instrument.Update(record, tags);
             return true;
         }
     }
 
-    private MetricInstrumentState GetOrCreateInstrument(string instrumentName)
+    private MetricInstrumentState GetOrCreateInstrument(string instrumentName, NinaMetricExportKind exportKind)
     {
         if (instruments.TryGetValue(instrumentName, out var instrument))
         {
@@ -94,14 +100,17 @@ internal sealed class OtlpMetricStateStore
                 instrumentName,
                 () => CollectMeasurements(instrumentName),
                 unit: null,
-                description: null));
+                description: null),
+            exportKind);
         instruments.Add(instrumentName, instrument);
         return instrument;
     }
 
-    private static IReadOnlyList<KeyValuePair<string, object?>> CreateTags(TelemetryRecord record)
+    private static IReadOnlyList<KeyValuePair<string, object?>> CreateTags(
+        TelemetryRecord record,
+        NinaMetricExportKind exportKind)
     {
-        var allowedAttributes = NinaMetricCatalog.GetLiveObservableGaugeAttributeNames(record.Name);
+        var allowedAttributes = NinaMetricCatalog.GetMetricAttributeNames(record.Name, exportKind);
         if (allowedAttributes is null)
         {
             return Array.AsReadOnly(Array.Empty<KeyValuePair<string, object?>>());
@@ -126,14 +135,20 @@ internal sealed class OtlpMetricStateStore
             "\u001f",
             tags.Select(static tag => $"{tag.Key}\u001e{tag.Value?.GetType().FullName}\u001e{tag.Value}"));
 
-    private sealed class MetricInstrumentState(ObservableGauge<double> gauge)
+    private sealed class MetricInstrumentState(ObservableGauge<double> gauge, NinaMetricExportKind exportKind)
     {
         private readonly ObservableGauge<double> gauge = gauge;
-        private readonly Dictionary<string, MetricPoint> points = new(StringComparer.Ordinal);
+        private readonly NinaMetricExportKind exportKind = exportKind;
+        private readonly Dictionary<string, MetricPoint> livePoints = new(StringComparer.Ordinal);
+        private readonly Queue<MetricPoint> oneShotPoints = new();
 
         public IReadOnlyList<Measurement<double>> Collect()
         {
-            var measurements = points.Values
+            var points = exportKind == NinaMetricExportKind.DeferredPointInTime
+                ? DrainOneShotPoints()
+                : livePoints.Values.ToArray();
+
+            var measurements = points
                 .Select(static point => new Measurement<double>(point.Value, point.Tags))
                 .ToArray();
 
@@ -144,12 +159,32 @@ internal sealed class OtlpMetricStateStore
             TelemetryRecord record,
             IReadOnlyList<KeyValuePair<string, object?>> tags)
         {
-            points[CreatePointKey(tags)] = new MetricPoint(record.NumericValue!.Value, tags);
+            if (exportKind == NinaMetricExportKind.DeferredPointInTime)
+            {
+                oneShotPoints.Enqueue(new MetricPoint(record.NumericValue!.Value, tags));
+            }
+            else
+            {
+                livePoints[CreatePointKey(tags)] = new MetricPoint(record.NumericValue!.Value, tags);
+            }
+
             GC.KeepAlive(gauge);
         }
 
         public bool Remove(IReadOnlyList<KeyValuePair<string, object?>> tags) =>
-            points.Remove(CreatePointKey(tags));
+            livePoints.Remove(CreatePointKey(tags));
+
+        private MetricPoint[] DrainOneShotPoints()
+        {
+            if (oneShotPoints.Count == 0)
+            {
+                return [];
+            }
+
+            var points = oneShotPoints.ToArray();
+            oneShotPoints.Clear();
+            return points;
+        }
     }
 
     private sealed record MetricPoint(
