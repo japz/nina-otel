@@ -102,7 +102,7 @@ public sealed class FilterWheelTelemetryCollectorTests
             new FilterInfo { Name = "SII", Position = 4 });
 
         sink.Records.Should().ContainSingle(record => record.Name == "nina.filter_change")
-            .Attributes["filter_wheel_name"].Should().Be("Unknown");
+            .Which.Attributes["filter_wheel_name"].Should().Be("Unknown");
     }
 
     [Fact]
