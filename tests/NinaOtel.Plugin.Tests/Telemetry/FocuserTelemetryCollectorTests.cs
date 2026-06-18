@@ -259,12 +259,7 @@ public sealed class FocuserTelemetryCollectorTests
         });
         sink.Records.Clear();
 
-        collector.UpdateEndAutoFocusRun(new AutoFocusInfo
-        {
-            Position = 12456,
-            Temperature = -3.25,
-            Filter = "Ha",
-        });
+        collector.UpdateEndAutoFocusRun(CreateAutoFocusInfo(12456, -3.25, "Ha"));
 
         var span = sink.Records.Should()
             .ContainSingle(static record => record.Signal == TelemetrySignal.Span)
@@ -287,12 +282,7 @@ public sealed class FocuserTelemetryCollectorTests
         var sink = new RecordingTelemetrySink();
         using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
 
-        collector.UpdateEndAutoFocusRun(new AutoFocusInfo
-        {
-            Position = double.NaN,
-            Temperature = double.NaN,
-            Filter = "",
-        });
+        collector.UpdateEndAutoFocusRun(CreateAutoFocusInfo(double.NaN, double.NaN, string.Empty));
 
         var span = sink.Records.Should()
             .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.autofocus")
@@ -314,12 +304,7 @@ public sealed class FocuserTelemetryCollectorTests
     {
         var span = PublishAutofocusSpan(
             DateTimeOffset.UtcNow,
-            new AutoFocusInfo
-            {
-                Position = position,
-                Temperature = -3.25,
-                Filter = "Ha",
-            });
+            CreateAutoFocusInfo(position, -3.25, "Ha"));
 
         span.Attributes.Should().Contain("autofocus_position", expectedPosition);
     }
@@ -343,39 +328,19 @@ public sealed class FocuserTelemetryCollectorTests
         var timestamp = new DateTimeOffset(2026, 6, 18, 23, 15, 0, TimeSpan.Zero);
         var first = PublishAutofocusSpan(
             timestamp,
-            new AutoFocusInfo
-            {
-                Position = 12456,
-                Temperature = -3.25,
-                Filter = "Ha",
-            },
+            CreateAutoFocusInfo(12456, -3.25, "Ha"),
             "EAF");
         var repeated = PublishAutofocusSpan(
             timestamp,
-            new AutoFocusInfo
-            {
-                Position = 12456,
-                Temperature = -3.25,
-                Filter = "Ha",
-            },
+            CreateAutoFocusInfo(12456, -3.25, "Ha"),
             "EAF");
         var differentTimestamp = PublishAutofocusSpan(
             timestamp.AddSeconds(1),
-            new AutoFocusInfo
-            {
-                Position = 12456,
-                Temperature = -3.25,
-                Filter = "Ha",
-            },
+            CreateAutoFocusInfo(12456, -3.25, "Ha"),
             "EAF");
         var differentFilter = PublishAutofocusSpan(
             timestamp,
-            new AutoFocusInfo
-            {
-                Position = 12456,
-                Temperature = -3.25,
-                Filter = "OIII",
-            },
+            CreateAutoFocusInfo(12456, -3.25, "OIII"),
             "EAF");
 
         first.SpanId.Should().Be(repeated.SpanId);
@@ -392,12 +357,7 @@ public sealed class FocuserTelemetryCollectorTests
             new ThrowingTelemetrySink(),
             TimeProvider.System);
 
-        var act = () => collector.UpdateEndAutoFocusRun(new AutoFocusInfo
-        {
-            Position = 12456,
-            Temperature = -3.25,
-            Filter = "Ha",
-        });
+        var act = () => collector.UpdateEndAutoFocusRun(CreateAutoFocusInfo(12456, -3.25, "Ha"));
 
         act.Should().NotThrow();
     }
@@ -429,6 +389,9 @@ public sealed class FocuserTelemetryCollectorTests
             .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.autofocus")
             .Which;
     }
+
+    private static AutoFocusInfo CreateAutoFocusInfo(double position, double temperature, string filter) =>
+        new(position, temperature, filter, DateTime.UtcNow);
 
     private sealed class RecordingTelemetrySink : ITelemetrySink
     {
