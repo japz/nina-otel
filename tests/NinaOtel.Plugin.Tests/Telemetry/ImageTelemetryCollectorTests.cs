@@ -118,7 +118,7 @@ public sealed class ImageTelemetryCollectorTests
         sink.Records.Should().ContainSingle(record => record.Name == "image_rms_peak_dec_arcsec" && record.NumericValue == 1.6);
         sink.Records.Should().ContainSingle(record =>
             record.Name == "image_rms_peak_arcsec" &&
-            record.NumericValue!.Value.ShouldBeApproximately(2.0));
+            ImageTelemetryAssertions.IsApproximately(record.NumericValue!.Value, 2.0));
     }
 
     [Fact]
@@ -420,8 +420,8 @@ public sealed class ImageTelemetryCollectorTests
     }
 }
 
-internal static class ImageTelemetryTestExtensions
+internal static class ImageTelemetryAssertions
 {
-    public static bool ShouldBeApproximately(this double actual, double expected) =>
+    public static bool IsApproximately(double actual, double expected) =>
         Math.Abs(actual - expected) < 0.000001;
 }

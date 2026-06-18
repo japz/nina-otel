@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Options;
+using NinaOtel.Core.Telemetry;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
@@ -18,6 +19,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
     private readonly ILogger logger;
     private readonly Meter meter;
     private readonly OtlpMetricStateStore metricStateStore;
+    private readonly OtlpPointInTimeMetricExporter pointInTimeMetricExporter;
     private readonly TrackingLogRecordExportProcessor logProcessor;
     private readonly TrackingMetricExporter metricExporter;
     private readonly BaseExportingMetricReader metricReader;
@@ -48,6 +50,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
 
         meter = new Meter(MeterName);
         metricStateStore = new OtlpMetricStateStore(meter);
+        pointInTimeMetricExporter = new OtlpPointInTimeMetricExporter(otlpOptions);
         metricExporter = new TrackingMetricExporter(
             new OtlpMetricExporter(CreateExporterOptions(otlpOptions, "v1/metrics")));
         metricReader = new BaseExportingMetricReader(metricExporter);
@@ -58,19 +61,20 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
             .Build();
     }
 
-    public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+    public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(records);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (records.Count == 0)
         {
-            return Task.CompletedTask;
+            return;
         }
 
         logProcessor.ResetBatchStatus();
         metricExporter.ResetBatchStatus();
-        var metricCount = metricStateStore.Apply(records);
+        await ExportPointInTimeMetricsAsync(records, cancellationToken).ConfigureAwait(false);
+        var metricCount = metricStateStore.Apply(GetLiveMetricRecords(records));
         foreach (var record in records)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -97,14 +101,36 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
             throw logFailure;
         }
 
-        return Task.CompletedTask;
+        return;
     }
 
     public void Dispose()
     {
         meterProvider.Dispose();
+        pointInTimeMetricExporter.Dispose();
         meter.Dispose();
         loggerFactory.Dispose();
+    }
+
+    private Task ExportPointInTimeMetricsAsync(
+        IReadOnlyList<TelemetryRecord> records,
+        CancellationToken cancellationToken) =>
+        pointInTimeMetricExporter.ExportAsync(records, cancellationToken);
+
+    private static IReadOnlyList<TelemetryRecord> GetLiveMetricRecords(IReadOnlyList<TelemetryRecord> records)
+    {
+        var liveRecords = new List<TelemetryRecord>(records.Count);
+        foreach (var record in records)
+        {
+            if (record.Signal == TelemetrySignal.Metric &&
+                NinaMetricCatalog.TryGetExportKind(record.Name, out var exportKind) &&
+                exportKind == NinaMetricExportKind.LiveObservableGauge)
+            {
+                liveRecords.Add(record);
+            }
+        }
+
+        return liveRecords;
     }
 
     private void ExportAsLog(TelemetryRecord record)
