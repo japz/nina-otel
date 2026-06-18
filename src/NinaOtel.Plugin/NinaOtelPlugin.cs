@@ -25,14 +25,17 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly TelemetryPipeline pipeline;
     private readonly AddonHost addonHost;
     private readonly CoreLifecycleTelemetryProducer lifecycleTelemetry;
+    private readonly CameraTelemetryCollector cameraTelemetry;
     private readonly FocuserTelemetryCollector focuserTelemetry;
 
     [ImportingConstructor]
     public NinaOtelPlugin(
         IProfileService profileService,
+        ICameraMediator cameraMediator,
         IFocuserMediator focuserMediator)
     {
         ArgumentNullException.ThrowIfNull(profileService);
+        ArgumentNullException.ThrowIfNull(cameraMediator);
         ArgumentNullException.ThrowIfNull(focuserMediator);
 
         this.profileService = profileService;
@@ -41,6 +44,7 @@ public sealed class NinaOtelPlugin : PluginBase
         var options = NinaOtelOptionsViewModel.Options;
         exporter = new ReloadableTelemetryExporter(CreateCollectorExporter(options));
         pipeline = new TelemetryPipeline(exporter, options.Buffer.MemoryQueueCapacity);
+        cameraTelemetry = new CameraTelemetryCollector(cameraMediator, pipeline, timeProvider);
         focuserTelemetry = new FocuserTelemetryCollector(focuserMediator, pipeline, timeProvider);
         lifecycleTelemetry = new CoreLifecycleTelemetryProducer(pipeline, timeProvider, options);
         addonHost = new AddonHost(
@@ -57,6 +61,7 @@ public sealed class NinaOtelPlugin : PluginBase
     public override async Task Initialize()
     {
         await pipeline.StartAsync(shutdownCts.Token).ConfigureAwait(false);
+        cameraTelemetry.Start();
         focuserTelemetry.Start();
         lifecycleTelemetry.PluginInitialized();
         await addonHost.StartAsync(Array.Empty<ITelemetryAddon>(), shutdownCts.Token).ConfigureAwait(false);
@@ -67,6 +72,7 @@ public sealed class NinaOtelPlugin : PluginBase
     {
         profileService.ProfileChanged -= ProfileService_ProfileChanged;
         NinaOtelOptionsViewModel.PropertyChanged -= NinaOtelOptionsViewModel_PropertyChanged;
+        cameraTelemetry.Dispose();
         focuserTelemetry.Dispose();
         lifecycleTelemetry.PluginStopping();
         await addonHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
