@@ -4,23 +4,34 @@ using NinaOtel.Core.Options;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
+using System.Diagnostics.Metrics;
 
 namespace NinaOtel.Core.Pipeline;
 
 public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
 {
     private const string LoggerCategoryName = "NinaOtel";
+    private const string MeterName = "NinaOtel.Metrics";
     private readonly ILoggerFactory loggerFactory;
     private readonly ILogger logger;
-    private readonly TrackingLogRecordExportProcessor processor;
+    private readonly Meter meter;
+    private readonly OtlpMetricStateStore metricStateStore;
+    private readonly TrackingLogRecordExportProcessor logProcessor;
+    private readonly TrackingMetricExporter metricExporter;
+    private readonly BaseExportingMetricReader metricReader;
+    private readonly MeterProvider meterProvider;
+    private readonly int timeoutMilliseconds;
 
     public OtlpTelemetryExporter(NinaOtelOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         var otlpOptions = options.Otlp;
-        processor = new TrackingLogRecordExportProcessor(new OtlpLogExporter(CreateExporterOptions(otlpOptions)));
+        timeoutMilliseconds = ToTimeoutMilliseconds(otlpOptions.Timeout);
+        logProcessor = new TrackingLogRecordExportProcessor(
+            new OtlpLogExporter(CreateExporterOptions(otlpOptions, "v1/logs")));
         loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.SetMinimumLevel(LogLevel.Trace);
@@ -30,10 +41,21 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
                 logging.IncludeScopes = false;
                 logging.ParseStateValues = true;
                 logging.SetResourceBuilder(CreateResourceBuilder());
-                logging.AddProcessor(processor);
+                logging.AddProcessor(logProcessor);
             });
         });
         logger = loggerFactory.CreateLogger(LoggerCategoryName);
+
+        meter = new Meter(MeterName);
+        metricStateStore = new OtlpMetricStateStore(meter);
+        metricExporter = new TrackingMetricExporter(
+            new OtlpMetricExporter(CreateExporterOptions(otlpOptions, "v1/metrics")));
+        metricReader = new BaseExportingMetricReader(metricExporter);
+        meterProvider = Sdk.CreateMeterProviderBuilder()
+            .AddMeter(MeterName)
+            .SetResourceBuilder(CreateResourceBuilder())
+            .AddReader(metricReader)
+            .Build();
     }
 
     public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
@@ -46,23 +68,44 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
             return Task.CompletedTask;
         }
 
-        processor.ResetBatchStatus();
+        logProcessor.ResetBatchStatus();
+        metricExporter.ResetBatchStatus();
+        var metricCount = metricStateStore.Apply(records);
         foreach (var record in records)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ExportAsLog(record);
+            if (record.Signal != TelemetrySignal.Metric)
+            {
+                ExportAsLog(record);
+            }
         }
 
-        var failure = processor.GetBatchFailure();
-        if (failure is not null)
+        if (metricCount > 0 && !metricReader.Collect(timeoutMilliseconds))
         {
-            throw failure;
+            throw new TelemetryExportException("OTLP metric reader failed to collect metrics.");
+        }
+
+        var metricFailure = metricExporter.GetBatchFailure();
+        if (metricFailure is not null)
+        {
+            throw metricFailure;
+        }
+
+        var logFailure = logProcessor.GetBatchFailure();
+        if (logFailure is not null)
+        {
+            throw logFailure;
         }
 
         return Task.CompletedTask;
     }
 
-    public void Dispose() => loggerFactory.Dispose();
+    public void Dispose()
+    {
+        meterProvider.Dispose();
+        meter.Dispose();
+        loggerFactory.Dispose();
+    }
 
     private void ExportAsLog(TelemetryRecord record)
     {
@@ -89,11 +132,11 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
         return "NinaOtel telemetry record";
     }
 
-    private static OtlpExporterOptions CreateExporterOptions(OtlpOptions options)
+    private static OtlpExporterOptions CreateExporterOptions(OtlpOptions options, string httpSignalPath)
     {
         var exporterOptions = new OtlpExporterOptions
         {
-            Endpoint = CreateLogEndpoint(options),
+            Endpoint = CreateSignalEndpoint(options, httpSignalPath),
             Protocol = options.Protocol switch
             {
                 OtlpProtocol.HttpProtobuf => OtlpExportProtocol.HttpProtobuf,
@@ -111,7 +154,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
         return exporterOptions;
     }
 
-    private static Uri CreateLogEndpoint(OtlpOptions options)
+    internal static Uri CreateSignalEndpoint(OtlpOptions options, string httpSignalPath)
     {
         if (options.Protocol != OtlpProtocol.HttpProtobuf)
         {
@@ -120,10 +163,25 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
 
         var builder = new UriBuilder(options.Endpoint);
         var path = builder.Path.TrimEnd('/');
-        builder.Path = path.EndsWith("/v1/logs", StringComparison.OrdinalIgnoreCase)
-            ? path
-            : $"{path}/v1/logs";
+        path = StripKnownOtlpSignalPath(path);
+        builder.Path = string.IsNullOrEmpty(path)
+            ? httpSignalPath
+            : $"{path}/{httpSignalPath}";
         return builder.Uri;
+    }
+
+    private static string StripKnownOtlpSignalPath(string path)
+    {
+        var knownSignalPaths = new[] { "/v1/logs", "/v1/metrics", "/v1/traces" };
+        foreach (var knownSignalPath in knownSignalPaths)
+        {
+            if (path.EndsWith(knownSignalPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return path[..^knownSignalPath.Length];
+            }
+        }
+
+        return path;
     }
 
     private static int ToTimeoutMilliseconds(TimeSpan timeout)
@@ -186,6 +244,66 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
                     batchFailure ??= new TelemetryExportException("OTLP log exporter threw while exporting.", ex);
                 }
             }
+        }
+    }
+
+    private sealed class TrackingMetricExporter(BaseExporter<Metric> exporter) : BaseExporter<Metric>
+    {
+        private readonly object syncRoot = new();
+        private TelemetryExportException? batchFailure;
+
+        public void ResetBatchStatus()
+        {
+            lock (syncRoot)
+            {
+                batchFailure = null;
+            }
+        }
+
+        public TelemetryExportException? GetBatchFailure()
+        {
+            lock (syncRoot)
+            {
+                return batchFailure;
+            }
+        }
+
+        public override ExportResult Export(in Batch<Metric> batch)
+        {
+            lock (syncRoot)
+            {
+                try
+                {
+                    var result = exporter.Export(batch);
+                    if (result == ExportResult.Failure)
+                    {
+                        batchFailure ??= new TelemetryExportException("OTLP metric exporter returned failure.");
+                    }
+
+                    return result;
+                }
+                catch (Exception ex)
+                {
+                    batchFailure ??= new TelemetryExportException("OTLP metric exporter threw while exporting.", ex);
+                    return ExportResult.Failure;
+                }
+            }
+        }
+
+        protected override bool OnForceFlush(int timeoutMilliseconds) =>
+            exporter.ForceFlush(timeoutMilliseconds);
+
+        protected override bool OnShutdown(int timeoutMilliseconds) =>
+            exporter.Shutdown(timeoutMilliseconds);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                exporter.Dispose();
+            }
+
+            base.Dispose(disposing);
         }
     }
 }

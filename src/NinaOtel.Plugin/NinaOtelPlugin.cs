@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.ComponentModel.Composition;
 using NINA.Core.Utility;
+using NINA.Equipment.Interfaces.Mediator;
 using NINA.Plugin;
 using NINA.Plugin.Interfaces;
 using NINA.Profile.Interfaces;
@@ -10,6 +11,7 @@ using NinaOtel.Core.Options;
 using NinaOtel.Core.Pipeline;
 using NinaOtel.Core.Telemetry;
 using NinaOtel.Plugin.Options;
+using NinaOtel.Plugin.Telemetry;
 
 namespace NinaOtel.Plugin;
 
@@ -23,11 +25,15 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly TelemetryPipeline pipeline;
     private readonly AddonHost addonHost;
     private readonly CoreLifecycleTelemetryProducer lifecycleTelemetry;
+    private readonly FocuserTelemetryCollector focuserTelemetry;
 
     [ImportingConstructor]
-    public NinaOtelPlugin(IProfileService profileService)
+    public NinaOtelPlugin(
+        IProfileService profileService,
+        IFocuserMediator focuserMediator)
     {
         ArgumentNullException.ThrowIfNull(profileService);
+        ArgumentNullException.ThrowIfNull(focuserMediator);
 
         this.profileService = profileService;
         NinaOtelOptionsViewModel = new NinaOtelOptionsViewModel(
@@ -35,6 +41,7 @@ public sealed class NinaOtelPlugin : PluginBase
         var options = NinaOtelOptionsViewModel.Options;
         exporter = new ReloadableTelemetryExporter(CreateCollectorExporter(options));
         pipeline = new TelemetryPipeline(exporter, options.Buffer.MemoryQueueCapacity);
+        focuserTelemetry = new FocuserTelemetryCollector(focuserMediator, pipeline, timeProvider);
         lifecycleTelemetry = new CoreLifecycleTelemetryProducer(pipeline, timeProvider, options);
         addonHost = new AddonHost(
             pipeline,
@@ -50,6 +57,7 @@ public sealed class NinaOtelPlugin : PluginBase
     public override async Task Initialize()
     {
         await pipeline.StartAsync(shutdownCts.Token).ConfigureAwait(false);
+        focuserTelemetry.Start();
         lifecycleTelemetry.PluginInitialized();
         await addonHost.StartAsync(Array.Empty<ITelemetryAddon>(), shutdownCts.Token).ConfigureAwait(false);
         Logger.Info("NinaOtel foundation initialized.");
@@ -59,6 +67,7 @@ public sealed class NinaOtelPlugin : PluginBase
     {
         profileService.ProfileChanged -= ProfileService_ProfileChanged;
         NinaOtelOptionsViewModel.PropertyChanged -= NinaOtelOptionsViewModel_PropertyChanged;
+        focuserTelemetry.Dispose();
         lifecycleTelemetry.PluginStopping();
         await addonHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
         lifecycleTelemetry.PluginStopped();
