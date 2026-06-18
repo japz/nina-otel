@@ -4,6 +4,10 @@ using NinaOtel.Abstractions.Telemetry;
 
 namespace NinaOtel.Plugin.Telemetry;
 
+internal readonly record struct QhyCameraSensorTelemetry(
+    double AirPressure,
+    double Humidity);
+
 public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
 {
     private const string SourceName = "nina.camera";
@@ -13,9 +17,12 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
     private readonly ICameraMediator mediator;
     private readonly ITelemetrySink sink;
     private readonly TimeProvider timeProvider;
+    private readonly Func<QhyCameraSensorTelemetry?> qhySensorTelemetryProvider;
     private bool disposed;
     private bool hasPublishedBattery;
     private bool hasPublishedCoolerPower;
+    private bool hasPublishedQhyAirPressure;
+    private bool hasPublishedQhyHumidity;
     private bool hasPublishedTemperature;
     private string? lastConnectedCameraName;
     private bool started;
@@ -24,10 +31,20 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
         ICameraMediator mediator,
         ITelemetrySink sink,
         TimeProvider timeProvider)
+        : this(mediator, sink, timeProvider, null)
+    {
+    }
+
+    internal CameraTelemetryCollector(
+        ICameraMediator mediator,
+        ITelemetrySink sink,
+        TimeProvider timeProvider,
+        Func<QhyCameraSensorTelemetry?>? qhySensorTelemetryProvider = null)
     {
         this.mediator = mediator ?? throw new ArgumentNullException(nameof(mediator));
         this.sink = sink ?? throw new ArgumentNullException(nameof(sink));
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        this.qhySensorTelemetryProvider = qhySensorTelemetryProvider ?? ReadQhySensorTelemetry;
     }
 
     public void Start()
@@ -69,7 +86,9 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
                         lastConnectedCameraName,
                         hasPublishedTemperature,
                         hasPublishedCoolerPower,
-                        hasPublishedBattery);
+                        hasPublishedBattery,
+                        hasPublishedQhyAirPressure,
+                        hasPublishedQhyHumidity);
                     ResetPublishedState();
                 }
 
@@ -83,7 +102,9 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
                     lastConnectedCameraName,
                     hasPublishedTemperature,
                     hasPublishedCoolerPower,
-                    hasPublishedBattery);
+                    hasPublishedBattery,
+                    hasPublishedQhyAirPressure,
+                    hasPublishedQhyHumidity);
                 ResetPublishedFlags();
             }
 
@@ -159,6 +180,8 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
                 attributes));
             hasPublishedBattery = false;
         }
+
+        PublishQhySensorMetrics(timestamp, attributes);
     }
 
     private void PublishOrClearUnavailableMetric(
@@ -196,7 +219,9 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
         string cameraName,
         bool clearTemperature,
         bool clearCoolerPower,
-        bool clearBattery)
+        bool clearBattery,
+        bool clearQhyAirPressure,
+        bool clearQhyHumidity)
     {
         var timestamp = timeProvider.GetUtcNow();
         var attributes = CreateCameraAttributes(cameraName);
@@ -233,6 +258,28 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
                 TelemetryPriority.Normal,
                 attributes));
         }
+
+        if (clearQhyAirPressure)
+        {
+            TryPublishSafely(TelemetryRecord.Metric(
+                timestamp,
+                SourceName,
+                "qhy_sensor_air_pressure",
+                double.NaN,
+                TelemetryPriority.Normal,
+                attributes));
+        }
+
+        if (clearQhyHumidity)
+        {
+            TryPublishSafely(TelemetryRecord.Metric(
+                timestamp,
+                SourceName,
+                "qhy_sensor_humidity",
+                double.NaN,
+                TelemetryPriority.Normal,
+                attributes));
+        }
     }
 
     private void PublishRegistrationFailure(Exception ex)
@@ -260,6 +307,100 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
         hasPublishedTemperature = false;
         hasPublishedCoolerPower = false;
         hasPublishedBattery = false;
+        hasPublishedQhyAirPressure = false;
+        hasPublishedQhyHumidity = false;
+    }
+
+    private void PublishQhySensorMetrics(
+        DateTimeOffset timestamp,
+        IReadOnlyDictionary<string, object?> attributes)
+    {
+        QhyCameraSensorTelemetry? qhySensorTelemetry;
+
+        try
+        {
+            qhySensorTelemetry = qhySensorTelemetryProvider();
+        }
+        catch
+        {
+            qhySensorTelemetry = null;
+        }
+
+        if (qhySensorTelemetry is not { } telemetry)
+        {
+            ClearQhySensorMetricsIfNeeded(timestamp, attributes);
+            return;
+        }
+
+        PublishOrClearUnavailableMetric(
+            timestamp,
+            "qhy_sensor_air_pressure",
+            telemetry.AirPressure,
+            attributes,
+            ref hasPublishedQhyAirPressure);
+        PublishOrClearUnavailableMetric(
+            timestamp,
+            "qhy_sensor_humidity",
+            telemetry.Humidity,
+            attributes,
+            ref hasPublishedQhyHumidity);
+    }
+
+    private void ClearQhySensorMetricsIfNeeded(
+        DateTimeOffset timestamp,
+        IReadOnlyDictionary<string, object?> attributes)
+    {
+        if (hasPublishedQhyAirPressure)
+        {
+            TryPublishSafely(TelemetryRecord.Metric(
+                timestamp,
+                SourceName,
+                "qhy_sensor_air_pressure",
+                double.NaN,
+                TelemetryPriority.Normal,
+                attributes));
+            hasPublishedQhyAirPressure = false;
+        }
+
+        if (hasPublishedQhyHumidity)
+        {
+            TryPublishSafely(TelemetryRecord.Metric(
+                timestamp,
+                SourceName,
+                "qhy_sensor_humidity",
+                double.NaN,
+                TelemetryPriority.Normal,
+                attributes));
+            hasPublishedQhyHumidity = false;
+        }
+    }
+
+    private QhyCameraSensorTelemetry? ReadQhySensorTelemetry()
+    {
+        object camera;
+
+        try
+        {
+            camera = mediator.GetDevice();
+        }
+        catch
+        {
+            return null;
+        }
+
+        camera = camera is PersistSettingsCameraDecorator decorator
+            ? decorator.Camera
+            : camera;
+
+        return camera is QHYCamera qhyCamera
+            ? new QhyCameraSensorTelemetry(
+                qhyCamera.QhyHasSensorAirPressure
+                    ? qhyCamera.QhySensorAirPressure
+                    : double.NaN,
+                qhyCamera.QhyHasSensorHumidity
+                    ? qhyCamera.QhySensorHumidity
+                    : double.NaN)
+            : null;
     }
 
     private void TryPublishSafely(TelemetryRecord record)

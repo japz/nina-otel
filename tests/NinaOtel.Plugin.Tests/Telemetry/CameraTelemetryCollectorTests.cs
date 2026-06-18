@@ -209,6 +209,194 @@ public sealed class CameraTelemetryCollectorTests
     }
 
     [Fact]
+    public void UpdateDeviceInfo_WhenQhySensorValuesAreAvailable_PublishesQhyMetrics()
+    {
+        var mediator = new FakeCameraMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new CameraTelemetryCollector(
+            mediator,
+            sink,
+            TimeProvider.System,
+            () => new QhyCameraSensorTelemetry(1012.4, 38.5));
+
+        collector.UpdateDeviceInfo(new CameraInfo
+        {
+            Connected = true,
+            Name = "QHY268M",
+            Temperature = double.NaN,
+            CoolerPower = double.NaN,
+            HasBattery = false,
+            Battery = -1,
+        });
+
+        sink.Records.Should().HaveCount(2);
+        sink.Records.Should().ContainEquivalentOf(
+            TelemetryRecord.Metric(
+                sink.Records[0].Timestamp,
+                "nina.camera",
+                "qhy_sensor_air_pressure",
+                1012.4,
+                TelemetryPriority.Normal,
+                new Dictionary<string, object?> { ["camera_name"] = "QHY268M" }),
+            options => options.Excluding(record => record.Timestamp));
+        sink.Records.Should().ContainEquivalentOf(
+            TelemetryRecord.Metric(
+                sink.Records[0].Timestamp,
+                "nina.camera",
+                "qhy_sensor_humidity",
+                38.5,
+                TelemetryPriority.Normal,
+                new Dictionary<string, object?> { ["camera_name"] = "QHY268M" }),
+            options => options.Excluding(record => record.Timestamp));
+    }
+
+    [Fact]
+    public void UpdateDeviceInfo_WhenQhySensorValuesAreUnavailableBeforeAnySample_DoesNotPublishQhyMetrics()
+    {
+        var mediator = new FakeCameraMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new CameraTelemetryCollector(
+            mediator,
+            sink,
+            TimeProvider.System,
+            () => new QhyCameraSensorTelemetry(double.NaN, double.NaN));
+
+        collector.UpdateDeviceInfo(new CameraInfo
+        {
+            Connected = true,
+            Name = "QHY268M",
+            Temperature = double.NaN,
+            CoolerPower = double.NaN,
+            HasBattery = false,
+            Battery = -1,
+        });
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UpdateDeviceInfo_WhenOnlyOneQhySensorValueIsAvailable_PublishesOnlyAvailableMetric()
+    {
+        var mediator = new FakeCameraMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new CameraTelemetryCollector(
+            mediator,
+            sink,
+            TimeProvider.System,
+            () => new QhyCameraSensorTelemetry(1012.4, double.NaN));
+
+        collector.UpdateDeviceInfo(new CameraInfo
+        {
+            Connected = true,
+            Name = "QHY268M",
+            Temperature = double.NaN,
+            CoolerPower = double.NaN,
+            HasBattery = false,
+            Battery = -1,
+        });
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Name == "qhy_sensor_air_pressure" &&
+            record.NumericValue == 1012.4 &&
+            Equals(record.Attributes["camera_name"], "QHY268M"));
+    }
+
+    [Fact]
+    public void UpdateDeviceInfo_WhenQhySensorValuesBecomeUnavailable_PublishesClearMetricsForPreviouslyEmittedValues()
+    {
+        var mediator = new FakeCameraMediator();
+        var sink = new RecordingTelemetrySink();
+        QhyCameraSensorTelemetry? qhyTelemetry = new(1012.4, 38.5);
+        using var collector = new CameraTelemetryCollector(
+            mediator,
+            sink,
+            TimeProvider.System,
+            () => qhyTelemetry);
+
+        collector.UpdateDeviceInfo(new CameraInfo
+        {
+            Connected = true,
+            Name = "QHY268M",
+            Temperature = double.NaN,
+            CoolerPower = double.NaN,
+            HasBattery = false,
+            Battery = -1,
+        });
+        sink.Records.Clear();
+        qhyTelemetry = null;
+
+        collector.UpdateDeviceInfo(new CameraInfo
+        {
+            Connected = true,
+            Name = "QHY268M",
+            Temperature = double.NaN,
+            CoolerPower = double.NaN,
+            HasBattery = false,
+            Battery = -1,
+        });
+
+        sink.Records.Should().HaveCount(2);
+        sink.Records.Should().OnlyContain(record =>
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["camera_name"], "QHY268M"));
+        sink.Records.Select(static record => record.Name).Should().BeEquivalentTo(
+            "qhy_sensor_air_pressure",
+            "qhy_sensor_humidity");
+    }
+
+    [Fact]
+    public void UpdateDeviceInfo_WhenQhySensorReaderThrows_DoesNotThrowAndClearsPreviousQhyMetrics()
+    {
+        var mediator = new FakeCameraMediator();
+        var sink = new RecordingTelemetrySink();
+        var throwReader = false;
+        using var collector = new CameraTelemetryCollector(
+            mediator,
+            sink,
+            TimeProvider.System,
+            () =>
+            {
+                if (throwReader)
+                {
+                    throw new InvalidOperationException("QHY sensor read failed.");
+                }
+
+                return new QhyCameraSensorTelemetry(1012.4, 38.5);
+            });
+
+        collector.UpdateDeviceInfo(new CameraInfo
+        {
+            Connected = true,
+            Name = "QHY268M",
+            Temperature = double.NaN,
+            CoolerPower = double.NaN,
+            HasBattery = false,
+            Battery = -1,
+        });
+        sink.Records.Clear();
+        throwReader = true;
+
+        var act = () => collector.UpdateDeviceInfo(new CameraInfo
+        {
+            Connected = true,
+            Name = "QHY268M",
+            Temperature = double.NaN,
+            CoolerPower = double.NaN,
+            HasBattery = false,
+            Battery = -1,
+        });
+
+        act.Should().NotThrow();
+        sink.Records.Should().HaveCount(2);
+        sink.Records.Should().OnlyContain(record =>
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["camera_name"], "QHY268M"));
+        sink.Records.Select(static record => record.Name).Should().BeEquivalentTo(
+            "qhy_sensor_air_pressure",
+            "qhy_sensor_humidity");
+    }
+
+    [Fact]
     public void UpdateDeviceInfo_WhenCameraDisconnects_PublishesClearMetricsForPreviousCamera()
     {
         var mediator = new FakeCameraMediator();

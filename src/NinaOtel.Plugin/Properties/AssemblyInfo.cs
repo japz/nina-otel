@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 [assembly: AssemblyTitle("NinaOtel")]
@@ -18,3 +19,4 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyMetadata("Tags", "telemetry,opentelemetry,otlp,observability")]
 [assembly: AssemblyMetadata("MinimumApplicationVersion", "3.2.0.9001")]
 [assembly: AssemblyMetadata("LongDescription", "NinaOtel exports NINA telemetry to an OpenTelemetry OTLP collector. It provides the plugin shell, options UI, telemetry pipeline, bounded buffering, and add-on host foundation for NINA, PHD2, scheduler, night summary, and device-specific telemetry.")]
+[assembly: InternalsVisibleTo("NinaOtel.Plugin.Tests")]
