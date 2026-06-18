@@ -60,6 +60,18 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("switchTelemetry.Dispose();");
     }
 
+    [Fact]
+    public void Plugin_ImportsStartsAndDisposesGuiderTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("IGuiderMediator guiderMediator");
+        source.Should().Contain("ArgumentNullException.ThrowIfNull(guiderMediator);");
+        source.Should().Contain("new GuiderTelemetryCollector(guiderMediator, pipeline, timeProvider)");
+        source.Should().Contain("guiderTelemetry.Start();");
+        source.Should().Contain("guiderTelemetry.Dispose();");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
