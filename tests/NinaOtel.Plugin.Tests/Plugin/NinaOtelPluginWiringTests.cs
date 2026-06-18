@@ -38,6 +38,17 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("mountTelemetry.Dispose();");
     }
 
+    [Fact]
+    public void Plugin_ImportsStartsAndDisposesWeatherTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("IWeatherDataMediator weatherDataMediator");
+        source.Should().Contain("new WeatherTelemetryCollector(weatherDataMediator, pipeline, timeProvider)");
+        source.Should().Contain("weatherTelemetry.Start();");
+        source.Should().Contain("weatherTelemetry.Dispose();");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
