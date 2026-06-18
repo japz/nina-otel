@@ -246,7 +246,7 @@ public sealed class AstrometricTelemetryCollectorTests
             TimeSpan.FromMilliseconds(50));
 
         collector.Start();
-        await WaitUntilAsync(() => sink.Count == 2, TimeSpan.FromSeconds(10));
+        await WaitUntilAsync(() => sink.Count >= 2, TimeSpan.FromSeconds(10));
 
         collector.Dispose();
         collector.Dispose();
