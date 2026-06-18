@@ -1,3 +1,4 @@
+using NINA.Core.Model.Equipment;
 using NINA.Equipment.Equipment.MyFilterWheel;
 using NINA.Equipment.Interfaces.Mediator;
 using NinaOtel.Abstractions.Telemetry;
