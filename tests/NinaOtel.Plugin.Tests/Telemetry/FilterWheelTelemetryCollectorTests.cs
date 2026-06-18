@@ -27,6 +27,19 @@ public sealed class FilterWheelTelemetryCollectorTests
     }
 
     [Fact]
+    public void Start_SubscribesToFilterChangedOnce()
+    {
+        var mediator = new FakeFilterWheelMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        collector.Start();
+
+        mediator.FilterChangedSubscriberCount.Should().Be(1);
+    }
+
+    [Fact]
     public void Start_WhenMediatorHasCurrentInfo_PublishesInitialFilterWheelMetric()
     {
         var mediator = new FakeFilterWheelMediator
@@ -47,6 +60,140 @@ public sealed class FilterWheelTelemetryCollectorTests
     }
 
     [Fact]
+    public async Task FilterChanged_WhenRaised_PublishesFilterChangeSpan()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "Ha", Position = 2 },
+            new FilterInfo { Name = "OIII", Position = 3 });
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Span &&
+            record.Source == "nina.filter_wheel" &&
+            record.Name == "nina.filter_change" &&
+            record.SpanKind == SpanEventKind.Stop &&
+            record.Priority == TelemetryPriority.Normal &&
+            !string.IsNullOrWhiteSpace(record.SpanId) &&
+            Equals(record.Attributes["filter_wheel_name"], "EFW") &&
+            Equals(record.Attributes["filter_from"], "Ha") &&
+            Equals(record.Attributes["filter_to"], "OIII") &&
+            Equals(record.Attributes["filter_from_position"], 2) &&
+            Equals(record.Attributes["filter_to_position"], 3));
+    }
+
+    [Fact]
+    public async Task FilterChanged_BeforeKnownFilterWheelName_UsesUnknownFilterWheelName()
+    {
+        var mediator = new FakeFilterWheelMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "L", Position = 1 },
+            new FilterInfo { Name = "SII", Position = 4 });
+
+        sink.Records.Should().ContainSingle(record => record.Name == "nina.filter_change")
+            .Attributes["filter_wheel_name"].Should().Be("Unknown");
+    }
+
+    [Fact]
+    public async Task FilterChanged_WhenSinkThrows_DoesNotThrow()
+    {
+        var mediator = new FakeFilterWheelMediator();
+        using var collector = new FilterWheelTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+        collector.Start();
+
+        var act = () => mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "L", Position = 1 },
+            new FilterInfo { Name = "SII", Position = 4 });
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task FilterChanged_AfterDisposeWhenUnsubscribeFails_DoesNotPublishSpan()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+            ThrowOnFilterChangedRemove = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        collector.Dispose();
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "Ha", Position = 2 },
+            new FilterInfo { Name = "OIII", Position = 3 });
+
+        mediator.FilterChangedSubscriberCount.Should().Be(1);
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Start_WhenFilterChangedSubscriptionThrowsAfterAttaching_UnsubscribesHandlerBeforeReturning()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            ThrowOnFilterChangedAddAfterSubscribe = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        sink.Records.Clear();
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "Ha", Position = 2 },
+            new FilterInfo { Name = "OIII", Position = 3 });
+
+        mediator.FilterChangedRemoveCalls.Should().Be(1);
+        mediator.FilterChangedSubscriberCount.Should().Be(0);
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task FilterChanged_WithSameTimestampAndAttributes_PublishesDistinctSpanIds()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+        };
+        var sink = new RecordingTelemetrySink();
+        var timeProvider = new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 12, 0, 0, TimeSpan.Zero));
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, timeProvider);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "Ha", Position = 2 },
+            new FilterInfo { Name = "OIII", Position = 3 });
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "Ha", Position = 2 },
+            new FilterInfo { Name = "OIII", Position = 3 });
+
+        var spanIds = sink.Records
+            .Where(static record => record.Name == "nina.filter_change")
+            .Select(static record => record.SpanId)
+            .ToArray();
+        spanIds.Should().HaveCount(2);
+        spanIds.Distinct(StringComparer.Ordinal).Should().HaveCount(2);
+    }
+
+    [Fact]
     public void Dispose_RemovesCollectorFromMediatorOnce()
     {
         var mediator = new FakeFilterWheelMediator();
@@ -59,6 +206,7 @@ public sealed class FilterWheelTelemetryCollectorTests
 
         mediator.Consumers.Should().BeEmpty();
         mediator.RemoveCalls.Should().Be(1);
+        mediator.FilterChangedSubscriberCount.Should().Be(0);
     }
 
     [Fact]
@@ -72,6 +220,22 @@ public sealed class FilterWheelTelemetryCollectorTests
         var act = () => collector.Dispose();
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void UpdateDeviceInfo_AfterDisposeWhenMediatorRemovalFails_DoesNotPublishMetric()
+    {
+        var mediator = new FakeFilterWheelMediator { ThrowOnRemove = true };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        collector.Dispose();
+        mediator.Broadcast(ConnectedInfo("EFW", "OIII", 3));
+
+        mediator.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
+        sink.Records.Should().BeEmpty();
     }
 
     [Fact]
@@ -364,8 +528,15 @@ public sealed class FilterWheelTelemetryCollectorTests
             throw new InvalidOperationException("Sink unavailable.");
     }
 
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
+    }
+
     private sealed class FakeFilterWheelMediator : IFilterWheelMediator
     {
+        private Func<object, FilterChangedEventArgs, Task>? filterChanged;
+
         public List<IFilterWheelConsumer> Consumers { get; } = [];
 
         public FilterWheelInfo CurrentInfo { get; init; } = new();
@@ -374,9 +545,15 @@ public sealed class FilterWheelTelemetryCollectorTests
 
         public bool ThrowOnRemove { get; init; }
 
+        public bool ThrowOnFilterChangedAddAfterSubscribe { get; init; }
+
+        public bool ThrowOnFilterChangedRemove { get; init; }
+
         public int RegisterCalls { get; private set; }
 
         public int RemoveCalls { get; private set; }
+
+        public int FilterChangedRemoveCalls { get; private set; }
 
         public event Func<object, EventArgs, Task>? Connected
         {
@@ -392,9 +569,27 @@ public sealed class FilterWheelTelemetryCollectorTests
 
         public event Func<object, FilterChangedEventArgs, Task>? FilterChanged
         {
-            add => throw new NotSupportedException("Filter wheel telemetry must not subscribe to FilterChanged.");
-            remove => throw new NotSupportedException("Filter wheel telemetry must not unsubscribe from FilterChanged.");
+            add
+            {
+                filterChanged += value;
+                if (ThrowOnFilterChangedAddAfterSubscribe)
+                {
+                    throw new InvalidOperationException("FilterChanged subscription failed.");
+                }
+            }
+            remove
+            {
+                FilterChangedRemoveCalls++;
+                if (ThrowOnFilterChangedRemove)
+                {
+                    throw new InvalidOperationException("FilterChanged unsubscribe failed.");
+                }
+
+                filterChanged -= value;
+            }
         }
+
+        public int FilterChangedSubscriberCount => filterChanged?.GetInvocationList().Length ?? 0;
 
         public void RegisterHandler(IFilterWheelVM handler)
         {
@@ -429,6 +624,16 @@ public sealed class FilterWheelTelemetryCollectorTests
             {
                 consumer.UpdateDeviceInfo(deviceInfo);
             }
+        }
+
+        public async Task RaiseFilterChangedAsync(FilterInfo from, FilterInfo to)
+        {
+            if (filterChanged is null)
+            {
+                return;
+            }
+
+            await filterChanged.Invoke(this, new FilterChangedEventArgs(from, to));
         }
 
         public FilterWheelInfo GetInfo() => CurrentInfo;
