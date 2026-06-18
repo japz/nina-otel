@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.ComponentModel;
 using System.Reflection;
 using FluentAssertions;
 using NINA.Core.Model;
@@ -380,6 +381,12 @@ public sealed class ImageTelemetryCollectorTests
 
     private class StarDetectionAnalysis : IStarDetectionAnalysis
     {
+        public event PropertyChangedEventHandler? PropertyChanged
+        {
+            add { }
+            remove { }
+        }
+
         public double HFR { get; set; }
 
         public double HFRStDev { get; set; }
