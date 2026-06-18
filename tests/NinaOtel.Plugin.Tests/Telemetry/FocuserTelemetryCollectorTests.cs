@@ -240,6 +240,196 @@ public sealed class FocuserTelemetryCollectorTests
             double.IsNaN(record.NumericValue!.Value));
     }
 
+    [Fact]
+    public void UpdateEndAutoFocusRun_WhenCompleted_PublishesAutofocusSpanWithReferenceFields()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(
+            mediator,
+            sink,
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 23, 15, 0, TimeSpan.Zero)));
+
+        collector.UpdateDeviceInfo(new FocuserInfo
+        {
+            Connected = true,
+            Name = "EAF",
+            Position = 1234,
+            Temperature = -4.5,
+        });
+        sink.Records.Clear();
+
+        collector.UpdateEndAutoFocusRun(new AutoFocusInfo
+        {
+            Position = 12456,
+            Temperature = -3.25,
+            Filter = "Ha",
+        });
+
+        var span = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span)
+            .Which;
+        span.Source.Should().Be("nina.focuser");
+        span.Name.Should().Be("nina.autofocus");
+        span.Timestamp.Should().Be(new DateTimeOffset(2026, 6, 18, 23, 15, 0, TimeSpan.Zero));
+        span.SpanKind.Should().Be(SpanEventKind.Stop);
+        span.SpanId.Should().NotBeNullOrWhiteSpace();
+        span.Attributes.Should().Contain("focuser_name", "EAF");
+        span.Attributes.Should().Contain("autofocus_position", 12456);
+        span.Attributes.Should().Contain("autofocus_temperature", -3.25);
+        span.Attributes.Should().Contain("autofocus_filter", "Ha");
+    }
+
+    [Fact]
+    public void UpdateEndAutoFocusRun_WhenFilterOrValuesAreUnavailable_PublishesReferenceDefaults()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.UpdateEndAutoFocusRun(new AutoFocusInfo
+        {
+            Position = double.NaN,
+            Temperature = double.NaN,
+            Filter = "",
+        });
+
+        var span = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.autofocus")
+            .Which;
+        span.Attributes.Should().NotContainKey("focuser_name");
+        span.Attributes.Should().Contain("autofocus_position", 0);
+        span.Attributes.Should().Contain("autofocus_temperature", 0d);
+        span.Attributes.Should().Contain("autofocus_filter", "Unknown");
+    }
+
+    [Theory]
+    [InlineData(double.PositiveInfinity, 0)]
+    [InlineData(double.NegativeInfinity, 0)]
+    [InlineData(2147484647d, int.MaxValue)]
+    [InlineData(-2147484648d, int.MinValue)]
+    public void UpdateEndAutoFocusRun_WhenPositionCannotConvert_PublishesSpanWithBoundedPosition(
+        double position,
+        int expectedPosition)
+    {
+        var span = PublishAutofocusSpan(
+            DateTimeOffset.UtcNow,
+            new AutoFocusInfo
+            {
+                Position = position,
+                Temperature = -3.25,
+                Filter = "Ha",
+            });
+
+        span.Attributes.Should().Contain("autofocus_position", expectedPosition);
+    }
+
+    [Fact]
+    public void UpdateEndAutoFocusRun_WhenInfoIsNull_DoesNotPublishAndDoesNotThrow()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        var act = () => collector.UpdateEndAutoFocusRun(null!);
+
+        act.Should().NotThrow();
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void UpdateEndAutoFocusRun_WhenIdentityInputsRepeat_CreatesStableAndDistinctSpanIds()
+    {
+        var timestamp = new DateTimeOffset(2026, 6, 18, 23, 15, 0, TimeSpan.Zero);
+        var first = PublishAutofocusSpan(
+            timestamp,
+            new AutoFocusInfo
+            {
+                Position = 12456,
+                Temperature = -3.25,
+                Filter = "Ha",
+            },
+            "EAF");
+        var repeated = PublishAutofocusSpan(
+            timestamp,
+            new AutoFocusInfo
+            {
+                Position = 12456,
+                Temperature = -3.25,
+                Filter = "Ha",
+            },
+            "EAF");
+        var differentTimestamp = PublishAutofocusSpan(
+            timestamp.AddSeconds(1),
+            new AutoFocusInfo
+            {
+                Position = 12456,
+                Temperature = -3.25,
+                Filter = "Ha",
+            },
+            "EAF");
+        var differentFilter = PublishAutofocusSpan(
+            timestamp,
+            new AutoFocusInfo
+            {
+                Position = 12456,
+                Temperature = -3.25,
+                Filter = "OIII",
+            },
+            "EAF");
+
+        first.SpanId.Should().Be(repeated.SpanId);
+        first.SpanId.Should().NotBe(differentTimestamp.SpanId);
+        first.SpanId.Should().NotBe(differentFilter.SpanId);
+    }
+
+    [Fact]
+    public void UpdateEndAutoFocusRun_WhenSinkThrows_DoesNotThrow()
+    {
+        var mediator = new FakeFocuserMediator();
+        using var collector = new FocuserTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+
+        var act = () => collector.UpdateEndAutoFocusRun(new AutoFocusInfo
+        {
+            Position = 12456,
+            Temperature = -3.25,
+            Filter = "Ha",
+        });
+
+        act.Should().NotThrow();
+    }
+
+    private static TelemetryRecord PublishAutofocusSpan(
+        DateTimeOffset timestamp,
+        AutoFocusInfo autofocusInfo,
+        string? focuserName = null)
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, new FixedTimeProvider(timestamp));
+
+        if (focuserName is not null)
+        {
+            collector.UpdateDeviceInfo(new FocuserInfo
+            {
+                Connected = true,
+                Name = focuserName,
+                Position = 1234,
+                Temperature = -4.5,
+            });
+            sink.Records.Clear();
+        }
+
+        collector.UpdateEndAutoFocusRun(autofocusInfo);
+
+        return sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.autofocus")
+            .Which;
+    }
+
     private sealed class RecordingTelemetrySink : ITelemetrySink
     {
         public List<TelemetryRecord> Records { get; } = [];
@@ -345,5 +535,10 @@ public sealed class FocuserTelemetryCollectorTests
         public void BroadcastAutoFocusRunStarting()
         {
         }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

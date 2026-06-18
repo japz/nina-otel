@@ -1,6 +1,7 @@
 using NINA.Equipment.Equipment.MyFocuser;
 using NINA.Equipment.Interfaces.Mediator;
 using NinaOtel.Abstractions.Telemetry;
+using System.Globalization;
 using OxyPlot;
 
 namespace NinaOtel.Plugin.Telemetry;
@@ -159,6 +160,19 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
 
     public void UpdateEndAutoFocusRun(AutoFocusInfo info)
     {
+        if (info is null)
+        {
+            return;
+        }
+
+        try
+        {
+            PublishAutofocusCompleted(info);
+        }
+        catch
+        {
+            // Autofocus callbacks are NINA-owned; telemetry must not affect focusing.
+        }
     }
 
     public void UpdateUserFocused(FocuserInfo info)
@@ -212,6 +226,93 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
                 ["error_message"] = ex.Message,
             }));
     }
+
+    private void PublishAutofocusCompleted(AutoFocusInfo info)
+    {
+        var timestamp = timeProvider.GetUtcNow();
+        var attributes = CreateAutofocusAttributes(info);
+        var spanId = CreateAutofocusSpanId(timestamp, attributes);
+
+        TryPublishSafely(TelemetryRecord.Span(
+            timestamp,
+            SourceName,
+            "nina.autofocus",
+            SpanEventKind.Stop,
+            spanId,
+            TelemetryPriority.Normal,
+            attributes));
+    }
+
+    private Dictionary<string, object?> CreateAutofocusAttributes(AutoFocusInfo info)
+    {
+        var attributes = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["autofocus_position"] = NormalizeAutofocusPosition(info.Position),
+            ["autofocus_temperature"] = NormalizeAutofocusTemperature(info.Temperature),
+            ["autofocus_filter"] = NormalizeAutofocusFilter(info.Filter),
+        };
+
+        lock (syncRoot)
+        {
+            if (lastConnectedFocuserName is not null)
+            {
+                attributes["focuser_name"] = lastConnectedFocuserName;
+            }
+        }
+
+        return attributes;
+    }
+
+    private static int NormalizeAutofocusPosition(double position)
+    {
+        if (!double.IsFinite(position))
+        {
+            return 0;
+        }
+
+        if (position > int.MaxValue)
+        {
+            return int.MaxValue;
+        }
+
+        if (position < int.MinValue)
+        {
+            return int.MinValue;
+        }
+
+        return Convert.ToInt32(position);
+    }
+
+    private static double NormalizeAutofocusTemperature(double temperature) =>
+        double.IsNaN(temperature)
+            ? 0d
+            : temperature;
+
+    private static string NormalizeAutofocusFilter(string? filter) =>
+        string.IsNullOrWhiteSpace(filter)
+            ? "Unknown"
+            : filter;
+
+    private static string CreateAutofocusSpanId(
+        DateTimeOffset timestamp,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        string.Join(
+            "|",
+            [
+                "nina.autofocus",
+                $"completed={timestamp.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)}",
+                $"filter={AttributeValue(attributes, "autofocus_filter")}",
+                $"position={AttributeValue(attributes, "autofocus_position")}",
+                $"temperature={AttributeValue(attributes, "autofocus_temperature")}",
+                $"focuser={AttributeValue(attributes, "focuser_name")}",
+            ]);
+
+    private static string AttributeValue(
+        IReadOnlyDictionary<string, object?> attributes,
+        string name) =>
+        attributes.TryGetValue(name, out var value)
+            ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
+            : string.Empty;
 
     private void TryPublishSafely(TelemetryRecord record)
     {
