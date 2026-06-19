@@ -103,6 +103,8 @@ public sealed class ImageTelemetryCollector : IDisposable
         PublishMetric(timestamp, "image_rms_peak_ra_arcsec", peakRms.Ra, attributes);
         PublishMetric(timestamp, "image_rms_peak_dec_arcsec", peakRms.Dec, attributes);
         PublishMetric(timestamp, "image_rms_peak_arcsec", peakRms.Total, attributes);
+
+        PublishImageLog(timestamp, args, attributes);
     }
 
     private DateTimeOffset CreateTimestamp(ImageSavedEventArgs args)
@@ -378,6 +380,72 @@ public sealed class ImageTelemetryCollector : IDisposable
         {
         }
     }
+
+    private void PublishImageLog(
+        DateTimeOffset timestamp,
+        ImageSavedEventArgs args,
+        IReadOnlyDictionary<string, object?> baseAttributes)
+    {
+        try
+        {
+            var attributes = new Dictionary<string, object?>(baseAttributes, StringComparer.Ordinal)
+            {
+                ["title"] = "Image taken",
+            };
+
+            sink.TryPublish(new TelemetryRecord(
+                TelemetrySignal.Log,
+                timestamp,
+                Source,
+                "image",
+                TelemetryPriority.Normal,
+                attributes,
+                Body: CreateImageLogBody(args),
+                Severity: TelemetrySeverity.Information));
+        }
+        catch
+        {
+        }
+    }
+
+    private static string CreateImageLogBody(ImageSavedEventArgs args)
+    {
+        var imageType = args.MetaData?.Image?.ImageType;
+        var text = string.Format(
+            CultureInfo.InvariantCulture,
+            "Image; Type: {0}",
+            string.IsNullOrWhiteSpace(imageType) ? "Unknown" : imageType);
+
+        var target = args.MetaData?.Target?.Name;
+        if (!string.IsNullOrWhiteSpace(target))
+        {
+            text += string.Format(CultureInfo.InvariantCulture, ", Target: {0}", target);
+        }
+
+        if (!string.IsNullOrWhiteSpace(args.Filter))
+        {
+            text += string.Format(CultureInfo.InvariantCulture, ", Filter: {0}", args.Filter);
+        }
+
+        text += string.Format(
+            CultureInfo.InvariantCulture,
+            ", Exp: {0:F2}s",
+            NormalizeExposureTime(args.MetaData?.Image?.ExposureTime));
+
+        if (args.Statistics is not null)
+        {
+            text += string.Format(CultureInfo.InvariantCulture, ", Mean: {0:F2}", args.Statistics.Mean);
+        }
+
+        return text;
+    }
+
+    private static double NormalizeExposureTime(double? exposureTime) =>
+        exposureTime.HasValue &&
+        double.IsFinite(exposureTime.Value) &&
+        exposureTime.Value >= 0
+            ? exposureTime.Value
+            : 0;
 
     private void PublishSpan(
         DateTimeOffset timestamp,
