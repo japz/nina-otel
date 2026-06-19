@@ -18,9 +18,17 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
     private bool hasPublishedMechanicalAngle;
     private bool hasPublishedSkyAngle;
     private string? lastConnectedRotatorName;
-    private bool started;
+    private string? lastDisconnectedRotatorName;
+    private bool startAttempted;
+    private bool startupFailed;
+    private bool registrationAttempted;
+    private bool registered;
+    private bool shouldUnsubscribeConnected;
+    private bool shouldUnsubscribeDisconnected;
     private bool shouldUnsubscribeMoved;
+    private bool lifecycleEventsEnabled;
     private bool movedEventsEnabled;
+    private bool disconnectedEventLogged;
     private long rotatorMoveSequence;
 
     public RotatorTelemetryCollector(
@@ -37,23 +45,36 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
     {
         lock (syncRoot)
         {
-            if (disposed || started)
+            if (disposed || startAttempted)
             {
                 return;
             }
 
+            startAttempted = true;
             try
             {
+                registrationAttempted = true;
                 mediator.RegisterConsumer(this);
-                started = true;
+                registered = true;
+
                 shouldUnsubscribeMoved = true;
                 mediator.Moved += OnMoved;
+
+                shouldUnsubscribeConnected = true;
+                mediator.Connected += OnConnected;
+
+                shouldUnsubscribeDisconnected = true;
+                mediator.Disconnected += OnDisconnected;
+
+                lifecycleEventsEnabled = true;
                 movedEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                startupFailed = true;
+                lifecycleEventsEnabled = false;
                 movedEventsEnabled = false;
-                TryUnsubscribeMoved();
+                CleanupFailedStart();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -68,7 +89,7 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
 
         lock (syncRoot)
         {
-            if (disposed)
+            if (disposed || startupFailed)
             {
                 return;
             }
@@ -78,6 +99,7 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             {
                 if (lastConnectedRotatorName is not null)
                 {
+                    lastDisconnectedRotatorName = lastConnectedRotatorName;
                     PublishClearMetrics(
                         lastConnectedRotatorName,
                         hasPublishedMechanicalAngle,
@@ -98,6 +120,8 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
                 ResetPublishedFlags();
             }
 
+            disconnectedEventLogged = false;
+            lastDisconnectedRotatorName = null;
             lastConnectedRotatorName = rotatorName;
             PublishCurrentMetrics(deviceInfo, rotatorName);
         }
@@ -113,9 +137,12 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             }
 
             disposed = true;
+            lifecycleEventsEnabled = false;
             movedEventsEnabled = false;
+            TryUnsubscribeDisconnected();
+            TryUnsubscribeConnected();
             TryUnsubscribeMoved();
-            if (!started)
+            if (!registered && !registrationAttempted)
             {
                 return;
             }
@@ -123,12 +150,100 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             try
             {
                 mediator.RemoveConsumer(this);
+                registered = false;
+                registrationAttempted = false;
             }
             catch
             {
                 // Telemetry teardown must never interfere with NINA shutdown.
             }
         }
+    }
+
+    private Task OnConnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || startupFailed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var deviceInfo = TryGetInfo();
+                var rotatorName = deviceInfo is { Connected: true }
+                    ? NormalizeRotatorName(deviceInfo.Name)
+                    : ResolveConnectedRotatorName();
+
+                if (lastConnectedRotatorName is not null &&
+                    !string.Equals(lastConnectedRotatorName, rotatorName, StringComparison.Ordinal))
+                {
+                    PublishClearMetrics(
+                        lastConnectedRotatorName,
+                        hasPublishedMechanicalAngle,
+                        hasPublishedSkyAngle);
+                    ResetPublishedFlags();
+                }
+
+                disconnectedEventLogged = false;
+                lastDisconnectedRotatorName = null;
+                lastConnectedRotatorName = rotatorName;
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "rotator_connected",
+                    "Rotator connected",
+                    CreateRotatorAttributes(rotatorName));
+            }
+        }
+        catch
+        {
+            // NINA rotator lifecycle events must never fail because telemetry is unavailable.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnDisconnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || startupFailed || disconnectedEventLogged || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var shouldClearMetrics = lastConnectedRotatorName is not null;
+                var rotatorName = ResolveDisconnectedRotatorName();
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "rotator_disconnected",
+                    "Rotator disconnected",
+                    CreateRotatorAttributes(rotatorName));
+
+                if (shouldClearMetrics)
+                {
+                    PublishClearMetrics(
+                        rotatorName,
+                        hasPublishedMechanicalAngle,
+                        hasPublishedSkyAngle);
+                }
+
+                ResetPublishedState();
+                lastDisconnectedRotatorName = rotatorName;
+                disconnectedEventLogged = true;
+            }
+        }
+        catch
+        {
+            // NINA rotator lifecycle events must never fail because telemetry is unavailable.
+        }
+
+        return Task.CompletedTask;
     }
 
     private Task OnMoved(object sender, RotatorEventArgs args)
@@ -277,6 +392,75 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
         }
     }
 
+    private void CleanupFailedStart()
+    {
+        TryUnsubscribeDisconnected();
+        TryUnsubscribeConnected();
+        TryUnsubscribeMoved();
+
+        if (registered || registrationAttempted)
+        {
+            try
+            {
+                mediator.RemoveConsumer(this);
+                registered = false;
+                registrationAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (lastConnectedRotatorName is not null)
+        {
+            PublishClearMetrics(
+                lastConnectedRotatorName,
+                hasPublishedMechanicalAngle,
+                hasPublishedSkyAngle);
+        }
+
+        ResetPublishedState();
+        lastDisconnectedRotatorName = null;
+        disconnectedEventLogged = false;
+    }
+
+    private void TryUnsubscribeDisconnected()
+    {
+        if (!shouldUnsubscribeDisconnected)
+        {
+            return;
+        }
+
+        try
+        {
+            mediator.Disconnected -= OnDisconnected;
+            shouldUnsubscribeDisconnected = false;
+        }
+        catch
+        {
+            // Telemetry teardown must never interfere with NINA shutdown.
+        }
+    }
+
+    private void TryUnsubscribeConnected()
+    {
+        if (!shouldUnsubscribeConnected)
+        {
+            return;
+        }
+
+        try
+        {
+            mediator.Connected -= OnConnected;
+            shouldUnsubscribeConnected = false;
+        }
+        catch
+        {
+            // Telemetry teardown must never interfere with NINA shutdown.
+        }
+    }
+
     private void TryUnsubscribeMoved()
     {
         if (!shouldUnsubscribeMoved)
@@ -294,6 +478,21 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             // Telemetry teardown must never interfere with NINA shutdown.
         }
     }
+
+    private void PublishNamedLog(
+        DateTimeOffset timestamp,
+        string name,
+        string body,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            name,
+            TelemetryPriority.Normal,
+            attributes,
+            Body: body,
+            Severity: TelemetrySeverity.Information));
 
     private void ResetPublishedState()
     {
@@ -316,6 +515,28 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
         catch
         {
             // NINA equipment callbacks must never fail because telemetry is unavailable.
+        }
+    }
+
+    private string ResolveConnectedRotatorName() =>
+        lastConnectedRotatorName ??
+        lastDisconnectedRotatorName ??
+        UnknownRotatorName;
+
+    private string ResolveDisconnectedRotatorName() =>
+        lastConnectedRotatorName ??
+        lastDisconnectedRotatorName ??
+        NormalizeRotatorName(TryGetInfo()?.Name);
+
+    private RotatorInfo? TryGetInfo()
+    {
+        try
+        {
+            return mediator.GetInfo();
+        }
+        catch
+        {
+            return null;
         }
     }
 

@@ -40,6 +40,22 @@ public sealed class RotatorTelemetryCollectorTests
     }
 
     [Fact]
+    public void Start_SubscribesRotatorLifecycleEventsOnce()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        collector.Start();
+
+        mediator.AddConnectedCalls.Should().Be(1);
+        mediator.AddDisconnectedCalls.Should().Be(1);
+        mediator.ConnectedSubscriberCount.Should().Be(1);
+        mediator.DisconnectedSubscriberCount.Should().Be(1);
+    }
+
+    [Fact]
     public void Start_WhenMediatorHasCurrentInfo_PublishesInitialRotatorMetrics()
     {
         var mediator = new FakeRotatorMediator
@@ -60,6 +76,185 @@ public sealed class RotatorTelemetryCollectorTests
         sink.Records.Select(static record => record.Name).Should().BeEquivalentTo(
             "rotator_mechanical_angle",
             "rotator_angle");
+    }
+
+    [Fact]
+    public async Task Connected_PublishesRotatorConnectionLogWithCurrentConnectedRotatorName()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.rotator" &&
+            record.Name == "rotator_connected" &&
+            record.Body == "Rotator connected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenNoKnownRotator_UsesUnknownName()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "rotator_connected" &&
+            record.Body == "Rotator connected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["rotator_name"], "Unknown"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenGetInfoThrows_UsesLastKnownRotatorName()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            ThrowOnGetInfo = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new RotatorInfo
+        {
+            Connected = true,
+            Name = "Pegasus Falcon",
+            MechanicalPosition = 182.5f,
+            Position = 17.25f,
+        });
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "rotator_connected" &&
+            record.Body == "Rotator connected" &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+    }
+
+    [Fact]
+    public async Task Disconnected_PublishesDisconnectLogClearsMetricsAndSuppressesDuplicateUntilConnectedAgain()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new RotatorInfo
+        {
+            Connected = true,
+            Name = "Pegasus Falcon",
+            MechanicalPosition = 182.5f,
+            Position = 17.25f,
+        });
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.rotator" &&
+            record.Name == "rotator_disconnected" &&
+            record.Body == "Rotator disconnected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().HaveCount(2)
+            .And.OnlyContain(record =>
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+
+        sink.Records.Clear();
+        mediator.CurrentInfo = new RotatorInfo
+        {
+            Connected = true,
+            Name = "NiteCrawler",
+        };
+        await mediator.RaiseConnectedAsync();
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "rotator_disconnected" &&
+            Equals(record.Attributes["rotator_name"], "NiteCrawler"));
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenDeviceInfoAlreadyClearedMetrics_StillUsesPreviousRotatorName()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new RotatorInfo
+        {
+            Connected = true,
+            Name = "Pegasus Falcon",
+            MechanicalPosition = 182.5f,
+            Position = 17.25f,
+        });
+        collector.UpdateDeviceInfo(new RotatorInfo
+        {
+            Connected = false,
+            Name = "Pegasus Falcon",
+        });
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "rotator_disconnected" &&
+            record.Body == "Rotator disconnected" &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenNoKnownRotator_UsesUnknownName()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "rotator_disconnected" &&
+            record.Body == "Rotator disconnected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["rotator_name"], "Unknown"));
     }
 
     [Fact]
@@ -270,6 +465,121 @@ public sealed class RotatorTelemetryCollectorTests
     }
 
     [Fact]
+    public async Task Start_WhenDisconnectedSubscriptionAttachesThenThrows_RollsBackPartialStartup()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            ThrowOnAddDisconnected = true,
+            AttachDisconnectedBeforeThrow = true,
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+                MechanicalPosition = 182.5f,
+                Position = 17.25f,
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+
+        mediator.RegisterCalls.Should().Be(1);
+        mediator.RemoveCalls.Should().Be(1);
+        mediator.AddMovedCalls.Should().Be(1);
+        mediator.RemoveMovedCalls.Should().Be(1);
+        mediator.AddConnectedCalls.Should().Be(1);
+        mediator.RemoveConnectedCalls.Should().Be(1);
+        mediator.AddDisconnectedCalls.Should().Be(1);
+        mediator.RemoveDisconnectedCalls.Should().Be(1);
+        mediator.Consumers.Should().BeEmpty();
+        mediator.MovedSubscriberCount.Should().Be(0);
+        mediator.ConnectedSubscriberCount.Should().Be(0);
+        mediator.DisconnectedSubscriberCount.Should().Be(0);
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.rotator" &&
+            record.Name == "rotator_collector.registration_failed" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Disconnected subscription failed."));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().Contain(record =>
+                record.Name == "rotator_mechanical_angle" &&
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().Contain(record =>
+                record.Name == "rotator_angle" &&
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+
+        sink.Records.Clear();
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+        await mediator.RaiseMovedAsync(17.25f, 88.5f);
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Start_WhenConnectedSubscriptionAttachesThenThrows_RollsBackPartialStartup()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            ThrowOnAddConnected = true,
+            AttachConnectedBeforeThrow = true,
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+                MechanicalPosition = 182.5f,
+                Position = 17.25f,
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+
+        mediator.RegisterCalls.Should().Be(1);
+        mediator.RemoveCalls.Should().Be(1);
+        mediator.AddMovedCalls.Should().Be(1);
+        mediator.RemoveMovedCalls.Should().Be(1);
+        mediator.AddConnectedCalls.Should().Be(1);
+        mediator.RemoveConnectedCalls.Should().Be(1);
+        mediator.AddDisconnectedCalls.Should().Be(0);
+        mediator.Consumers.Should().BeEmpty();
+        mediator.MovedSubscriberCount.Should().Be(0);
+        mediator.ConnectedSubscriberCount.Should().Be(0);
+        mediator.DisconnectedSubscriberCount.Should().Be(0);
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.rotator" &&
+            record.Name == "rotator_collector.registration_failed" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Connected subscription failed."));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().Contain(record =>
+                record.Name == "rotator_mechanical_angle" &&
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().Contain(record =>
+                record.Name == "rotator_angle" &&
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+
+        sink.Records.Clear();
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+        await mediator.RaiseMovedAsync(17.25f, 88.5f);
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
     public void Start_WhenMovedSubscriptionThrowsAfterAttaching_PublishesHealthRecord()
     {
         var mediator = new FakeRotatorMediator
@@ -291,6 +601,48 @@ public sealed class RotatorTelemetryCollectorTests
     }
 
     [Fact]
+    public void Start_WhenMediatorAddsConsumerThenThrows_RemovesConsumerAndClearsInitialMetrics()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            ThrowOnRegisterAfterAdd = true,
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+                MechanicalPosition = 182.5f,
+                Position = 17.25f,
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        var act = () => collector.Start();
+
+        act.Should().NotThrow();
+        mediator.RegisterCalls.Should().Be(1);
+        mediator.RemoveCalls.Should().Be(1);
+        mediator.Consumers.Should().BeEmpty();
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.rotator" &&
+            record.Name == "rotator_collector.registration_failed" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Registration failed after add."));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().Contain(record =>
+                record.Name == "rotator_mechanical_angle" &&
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().Contain(record =>
+                record.Name == "rotator_angle" &&
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["rotator_name"], "Pegasus Falcon"));
+    }
+
+    [Fact]
     public void Dispose_RemovesCollectorFromMediator()
     {
         var mediator = new FakeRotatorMediator();
@@ -304,6 +656,33 @@ public sealed class RotatorTelemetryCollectorTests
         mediator.Consumers.Should().BeEmpty();
         mediator.RemoveMovedCalls.Should().Be(1);
         mediator.MovedSubscriberCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Dispose_WhenLifecycleUnsubscribeFails_LaterCallbacksDoNotPublishLogs()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            ThrowOnRemoveConnected = true,
+            ThrowOnRemoveDisconnected = true,
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        collector.Dispose();
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        mediator.ConnectedSubscriberCount.Should().Be(1);
+        mediator.DisconnectedSubscriberCount.Should().Be(1);
+        sink.Records.Should().BeEmpty();
     }
 
     [Fact]
@@ -358,6 +737,53 @@ public sealed class RotatorTelemetryCollectorTests
             Equals(record.Attributes["error_type"], nameof(InvalidOperationException)));
         mediator.AddMovedCalls.Should().Be(0);
         mediator.MovedSubscriberCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task LifecycleCallbacks_WhenSinkThrows_DoNotThrowIntoNina()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+            },
+        };
+        using var collector = new RotatorTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+        collector.Start();
+
+        var connectedAct = async () => await mediator.RaiseConnectedAsync();
+        var disconnectedAct = async () => await mediator.RaiseDisconnectedAsync();
+
+        await connectedAct.Should().NotThrowAsync();
+        await disconnectedAct.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task LifecycleCallbacks_DoNotCallRotatorMovementOrControlApis()
+    {
+        var mediator = new FakeRotatorMediator
+        {
+            CurrentInfo = new RotatorInfo
+            {
+                Connected = true,
+                Name = "Pegasus Falcon",
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        mediator.ControlApiCalls.Should().Be(0);
+        mediator.MovementApiCalls.Should().Be(0);
     }
 
     [Fact]
@@ -590,34 +1016,120 @@ public sealed class RotatorTelemetryCollectorTests
     {
         public List<IRotatorConsumer> Consumers { get; } = [];
 
-        public RotatorInfo CurrentInfo { get; init; } = new();
+        public RotatorInfo CurrentInfo { get; set; } = new();
 
         public bool ThrowOnRegister { get; init; }
 
+        public bool ThrowOnRegisterAfterAdd { get; init; }
+
         public bool ThrowOnRemove { get; init; }
+
+        public bool ThrowOnAddConnected { get; init; }
+
+        public bool ThrowOnAddDisconnected { get; init; }
+
+        public bool AttachConnectedBeforeThrow { get; init; }
+
+        public bool AttachDisconnectedBeforeThrow { get; init; }
+
+        public bool ThrowOnRemoveConnected { get; init; }
+
+        public bool ThrowOnRemoveDisconnected { get; init; }
 
         public bool ThrowOnMovedRemove { get; init; }
 
         public bool ThrowOnMovedAddAfterSubscribe { get; init; }
 
+        public bool ThrowOnGetInfo { get; init; }
+
+        public int RegisterCalls { get; private set; }
+
+        public int RemoveCalls { get; private set; }
+
+        public int AddConnectedCalls { get; private set; }
+
+        public int AddDisconnectedCalls { get; private set; }
+
+        public int RemoveConnectedCalls { get; private set; }
+
+        public int RemoveDisconnectedCalls { get; private set; }
+
         public int AddMovedCalls { get; private set; }
 
         public int RemoveMovedCalls { get; private set; }
 
+        public int ControlApiCalls { get; private set; }
+
+        public int MovementApiCalls { get; private set; }
+
+        public int ConnectedSubscriberCount => connected?.GetInvocationList().Length ?? 0;
+
+        public int DisconnectedSubscriberCount => disconnected?.GetInvocationList().Length ?? 0;
+
         public int MovedSubscriberCount => moved?.GetInvocationList().Length ?? 0;
 
+        private Func<object, EventArgs, Task>? connected;
+        private Func<object, EventArgs, Task>? disconnected;
         private Func<object, RotatorEventArgs, Task>? moved;
 
         public event Func<object, EventArgs, Task>? Connected
         {
-            add { }
-            remove { }
+            add
+            {
+                AddConnectedCalls++;
+                if (ThrowOnAddConnected)
+                {
+                    if (AttachConnectedBeforeThrow)
+                    {
+                        connected += value;
+                    }
+
+                    throw new InvalidOperationException("Connected subscription failed.");
+                }
+
+                connected += value;
+            }
+
+            remove
+            {
+                RemoveConnectedCalls++;
+                if (ThrowOnRemoveConnected)
+                {
+                    throw new InvalidOperationException("Connected unsubscription failed.");
+                }
+
+                connected -= value;
+            }
         }
 
         public event Func<object, EventArgs, Task>? Disconnected
         {
-            add { }
-            remove { }
+            add
+            {
+                AddDisconnectedCalls++;
+                if (ThrowOnAddDisconnected)
+                {
+                    if (AttachDisconnectedBeforeThrow)
+                    {
+                        disconnected += value;
+                    }
+
+                    throw new InvalidOperationException("Disconnected subscription failed.");
+                }
+
+                disconnected += value;
+            }
+
+            remove
+            {
+                RemoveDisconnectedCalls++;
+                if (ThrowOnRemoveDisconnected)
+                {
+                    throw new InvalidOperationException("Disconnected unsubscription failed.");
+                }
+
+                disconnected -= value;
+            }
         }
 
         public event EventHandler<RotatorEventArgs>? Synced
@@ -661,6 +1173,7 @@ public sealed class RotatorTelemetryCollectorTests
 
         public void RegisterConsumer(IRotatorConsumer consumer)
         {
+            RegisterCalls++;
             if (ThrowOnRegister)
             {
                 throw new InvalidOperationException("Registration failed.");
@@ -668,10 +1181,15 @@ public sealed class RotatorTelemetryCollectorTests
 
             Consumers.Add(consumer);
             consumer.UpdateDeviceInfo(CurrentInfo);
+            if (ThrowOnRegisterAfterAdd)
+            {
+                throw new InvalidOperationException("Registration failed after add.");
+            }
         }
 
         public void RemoveConsumer(IRotatorConsumer consumer)
         {
+            RemoveCalls++;
             if (ThrowOnRemove)
             {
                 throw new InvalidOperationException("Removal failed.");
@@ -680,17 +1198,56 @@ public sealed class RotatorTelemetryCollectorTests
             Consumers.Remove(consumer);
         }
 
-        public Task<IList<string>> Rescan() => Task.FromResult<IList<string>>(Array.Empty<string>());
+        public Task<IList<string>> Rescan()
+        {
+            ControlApiCalls++;
+            return Task.FromResult<IList<string>>(Array.Empty<string>());
+        }
 
-        public Task<bool> Connect() => Task.FromResult(true);
+        public Task<bool> Connect()
+        {
+            ControlApiCalls++;
+            return Task.FromResult(true);
+        }
 
-        public Task Disconnect() => Task.CompletedTask;
+        public Task Disconnect()
+        {
+            ControlApiCalls++;
+            return Task.CompletedTask;
+        }
 
         public void Broadcast(RotatorInfo deviceInfo)
         {
+            CurrentInfo = deviceInfo;
             foreach (var consumer in Consumers.ToArray())
             {
                 consumer.UpdateDeviceInfo(deviceInfo);
+            }
+        }
+
+        public async Task RaiseConnectedAsync()
+        {
+            if (connected is null)
+            {
+                return;
+            }
+
+            foreach (var handler in connected.GetInvocationList().Cast<Func<object, EventArgs, Task>>())
+            {
+                await handler(this, EventArgs.Empty);
+            }
+        }
+
+        public async Task RaiseDisconnectedAsync()
+        {
+            if (disconnected is null)
+            {
+                return;
+            }
+
+            foreach (var handler in disconnected.GetInvocationList().Cast<Func<object, EventArgs, Task>>())
+            {
+                await handler(this, EventArgs.Empty);
             }
         }
 
@@ -707,36 +1264,80 @@ public sealed class RotatorTelemetryCollectorTests
             }
         }
 
-        public RotatorInfo GetInfo() => new();
+        public RotatorInfo GetInfo()
+        {
+            if (ThrowOnGetInfo)
+            {
+                throw new InvalidOperationException("GetInfo failed.");
+            }
 
-        public string Action(string actionName, string actionParameters) => string.Empty;
+            return CurrentInfo;
+        }
 
-        public string SendCommandString(string command, bool raw = true) => string.Empty;
+        public string Action(string actionName, string actionParameters)
+        {
+            ControlApiCalls++;
+            return string.Empty;
+        }
 
-        public bool SendCommandBool(string command, bool raw = true) => false;
+        public string SendCommandString(string command, bool raw = true)
+        {
+            ControlApiCalls++;
+            return string.Empty;
+        }
+
+        public bool SendCommandBool(string command, bool raw = true)
+        {
+            ControlApiCalls++;
+            return false;
+        }
 
         public void SendCommandBlind(string command, bool raw = true)
         {
+            ControlApiCalls++;
         }
 
-        public IDevice GetDevice() => throw new NotSupportedException();
+        public IDevice GetDevice()
+        {
+            ControlApiCalls++;
+            throw new NotSupportedException();
+        }
 
-        public void Sync(float skyAngle) => throw new NotSupportedException("Rotator telemetry must not sync.");
+        public void Sync(float skyAngle)
+        {
+            MovementApiCalls++;
+            throw new NotSupportedException("Rotator telemetry must not sync.");
+        }
 
-        public Task<float> MoveMechanical(float position, CancellationToken ct) =>
+        public Task<float> MoveMechanical(float position, CancellationToken ct)
+        {
+            MovementApiCalls++;
             throw new NotSupportedException("Rotator telemetry must not move.");
+        }
 
-        public Task<float> Move(float position, CancellationToken ct) =>
+        public Task<float> Move(float position, CancellationToken ct)
+        {
+            MovementApiCalls++;
             throw new NotSupportedException("Rotator telemetry must not move.");
+        }
 
-        public Task<float> MoveRelative(float position, CancellationToken ct) =>
+        public Task<float> MoveRelative(float position, CancellationToken ct)
+        {
+            MovementApiCalls++;
             throw new NotSupportedException("Rotator telemetry must not move.");
+        }
 
-        public float GetTargetPosition(float position) =>
+        public float GetTargetPosition(float position)
+        {
+            MovementApiCalls++;
             throw new NotSupportedException("Rotator telemetry must not query target position.");
+        }
 
-        public float GetTargetMechanicalPosition(float position) =>
+        public float GetTargetMechanicalPosition(float position)
+        {
+            MovementApiCalls++;
             throw new NotSupportedException("Rotator telemetry must not query target mechanical position.");
+        }
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset timestamp) : TimeProvider
