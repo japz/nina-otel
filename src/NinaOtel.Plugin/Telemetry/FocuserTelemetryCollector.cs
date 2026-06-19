@@ -391,6 +391,20 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
             spanId,
             TelemetryPriority.Normal,
             attributes));
+
+        var logAttributes = CreateAutofocusLogAttributes(attributes);
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            "autofocus",
+            TelemetryPriority.Normal,
+            logAttributes,
+            Body:
+                $"Autofocus on filter {AttributeValue(attributes, "autofocus_filter")}, " +
+                $"Position: {AttributeValue(attributes, "autofocus_position")}, " +
+                $"Temperature: {AttributeValue(attributes, "autofocus_temperature")}",
+            Severity: TelemetrySeverity.Information));
     }
 
     private Dictionary<string, object?> CreateAutofocusAttributes(AutoFocusInfo info)
@@ -411,6 +425,17 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
         }
 
         return attributes;
+    }
+
+    private static Dictionary<string, object?> CreateAutofocusLogAttributes(
+        IReadOnlyDictionary<string, object?> attributes)
+    {
+        var logAttributes = new Dictionary<string, object?>(attributes, StringComparer.Ordinal)
+        {
+            ["title"] = "Autofocus completed",
+        };
+
+        return logAttributes;
     }
 
     private static int NormalizeAutofocusPosition(double position)

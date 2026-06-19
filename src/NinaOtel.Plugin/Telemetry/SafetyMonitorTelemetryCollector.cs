@@ -336,6 +336,7 @@ public sealed class SafetyMonitorTelemetryCollector : ISafetyMonitorConsumer, ID
             $"Safety state changed to {(isSafe ? "SAFE" : "UNSAFE")}",
             CreateSafetyAttributes(
                 safetyMonitorName,
+                new KeyValuePair<string, object?>("title", "Safety state changed"),
                 new KeyValuePair<string, object?>("safety_issafe", isSafe)));
 
     private void ClearGaugeIfPublished(DateTimeOffset timestamp)

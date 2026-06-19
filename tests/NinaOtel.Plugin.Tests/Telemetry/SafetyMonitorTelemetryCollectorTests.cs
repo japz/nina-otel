@@ -174,6 +174,7 @@ public sealed class SafetyMonitorTelemetryCollectorTests
             record.Signal == TelemetrySignal.Log &&
             record.Name == "safety_safe_state" &&
             record.Body == "Safety state changed to UNSAFE" &&
+            Equals(record.Attributes["title"], "Safety state changed") &&
             Equals(record.Attributes["safety_monitor_name"], "Safety Monitor") &&
             Equals(record.Attributes["safety_issafe"], false));
         sink.Records.Should().ContainSingle(record =>
@@ -380,6 +381,7 @@ public sealed class SafetyMonitorTelemetryCollectorTests
         sink.Records.Should().ContainSingle(record =>
             record.Name == "safety_safe_state" &&
             record.Body == "Safety state changed to SAFE" &&
+            Equals(record.Attributes["title"], "Safety state changed") &&
             Equals(record.Attributes["safety_monitor_name"], "Monitor B") &&
             Equals(record.Attributes["safety_issafe"], true));
         sink.Records.Should().ContainSingle(record =>

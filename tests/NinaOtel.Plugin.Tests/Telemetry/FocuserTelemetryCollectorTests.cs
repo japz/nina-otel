@@ -702,6 +702,42 @@ public sealed class FocuserTelemetryCollectorTests
     }
 
     [Fact]
+    public void UpdateEndAutoFocusRun_WhenCompleted_PublishesAutofocusLogWithReferenceFields()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(
+            mediator,
+            sink,
+            new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 23, 15, 0, TimeSpan.Zero)));
+
+        collector.UpdateDeviceInfo(new FocuserInfo
+        {
+            Connected = true,
+            Name = "EAF",
+            Position = 1234,
+            Temperature = -4.5,
+        });
+        sink.Records.Clear();
+
+        collector.UpdateEndAutoFocusRun(CreateAutoFocusInfo(12456, -3.25, "Ha"));
+
+        var log = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Log && record.Name == "autofocus")
+            .Which;
+        log.Source.Should().Be("nina.focuser");
+        log.Timestamp.Should().Be(new DateTimeOffset(2026, 6, 18, 23, 15, 0, TimeSpan.Zero));
+        log.Priority.Should().Be(TelemetryPriority.Normal);
+        log.Severity.Should().Be(TelemetrySeverity.Information);
+        log.Body.Should().Be("Autofocus on filter Ha, Position: 12456, Temperature: -3.25");
+        log.Attributes.Should().Contain("title", "Autofocus completed");
+        log.Attributes.Should().Contain("focuser_name", "EAF");
+        log.Attributes.Should().Contain("autofocus_position", 12456);
+        log.Attributes.Should().Contain("autofocus_temperature", -3.25);
+        log.Attributes.Should().Contain("autofocus_filter", "Ha");
+    }
+
+    [Fact]
     public void UpdateEndAutoFocusRun_WhenFilterOrValuesAreUnavailable_PublishesReferenceDefaults()
     {
         var mediator = new FakeFocuserMediator();
@@ -717,6 +753,15 @@ public sealed class FocuserTelemetryCollectorTests
         span.Attributes.Should().Contain("autofocus_position", 0);
         span.Attributes.Should().Contain("autofocus_temperature", 0d);
         span.Attributes.Should().Contain("autofocus_filter", "Unknown");
+
+        var log = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Log && record.Name == "autofocus")
+            .Which;
+        log.Body.Should().Be("Autofocus on filter Unknown, Position: 0, Temperature: 0");
+        log.Attributes.Should().NotContainKey("focuser_name");
+        log.Attributes.Should().Contain("autofocus_position", 0);
+        log.Attributes.Should().Contain("autofocus_temperature", 0d);
+        log.Attributes.Should().Contain("autofocus_filter", "Unknown");
     }
 
     [Theory]
@@ -788,6 +833,24 @@ public sealed class FocuserTelemetryCollectorTests
         act.Should().NotThrow();
     }
 
+    [Fact]
+    public void UpdateEndAutoFocusRun_WhenFirstPublishThrows_DoesNotThrowAndAttemptsAutofocusLog()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new ThrowFirstTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(
+            mediator,
+            sink,
+            TimeProvider.System);
+
+        var act = () => collector.UpdateEndAutoFocusRun(CreateAutoFocusInfo(12456, -3.25, "Ha"));
+
+        act.Should().NotThrow();
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "autofocus");
+    }
+
     private static TelemetryRecord PublishAutofocusSpan(
         DateTimeOffset timestamp,
         AutoFocusInfo autofocusInfo,
@@ -834,6 +897,25 @@ public sealed class FocuserTelemetryCollectorTests
     {
         public bool TryPublish(TelemetryRecord record) =>
             throw new InvalidOperationException("Sink unavailable.");
+    }
+
+    private sealed class ThrowFirstTelemetrySink : ITelemetrySink
+    {
+        private bool first = true;
+
+        public List<TelemetryRecord> Records { get; } = [];
+
+        public bool TryPublish(TelemetryRecord record)
+        {
+            if (first)
+            {
+                first = false;
+                throw new InvalidOperationException("Sink unavailable.");
+            }
+
+            Records.Add(record);
+            return true;
+        }
     }
 
     private sealed class FakeFocuserMediator : IFocuserMediator
