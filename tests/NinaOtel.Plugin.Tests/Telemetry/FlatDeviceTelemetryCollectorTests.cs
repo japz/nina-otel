@@ -223,7 +223,7 @@ public sealed class FlatDeviceTelemetryCollectorTests
     private static FlatDeviceMediatorProxy CreateMediator(out IFlatDeviceMediator mediator)
     {
         mediator = DispatchProxy.Create<IFlatDeviceMediator, FlatDeviceMediatorProxy>();
-        return (FlatDeviceMediatorProxy)mediator;
+        return (FlatDeviceMediatorProxy)(object)mediator;
     }
 
     private sealed class FlatDeviceMediatorProxy : DispatchProxy
