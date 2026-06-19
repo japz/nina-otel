@@ -95,6 +95,18 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("safetyMonitorTelemetry.Dispose();");
     }
 
+    [Fact]
+    public void Plugin_ImportsStartsAndDisposesFlatDeviceTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("IFlatDeviceMediator flatDeviceMediator");
+        source.Should().Contain("ArgumentNullException.ThrowIfNull(flatDeviceMediator);");
+        source.Should().Contain("new FlatDeviceTelemetryCollector(flatDeviceMediator, pipeline, timeProvider)");
+        source.Should().Contain("flatDeviceTelemetry.Start();");
+        source.Should().Contain("flatDeviceTelemetry.Dispose();");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

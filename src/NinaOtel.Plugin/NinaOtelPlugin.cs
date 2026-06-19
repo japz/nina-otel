@@ -36,6 +36,7 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly SwitchTelemetryCollector switchTelemetry;
     private readonly GuiderTelemetryCollector guiderTelemetry;
     private readonly SafetyMonitorTelemetryCollector safetyMonitorTelemetry;
+    private readonly FlatDeviceTelemetryCollector flatDeviceTelemetry;
     private readonly ImageTelemetryCollector imageTelemetry;
 
     [ImportingConstructor]
@@ -50,6 +51,7 @@ public sealed class NinaOtelPlugin : PluginBase
         ISwitchMediator switchMediator,
         IGuiderMediator guiderMediator,
         ISafetyMonitorMediator safetyMonitorMediator,
+        IFlatDeviceMediator flatDeviceMediator,
         IImageSaveMediator imageSaveMediator)
     {
         ArgumentNullException.ThrowIfNull(profileService);
@@ -62,6 +64,7 @@ public sealed class NinaOtelPlugin : PluginBase
         ArgumentNullException.ThrowIfNull(switchMediator);
         ArgumentNullException.ThrowIfNull(guiderMediator);
         ArgumentNullException.ThrowIfNull(safetyMonitorMediator);
+        ArgumentNullException.ThrowIfNull(flatDeviceMediator);
         ArgumentNullException.ThrowIfNull(imageSaveMediator);
 
         this.profileService = profileService;
@@ -80,6 +83,7 @@ public sealed class NinaOtelPlugin : PluginBase
         switchTelemetry = new SwitchTelemetryCollector(switchMediator, pipeline, timeProvider);
         guiderTelemetry = new GuiderTelemetryCollector(guiderMediator, pipeline, timeProvider);
         safetyMonitorTelemetry = new SafetyMonitorTelemetryCollector(safetyMonitorMediator, pipeline, timeProvider);
+        flatDeviceTelemetry = new FlatDeviceTelemetryCollector(flatDeviceMediator, pipeline, timeProvider);
         imageTelemetry = new ImageTelemetryCollector(imageSaveMediator, pipeline, timeProvider);
         lifecycleTelemetry = new CoreLifecycleTelemetryProducer(pipeline, timeProvider, options);
         addonHost = new AddonHost(
@@ -106,6 +110,7 @@ public sealed class NinaOtelPlugin : PluginBase
         switchTelemetry.Start();
         guiderTelemetry.Start();
         safetyMonitorTelemetry.Start();
+        flatDeviceTelemetry.Start();
         imageTelemetry.Start();
         lifecycleTelemetry.PluginInitialized();
         await addonHost.StartAsync(Array.Empty<ITelemetryAddon>(), shutdownCts.Token).ConfigureAwait(false);
@@ -126,6 +131,7 @@ public sealed class NinaOtelPlugin : PluginBase
         switchTelemetry.Dispose();
         guiderTelemetry.Dispose();
         safetyMonitorTelemetry.Dispose();
+        flatDeviceTelemetry.Dispose();
         imageTelemetry.Dispose();
         lifecycleTelemetry.PluginStopping();
         await addonHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
