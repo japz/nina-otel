@@ -40,6 +40,20 @@ public sealed class FilterWheelTelemetryCollectorTests
     }
 
     [Fact]
+    public void Start_SubscribesToLifecycleEventsOnce()
+    {
+        var mediator = new FakeFilterWheelMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        collector.Start();
+
+        mediator.ConnectedSubscriberCount.Should().Be(1);
+        mediator.DisconnectedSubscriberCount.Should().Be(1);
+    }
+
+    [Fact]
     public void Start_WhenMediatorHasCurrentInfo_PublishesInitialFilterWheelMetric()
     {
         var mediator = new FakeFilterWheelMediator
@@ -87,6 +101,165 @@ public sealed class FilterWheelTelemetryCollectorTests
             Equals(record.Attributes["filter_to"], "OIII") &&
             Equals(record.Attributes["filter_from_position"], 2) &&
             Equals(record.Attributes["filter_to_position"], 3));
+    }
+
+    [Fact]
+    public async Task Connected_WhenRaised_PublishesLifecycleLogWithKnownFilterWheelName()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.filter_wheel" &&
+            record.Name == "fwheel_connected" &&
+            record.Body == "Filter Wheel connected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["filter_wheel_name"], "EFW"));
+    }
+
+    [Fact]
+    public async Task Connected_BeforeKnownFilterWheelName_UsesUnknownFilterWheelName()
+    {
+        var mediator = new FakeFilterWheelMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Name == "fwheel_connected" &&
+            Equals(record.Attributes["filter_wheel_name"], "Unknown"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenCurrentInfoHasNoSelectedFilter_UpdatesKnownFilterWheelNameForFilterChange()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfoWithoutSelectedFilter("EFW"),
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "Ha", Position = 2 },
+            new FilterInfo { Name = "OIII", Position = 3 });
+
+        sink.Records.Should().ContainSingle(record => record.Name == "nina.filter_change")
+            .Which.Attributes["filter_wheel_name"].Should().Be("EFW");
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenRaised_PublishesLifecycleLogAndClearsPreviousFilterMetric()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().HaveCount(2);
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.filter_wheel" &&
+            record.Name == "fwheel_disconnected" &&
+            record.Body == "Filter Wheel disconnected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["filter_wheel_name"], "EFW"));
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "fwheel_filter" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["filter_wheel_name"], "EFW") &&
+            Equals(record.Attributes["filter_name"], "Ha"));
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenRaisedRepeatedly_LogsOnceUntilConnectedAgain()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Where(record => record.Name == "fwheel_disconnected").Should().ContainSingle();
+        sink.Records.Where(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "fwheel_filter" &&
+            double.IsNaN(record.NumericValue!.Value)).Should().ContainSingle();
+
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Where(record => record.Name == "fwheel_disconnected").Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task LifecycleEvents_WhenSinkThrows_DoNotThrow()
+    {
+        var mediator = new FakeFilterWheelMediator();
+        using var collector = new FilterWheelTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+        collector.Start();
+
+        var act = async () =>
+        {
+            await mediator.RaiseConnectedAsync();
+            await mediator.RaiseDisconnectedAsync();
+        };
+
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task LifecycleEvents_AfterDisposeWhenUnsubscribeFails_DoNotPublish()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+            ThrowOnConnectedRemove = true,
+            ThrowOnDisconnectedRemove = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        collector.Dispose();
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        mediator.ConnectedSubscriberCount.Should().Be(1);
+        mediator.DisconnectedSubscriberCount.Should().Be(1);
+        sink.Records.Should().BeEmpty();
     }
 
     [Fact]
@@ -166,6 +339,72 @@ public sealed class FilterWheelTelemetryCollectorTests
     }
 
     [Fact]
+    public async Task Start_WhenLifecycleSubscriptionThrowsAfterAttaching_RollsBackSubscribedHandlersAndPublishesHealth()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+            ThrowOnDisconnectedAddAfterSubscribe = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.filter_wheel" &&
+            record.Name == "filter_wheel_collector.registration_failed" &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Disconnected subscription failed."));
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "fwheel_filter" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["filter_wheel_name"], "EFW") &&
+            Equals(record.Attributes["filter_name"], "Ha"));
+
+        sink.Records.Clear();
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = "Ha", Position = 2 },
+            new FilterInfo { Name = "OIII", Position = 3 });
+        mediator.Broadcast(ConnectedInfo("EFW", "OIII", 3));
+
+        mediator.ConnectedRemoveCalls.Should().Be(1);
+        mediator.DisconnectedRemoveCalls.Should().Be(1);
+        mediator.FilterChangedRemoveCalls.Should().Be(1);
+        mediator.ConnectedSubscriberCount.Should().Be(0);
+        mediator.DisconnectedSubscriberCount.Should().Be(0);
+        mediator.FilterChangedSubscriberCount.Should().Be(0);
+        mediator.RemoveCalls.Should().Be(1);
+        mediator.Consumers.Should().BeEmpty();
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Start_WhenFailedStartCannotRemoveConsumer_BlocksLaterBroadcasts()
+    {
+        var mediator = new FakeFilterWheelMediator
+        {
+            CurrentInfo = ConnectedInfo("EFW", "Ha", 2),
+            ThrowOnDisconnectedAddAfterSubscribe = true,
+            ThrowOnRemove = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+        sink.Records.Clear();
+
+        mediator.Broadcast(ConnectedInfo("EFW", "OIII", 3));
+
+        mediator.RemoveCalls.Should().Be(1);
+        mediator.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task FilterChanged_WithSameTimestampAndAttributes_PublishesDistinctSpanIds()
     {
         var mediator = new FakeFilterWheelMediator
@@ -206,7 +445,12 @@ public sealed class FilterWheelTelemetryCollectorTests
 
         mediator.Consumers.Should().BeEmpty();
         mediator.RemoveCalls.Should().Be(1);
+        mediator.ConnectedSubscriberCount.Should().Be(0);
+        mediator.DisconnectedSubscriberCount.Should().Be(0);
         mediator.FilterChangedSubscriberCount.Should().Be(0);
+        mediator.ConnectedRemoveCalls.Should().Be(1);
+        mediator.DisconnectedRemoveCalls.Should().Be(1);
+        mediator.FilterChangedRemoveCalls.Should().Be(1);
     }
 
     [Fact]
@@ -511,6 +755,15 @@ public sealed class FilterWheelTelemetryCollectorTests
             },
         };
 
+    private static FilterWheelInfo ConnectedInfoWithoutSelectedFilter(string? filterWheelName) =>
+        new()
+        {
+            Connected = true,
+            Name = filterWheelName!,
+            IsMoving = false,
+            SelectedFilter = null!,
+        };
+
     private sealed class RecordingTelemetrySink : ITelemetrySink
     {
         public List<TelemetryRecord> Records { get; } = [];
@@ -535,6 +788,8 @@ public sealed class FilterWheelTelemetryCollectorTests
 
     private sealed class FakeFilterWheelMediator : IFilterWheelMediator
     {
+        private Func<object, EventArgs, Task>? connected;
+        private Func<object, EventArgs, Task>? disconnected;
         private Func<object, FilterChangedEventArgs, Task>? filterChanged;
 
         public List<IFilterWheelConsumer> Consumers { get; } = [];
@@ -547,6 +802,14 @@ public sealed class FilterWheelTelemetryCollectorTests
 
         public bool ThrowOnFilterChangedAddAfterSubscribe { get; init; }
 
+        public bool ThrowOnConnectedAddAfterSubscribe { get; init; }
+
+        public bool ThrowOnDisconnectedAddAfterSubscribe { get; init; }
+
+        public bool ThrowOnConnectedRemove { get; init; }
+
+        public bool ThrowOnDisconnectedRemove { get; init; }
+
         public bool ThrowOnFilterChangedRemove { get; init; }
 
         public int RegisterCalls { get; private set; }
@@ -555,16 +818,52 @@ public sealed class FilterWheelTelemetryCollectorTests
 
         public int FilterChangedRemoveCalls { get; private set; }
 
+        public int ConnectedRemoveCalls { get; private set; }
+
+        public int DisconnectedRemoveCalls { get; private set; }
+
         public event Func<object, EventArgs, Task>? Connected
         {
-            add { }
-            remove { }
+            add
+            {
+                connected += value;
+                if (ThrowOnConnectedAddAfterSubscribe)
+                {
+                    throw new InvalidOperationException("Connected subscription failed.");
+                }
+            }
+            remove
+            {
+                ConnectedRemoveCalls++;
+                if (ThrowOnConnectedRemove)
+                {
+                    throw new InvalidOperationException("Connected unsubscribe failed.");
+                }
+
+                connected -= value;
+            }
         }
 
         public event Func<object, EventArgs, Task>? Disconnected
         {
-            add { }
-            remove { }
+            add
+            {
+                disconnected += value;
+                if (ThrowOnDisconnectedAddAfterSubscribe)
+                {
+                    throw new InvalidOperationException("Disconnected subscription failed.");
+                }
+            }
+            remove
+            {
+                DisconnectedRemoveCalls++;
+                if (ThrowOnDisconnectedRemove)
+                {
+                    throw new InvalidOperationException("Disconnected unsubscribe failed.");
+                }
+
+                disconnected -= value;
+            }
         }
 
         public event Func<object, FilterChangedEventArgs, Task>? FilterChanged
@@ -590,6 +889,10 @@ public sealed class FilterWheelTelemetryCollectorTests
         }
 
         public int FilterChangedSubscriberCount => filterChanged?.GetInvocationList().Length ?? 0;
+
+        public int ConnectedSubscriberCount => connected?.GetInvocationList().Length ?? 0;
+
+        public int DisconnectedSubscriberCount => disconnected?.GetInvocationList().Length ?? 0;
 
         public void RegisterHandler(IFilterWheelVM handler)
         {
@@ -634,6 +937,26 @@ public sealed class FilterWheelTelemetryCollectorTests
             }
 
             await filterChanged.Invoke(this, new FilterChangedEventArgs(from, to));
+        }
+
+        public async Task RaiseConnectedAsync()
+        {
+            if (connected is null)
+            {
+                return;
+            }
+
+            await connected.Invoke(this, EventArgs.Empty);
+        }
+
+        public async Task RaiseDisconnectedAsync()
+        {
+            if (disconnected is null)
+            {
+                return;
+            }
+
+            await disconnected.Invoke(this, EventArgs.Empty);
         }
 
         public FilterWheelInfo GetInfo() => CurrentInfo;

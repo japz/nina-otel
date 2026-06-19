@@ -17,10 +17,17 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
     private bool disposed;
     private string? lastFilterName;
     private string? lastFilterWheelName;
+    private string? lastConnectedFilterWheelName;
+    private string? lastDisconnectedFilterWheelName;
     private bool startAttempted;
+    private bool startupFailed;
     private bool registered;
+    private bool shouldUnsubscribeConnected;
+    private bool shouldUnsubscribeDisconnected;
     private bool shouldUnsubscribeFilterChanged;
+    private bool lifecycleEventsEnabled;
     private bool filterChangedEventsEnabled;
+    private bool disconnectedEventLogged;
     private long filterChangeSequence;
 
     public FilterWheelTelemetryCollector(
@@ -47,14 +54,25 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
             {
                 mediator.RegisterConsumer(this);
                 registered = true;
+
                 shouldUnsubscribeFilterChanged = true;
                 mediator.FilterChanged += OnFilterChanged;
+
+                shouldUnsubscribeConnected = true;
+                mediator.Connected += OnConnected;
+
+                shouldUnsubscribeDisconnected = true;
+                mediator.Disconnected += OnDisconnected;
+
+                lifecycleEventsEnabled = true;
                 filterChangedEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                startupFailed = true;
+                lifecycleEventsEnabled = false;
                 filterChangedEventsEnabled = false;
-                TryUnsubscribeFilterChanged();
+                CleanupFailedStart();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -69,14 +87,20 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
 
         lock (syncRoot)
         {
-            if (disposed)
+            if (disposed || startupFailed)
             {
                 return;
             }
 
             if (!TryGetAvailableFilterState(deviceInfo, out var filterWheelName, out var filterName, out var position))
             {
+                if (lastConnectedFilterWheelName is not null)
+                {
+                    lastDisconnectedFilterWheelName = lastConnectedFilterWheelName;
+                }
+
                 ClearPreviousMetric();
+                ResetPublishedState();
                 return;
             }
 
@@ -90,6 +114,9 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
             PublishCurrentMetric(filterWheelName, filterName, position);
             lastFilterWheelName = filterWheelName;
             lastFilterName = filterName;
+            lastConnectedFilterWheelName = filterWheelName;
+            lastDisconnectedFilterWheelName = null;
+            disconnectedEventLogged = false;
         }
     }
 
@@ -103,8 +130,9 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
             }
 
             disposed = true;
+            lifecycleEventsEnabled = false;
             filterChangedEventsEnabled = false;
-            TryUnsubscribeFilterChanged();
+            CleanupSubscriptions();
 
             if (!registered)
             {
@@ -114,12 +142,90 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
             try
             {
                 mediator.RemoveConsumer(this);
+                registered = false;
             }
             catch
             {
                 // Telemetry teardown must never interfere with NINA shutdown.
             }
         }
+    }
+
+    private Task OnConnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || startupFailed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var deviceInfo = TryGetInfo();
+                var filterWheelName = deviceInfo is { Connected: true }
+                    ? NormalizeFilterWheelName(deviceInfo.Name)
+                    : ResolveCurrentFilterWheelName();
+
+                disconnectedEventLogged = false;
+                lastDisconnectedFilterWheelName = null;
+                if (deviceInfo is { Connected: true })
+                {
+                    if (lastConnectedFilterWheelName is not null &&
+                        !string.Equals(lastConnectedFilterWheelName, filterWheelName, StringComparison.Ordinal))
+                    {
+                        ClearPreviousMetric();
+                    }
+
+                    lastConnectedFilterWheelName = filterWheelName;
+                }
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "fwheel_connected",
+                    "Filter Wheel connected",
+                    CreateLifecycleAttributes(filterWheelName));
+            }
+        }
+        catch
+        {
+            // NINA filter wheel lifecycle events must never fail because telemetry is unavailable.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnDisconnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || startupFailed || disconnectedEventLogged || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var filterWheelName = ResolveDisconnectedFilterWheelName();
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "fwheel_disconnected",
+                    "Filter Wheel disconnected",
+                    CreateLifecycleAttributes(filterWheelName));
+
+                ClearPreviousMetric();
+                ResetPublishedState();
+                lastDisconnectedFilterWheelName = filterWheelName;
+                disconnectedEventLogged = true;
+            }
+        }
+        catch
+        {
+            // NINA filter wheel lifecycle events must never fail because telemetry is unavailable.
+        }
+
+        return Task.CompletedTask;
     }
 
     private Task OnFilterChanged(object sender, FilterChangedEventArgs args)
@@ -245,6 +351,72 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
         }
     }
 
+    private void CleanupSubscriptions()
+    {
+        TryUnsubscribeDisconnected();
+        TryUnsubscribeConnected();
+        TryUnsubscribeFilterChanged();
+    }
+
+    private void CleanupFailedStart()
+    {
+        CleanupSubscriptions();
+
+        if (registered)
+        {
+            try
+            {
+                mediator.RemoveConsumer(this);
+                registered = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        ClearPreviousMetric();
+        ResetPublishedState();
+        lastDisconnectedFilterWheelName = null;
+        disconnectedEventLogged = false;
+    }
+
+    private void TryUnsubscribeDisconnected()
+    {
+        if (!shouldUnsubscribeDisconnected)
+        {
+            return;
+        }
+
+        try
+        {
+            mediator.Disconnected -= OnDisconnected;
+            shouldUnsubscribeDisconnected = false;
+        }
+        catch
+        {
+            // Telemetry teardown must never interfere with NINA shutdown.
+        }
+    }
+
+    private void TryUnsubscribeConnected()
+    {
+        if (!shouldUnsubscribeConnected)
+        {
+            return;
+        }
+
+        try
+        {
+            mediator.Connected -= OnConnected;
+            shouldUnsubscribeConnected = false;
+        }
+        catch
+        {
+            // Telemetry teardown must never interfere with NINA shutdown.
+        }
+    }
+
     private void TryUnsubscribeFilterChanged()
     {
         if (!shouldUnsubscribeFilterChanged)
@@ -264,9 +436,38 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
     }
 
     private string ResolveCurrentFilterWheelName() =>
-        lastFilterWheelName is null
-            ? UnknownFilterWheelName
-            : lastFilterWheelName;
+        lastConnectedFilterWheelName ??
+        lastFilterWheelName ??
+        ResolveMediatorFilterWheelName();
+
+    private string ResolveDisconnectedFilterWheelName() =>
+        lastConnectedFilterWheelName ??
+        lastDisconnectedFilterWheelName ??
+        lastFilterWheelName ??
+        ResolveMediatorFilterWheelName();
+
+    private string ResolveMediatorFilterWheelName()
+    {
+        return NormalizeFilterWheelName(TryGetInfo()?.Name);
+    }
+
+    private FilterWheelInfo? TryGetInfo()
+    {
+        try
+        {
+            return mediator.GetInfo();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static Dictionary<string, object?> CreateLifecycleAttributes(string filterWheelName) =>
+        new()
+        {
+            ["filter_wheel_name"] = filterWheelName,
+        };
 
     private static Dictionary<string, object?> CreateFilterChangeAttributes(
         string filterWheelName,
@@ -306,6 +507,28 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
         {
             // NINA equipment callbacks must never fail because telemetry is unavailable.
         }
+    }
+
+    private void PublishNamedLog(
+        DateTimeOffset timestamp,
+        string name,
+        string body,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            name,
+            TelemetryPriority.Normal,
+            attributes,
+            Body: body,
+            Severity: TelemetrySeverity.Information));
+
+    private void ResetPublishedState()
+    {
+        lastFilterWheelName = null;
+        lastFilterName = null;
+        lastConnectedFilterWheelName = null;
     }
 
     private static Dictionary<string, object?> CreateFilterWheelAttributes(
