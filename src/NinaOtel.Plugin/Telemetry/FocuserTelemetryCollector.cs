@@ -18,7 +18,16 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
     private bool disposed;
     private bool hasPublishedTemperature;
     private string? lastConnectedFocuserName;
-    private bool started;
+    private string? lastDisconnectedFocuserName;
+    private bool startAttempted;
+    private bool startupFailed;
+    private bool registered;
+    private bool connectedSubscriptionAttempted;
+    private bool disconnectedSubscriptionAttempted;
+    private bool subscribedConnected;
+    private bool subscribedDisconnected;
+    private bool lifecycleEventsEnabled;
+    private bool disconnectedEventLogged;
 
     public FocuserTelemetryCollector(
         IFocuserMediator mediator,
@@ -34,18 +43,31 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
     {
         lock (syncRoot)
         {
-            if (disposed || started)
+            if (disposed || startAttempted)
             {
                 return;
             }
 
+            startAttempted = true;
             try
             {
                 mediator.RegisterConsumer(this);
-                started = true;
+                registered = true;
+
+                connectedSubscriptionAttempted = true;
+                mediator.Connected += OnConnected;
+                subscribedConnected = true;
+
+                disconnectedSubscriptionAttempted = true;
+                mediator.Disconnected += OnDisconnected;
+                subscribedDisconnected = true;
+                lifecycleEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                startupFailed = true;
+                lifecycleEventsEnabled = false;
+                CleanupFailedStart();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -58,30 +80,44 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
             return;
         }
 
-        lock (syncRoot)
+        try
         {
-            var focuserName = NormalizeFocuserName(deviceInfo.Name);
-            if (!deviceInfo.Connected)
+            lock (syncRoot)
             {
-                if (lastConnectedFocuserName is not null)
+                if (disposed || startupFailed)
+                {
+                    return;
+                }
+
+                var focuserName = NormalizeFocuserName(deviceInfo.Name);
+                if (!deviceInfo.Connected)
+                {
+                    if (lastConnectedFocuserName is not null)
+                    {
+                        lastDisconnectedFocuserName = lastConnectedFocuserName;
+                        PublishClearMetrics(lastConnectedFocuserName, hasPublishedTemperature);
+                        ResetPublishedState();
+                    }
+
+                    return;
+                }
+
+                if (lastConnectedFocuserName is not null &&
+                    !string.Equals(lastConnectedFocuserName, focuserName, StringComparison.Ordinal))
                 {
                     PublishClearMetrics(lastConnectedFocuserName, hasPublishedTemperature);
-                    lastConnectedFocuserName = null;
                     hasPublishedTemperature = false;
                 }
 
-                return;
+                disconnectedEventLogged = false;
+                lastDisconnectedFocuserName = null;
+                lastConnectedFocuserName = focuserName;
+                PublishCurrentMetrics(deviceInfo, focuserName);
             }
-
-            if (lastConnectedFocuserName is not null &&
-                !string.Equals(lastConnectedFocuserName, focuserName, StringComparison.Ordinal))
-            {
-                PublishClearMetrics(lastConnectedFocuserName, hasPublishedTemperature);
-                hasPublishedTemperature = false;
-            }
-
-            lastConnectedFocuserName = focuserName;
-            PublishCurrentMetrics(deviceInfo, focuserName);
+        }
+        catch
+        {
+            // NINA equipment callbacks must never fail because telemetry handling failed.
         }
     }
 
@@ -197,7 +233,37 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
             }
 
             disposed = true;
-            if (!started)
+            lifecycleEventsEnabled = false;
+
+            if (connectedSubscriptionAttempted || subscribedConnected)
+            {
+                try
+                {
+                    mediator.Connected -= OnConnected;
+                    subscribedConnected = false;
+                    connectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (disconnectedSubscriptionAttempted || subscribedDisconnected)
+            {
+                try
+                {
+                    mediator.Disconnected -= OnDisconnected;
+                    subscribedDisconnected = false;
+                    disconnectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (!registered)
             {
                 return;
             }
@@ -205,12 +271,96 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
             try
             {
                 mediator.RemoveConsumer(this);
+                registered = false;
             }
             catch
             {
                 // Telemetry teardown must never interfere with NINA shutdown.
             }
         }
+    }
+
+    private Task OnConnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var deviceInfo = TryGetInfo();
+                var focuserName = deviceInfo is { Connected: true }
+                    ? NormalizeFocuserName(deviceInfo.Name)
+                    : NormalizeFocuserName(lastConnectedFocuserName);
+
+                disconnectedEventLogged = false;
+                lastDisconnectedFocuserName = null;
+                if (deviceInfo is { Connected: true })
+                {
+                    if (lastConnectedFocuserName is not null &&
+                        !string.Equals(lastConnectedFocuserName, focuserName, StringComparison.Ordinal))
+                    {
+                        PublishClearMetrics(lastConnectedFocuserName, hasPublishedTemperature);
+                        hasPublishedTemperature = false;
+                    }
+
+                    lastConnectedFocuserName = focuserName;
+                }
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "focuser_connected",
+                    "Focuser connected",
+                    TelemetryPriority.Normal,
+                    CreateFocuserAttributes(focuserName));
+            }
+        }
+        catch
+        {
+            // NINA focuser events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnDisconnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || disconnectedEventLogged || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var shouldClearMetrics = lastConnectedFocuserName is not null;
+                var focuserName = ResolveDisconnectedFocuserName();
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "focuser_disconnected",
+                    "Focuser disconnected",
+                    TelemetryPriority.Important,
+                    CreateFocuserAttributes(focuserName));
+                if (shouldClearMetrics)
+                {
+                    PublishClearMetrics(focuserName, hasPublishedTemperature);
+                }
+
+                ResetPublishedState();
+                disconnectedEventLogged = true;
+            }
+        }
+        catch
+        {
+            // NINA focuser events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
     }
 
     private void PublishRegistrationFailure(Exception ex)
@@ -313,6 +463,95 @@ public sealed class FocuserTelemetryCollector : IFocuserConsumer, IDisposable
         attributes.TryGetValue(name, out var value)
             ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
             : string.Empty;
+
+    private void CleanupFailedStart()
+    {
+        if (disconnectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Disconnected -= OnDisconnected;
+                subscribedDisconnected = false;
+                disconnectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (connectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Connected -= OnConnected;
+                subscribedConnected = false;
+                connectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (registered)
+        {
+            try
+            {
+                mediator.RemoveConsumer(this);
+                registered = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (lastConnectedFocuserName is not null)
+        {
+            PublishClearMetrics(lastConnectedFocuserName, hasPublishedTemperature);
+        }
+
+        ResetPublishedState();
+        disconnectedEventLogged = false;
+    }
+
+    private void PublishNamedLog(
+        DateTimeOffset timestamp,
+        string name,
+        string body,
+        TelemetryPriority priority,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            name,
+            priority,
+            attributes,
+            Body: body,
+            Severity: TelemetrySeverity.Information));
+
+    private void ResetPublishedState()
+    {
+        lastConnectedFocuserName = null;
+        hasPublishedTemperature = false;
+    }
+
+    private string ResolveDisconnectedFocuserName() =>
+        lastConnectedFocuserName ?? lastDisconnectedFocuserName ?? NormalizeFocuserName(TryGetInfo()?.Name);
+
+    private FocuserInfo? TryGetInfo()
+    {
+        try
+        {
+            return mediator.GetInfo();
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private void TryPublishSafely(TelemetryRecord record)
     {

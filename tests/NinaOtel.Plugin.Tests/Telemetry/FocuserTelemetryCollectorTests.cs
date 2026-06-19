@@ -13,15 +13,21 @@ namespace NinaOtel.Plugin.Tests.Telemetry;
 public sealed class FocuserTelemetryCollectorTests
 {
     [Fact]
-    public void Start_RegistersCollectorAsFocuserConsumer()
+    public void Start_RegistersCollectorAsFocuserConsumerAndSubscribesFocuserEventsOnce()
     {
         var mediator = new FakeFocuserMediator();
         var sink = new RecordingTelemetrySink();
         using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
 
         collector.Start();
+        collector.Start();
 
         mediator.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
+        mediator.RegisterCalls.Should().Be(1);
+        mediator.AddConnectedCalls.Should().Be(1);
+        mediator.AddDisconnectedCalls.Should().Be(1);
+        mediator.ConnectedSubscriberCount.Should().Be(1);
+        mediator.DisconnectedSubscriberCount.Should().Be(1);
     }
 
     [Fact]
@@ -49,8 +55,428 @@ public sealed class FocuserTelemetryCollectorTests
         act.Should().NotThrow();
         sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
             record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.focuser" &&
             record.Name == "focuser_collector.registration_failed" &&
             Equals(record.Attributes["error_type"], nameof(InvalidOperationException)));
+    }
+
+    [Fact]
+    public async Task Connected_PublishesFocuserConnectionLogWithCurrentConnectedFocuserName()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            CurrentInfo = new FocuserInfo
+            {
+                Connected = true,
+                Name = "EAF",
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.focuser" &&
+            record.Name == "focuser_connected" &&
+            record.Body == "Focuser connected" &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenCurrentInfoIsUnavailable_UsesLastConnectedFocuserName()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new FocuserInfo
+        {
+            Connected = true,
+            Name = "EAF",
+            Position = 1234,
+            Temperature = -4.5,
+        });
+        sink.Records.Clear();
+        mediator.CurrentInfo = new FocuserInfo
+        {
+            Connected = false,
+            Name = "Ignored stale name",
+        };
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "focuser_connected" &&
+            record.Body == "Focuser connected" &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenNoKnownFocuser_UsesUnknownName()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "focuser_connected" &&
+            record.Body == "Focuser connected" &&
+            Equals(record.Attributes["focuser_name"], "Unknown"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenFocuserNameChanges_ClearsPreviousFocuserMetricsBeforeUpdatingName()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new FocuserInfo
+        {
+            Connected = true,
+            Name = "EAF",
+            Position = 1234,
+            Temperature = -4.5,
+        });
+        sink.Records.Clear();
+        mediator.CurrentInfo = new FocuserInfo
+        {
+            Connected = true,
+            Name = "Moonlite",
+        };
+
+        await mediator.RaiseConnectedAsync();
+        mediator.Broadcast(new FocuserInfo
+        {
+            Connected = true,
+            Name = "Moonlite",
+            Position = 2048,
+            Temperature = 2.5,
+        });
+
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "focuser_position" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "focuser_temperature" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+    }
+
+    [Fact]
+    public async Task Disconnected_PublishesDisconnectLogClearsMetricsAndSuppressesDuplicateUntilConnectedAgain()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new FocuserInfo
+        {
+            Connected = true,
+            Name = "EAF",
+            Position = 1234,
+            Temperature = -4.5,
+        });
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.focuser" &&
+            record.Name == "focuser_disconnected" &&
+            record.Body == "Focuser disconnected" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().HaveCount(2)
+            .And.OnlyContain(record =>
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["focuser_name"], "EAF"));
+
+        sink.Records.Clear();
+        mediator.CurrentInfo = new FocuserInfo
+        {
+            Connected = true,
+            Name = "Moonlite",
+        };
+        await mediator.RaiseConnectedAsync();
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "focuser_disconnected" &&
+            Equals(record.Attributes["focuser_name"], "Moonlite"));
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenDeviceInfoAlreadyClearedMetrics_StillUsesPreviousFocuserName()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(new FocuserInfo
+        {
+            Connected = true,
+            Name = "EAF",
+            Position = 1234,
+            Temperature = -4.5,
+        });
+        collector.UpdateDeviceInfo(new FocuserInfo
+        {
+            Connected = false,
+            Name = "EAF",
+        });
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "focuser_disconnected" &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenNoKnownFocuser_UsesUnknownName()
+    {
+        var mediator = new FakeFocuserMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "focuser_disconnected" &&
+            record.Body == "Focuser disconnected" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["focuser_name"], "Unknown"));
+    }
+
+    [Fact]
+    public void Start_WhenEventSubscriptionFails_PublishesHealthAndDoesNotThrow()
+    {
+        var mediator = new FakeFocuserMediator { ThrowOnAddDisconnected = true };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        var act = () => collector.Start();
+
+        act.Should().NotThrow();
+        mediator.RegisterCalls.Should().Be(1);
+        mediator.AddConnectedCalls.Should().Be(1);
+        mediator.AddDisconnectedCalls.Should().Be(1);
+        mediator.RemoveConnectedCalls.Should().Be(1);
+        mediator.RemoveCalls.Should().Be(1);
+        mediator.ConnectedSubscriberCount.Should().Be(0);
+        mediator.DisconnectedSubscriberCount.Should().Be(0);
+        mediator.Consumers.Should().BeEmpty();
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.focuser" &&
+            record.Name == "focuser_collector.registration_failed" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Disconnected subscription failed."));
+    }
+
+    [Fact]
+    public void Start_WhenEventSubscriptionFailsAfterInitialMetrics_ClearsThoseMetrics()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            ThrowOnAddDisconnected = true,
+            CurrentInfo = new FocuserInfo
+            {
+                Connected = true,
+                Name = "EAF",
+                Position = 1234,
+                Temperature = -4.5,
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "focuser_position" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "focuser_temperature" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["focuser_name"], "EAF"));
+    }
+
+    [Fact]
+    public async Task Start_WhenEventSubscriptionFails_LateMediatorEventsDoNotPublishLifecycleLogs()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            ThrowOnAddDisconnected = true,
+            CurrentInfo = new FocuserInfo
+            {
+                Connected = true,
+                Name = "EAF",
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Start_WhenRollbackRemoveConsumerFails_LateDeviceUpdatesDoNotPublishMetrics()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            ThrowOnAddDisconnected = true,
+            ThrowOnRemove = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        mediator.Broadcast(new FocuserInfo
+        {
+            Connected = true,
+            Name = "EAF",
+            Position = 1234,
+            Temperature = -4.5,
+        });
+
+        sink.Records.Should().BeEmpty();
+        mediator.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
+    }
+
+    [Fact]
+    public async Task Start_WhenEventAccessorAttachesThenThrows_RollbackUnsubscribesLateLifecycleCallback()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            ThrowOnAddConnected = true,
+            AttachConnectedBeforeThrow = true,
+            CurrentInfo = new FocuserInfo
+            {
+                Connected = true,
+                Name = "EAF",
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await mediator.RaiseConnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+        mediator.ConnectedSubscriberCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void Dispose_WhenRollbackUnsubscribeFailedAfterPartialAttach_RetriesUnsubscribe()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            ThrowOnAddConnected = true,
+            AttachConnectedBeforeThrow = true,
+            ThrowOnRemoveConnected = true,
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+
+        var act = () => collector.Dispose();
+
+        act.Should().NotThrow();
+        mediator.RemoveConnectedCalls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Callbacks_WhenSinkThrows_DoNotThrowIntoNina()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            CurrentInfo = new FocuserInfo
+            {
+                Connected = true,
+                Name = "EAF",
+            },
+        };
+        using var collector = new FocuserTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+        collector.Start();
+
+        var connectedAct = async () => await mediator.RaiseConnectedAsync();
+        var disconnectedAct = async () => await mediator.RaiseDisconnectedAsync();
+
+        await connectedAct.Should().NotThrowAsync();
+        await disconnectedAct.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Dispose_WhenEventUnsubscriptionFails_DoesNotThrowAndLateEventsDoNotPublish()
+    {
+        var mediator = new FakeFocuserMediator
+        {
+            ThrowOnRemoveConnected = true,
+            ThrowOnRemoveDisconnected = true,
+            CurrentInfo = new FocuserInfo
+            {
+                Connected = true,
+                Name = "EAF",
+            },
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new FocuserTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        var act = () => collector.Dispose();
+
+        act.Should().NotThrow();
+        mediator.RemoveConnectedCalls.Should().Be(1);
+        mediator.RemoveDisconnectedCalls.Should().Be(1);
+        mediator.RemoveCalls.Should().Be(1);
+
+        await mediator.RaiseConnectedAsync();
+        await mediator.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
     }
 
     [Fact]
@@ -414,18 +840,103 @@ public sealed class FocuserTelemetryCollectorTests
     {
         public List<IFocuserConsumer> Consumers { get; } = [];
 
+        private Func<object, EventArgs, Task>? connected;
+        private Func<object, EventArgs, Task>? disconnected;
+
+        public FocuserInfo CurrentInfo { get; set; } = new();
+
         public bool ThrowOnRegister { get; init; }
+
+        public bool ThrowOnRemove { get; init; }
+
+        public bool ThrowOnAddConnected { get; init; }
+
+        public bool ThrowOnAddDisconnected { get; init; }
+
+        public bool AttachConnectedBeforeThrow { get; init; }
+
+        public bool AttachDisconnectedBeforeThrow { get; init; }
+
+        public bool ThrowOnRemoveConnected { get; init; }
+
+        public bool ThrowOnRemoveDisconnected { get; init; }
+
+        public bool ThrowOnGetInfo { get; init; }
+
+        public int RegisterCalls { get; private set; }
+
+        public int RemoveCalls { get; private set; }
+
+        public int AddConnectedCalls { get; private set; }
+
+        public int AddDisconnectedCalls { get; private set; }
+
+        public int RemoveConnectedCalls { get; private set; }
+
+        public int RemoveDisconnectedCalls { get; private set; }
+
+        public int ConnectedSubscriberCount => connected?.GetInvocationList().Length ?? 0;
+
+        public int DisconnectedSubscriberCount => disconnected?.GetInvocationList().Length ?? 0;
 
         public event Func<object, EventArgs, Task>? Connected
         {
-            add { }
-            remove { }
+            add
+            {
+                AddConnectedCalls++;
+                if (ThrowOnAddConnected)
+                {
+                    if (AttachConnectedBeforeThrow)
+                    {
+                        connected += value;
+                    }
+
+                    throw new InvalidOperationException("Connected subscription failed.");
+                }
+
+                connected += value;
+            }
+
+            remove
+            {
+                RemoveConnectedCalls++;
+                if (ThrowOnRemoveConnected)
+                {
+                    throw new InvalidOperationException("Connected unsubscription failed.");
+                }
+
+                connected -= value;
+            }
         }
 
         public event Func<object, EventArgs, Task>? Disconnected
         {
-            add { }
-            remove { }
+            add
+            {
+                AddDisconnectedCalls++;
+                if (ThrowOnAddDisconnected)
+                {
+                    if (AttachDisconnectedBeforeThrow)
+                    {
+                        disconnected += value;
+                    }
+
+                    throw new InvalidOperationException("Disconnected subscription failed.");
+                }
+
+                disconnected += value;
+            }
+
+            remove
+            {
+                RemoveDisconnectedCalls++;
+                if (ThrowOnRemoveDisconnected)
+                {
+                    throw new InvalidOperationException("Disconnected unsubscription failed.");
+                }
+
+                disconnected -= value;
+            }
         }
 
         public void RegisterHandler(IFocuserVM handler)
@@ -434,15 +945,26 @@ public sealed class FocuserTelemetryCollectorTests
 
         public void RegisterConsumer(IFocuserConsumer consumer)
         {
+            RegisterCalls++;
             if (ThrowOnRegister)
             {
                 throw new InvalidOperationException("Registration failed.");
             }
 
             Consumers.Add(consumer);
+            consumer.UpdateDeviceInfo(CurrentInfo);
         }
 
-        public void RemoveConsumer(IFocuserConsumer consumer) => Consumers.Remove(consumer);
+        public void RemoveConsumer(IFocuserConsumer consumer)
+        {
+            RemoveCalls++;
+            if (ThrowOnRemove)
+            {
+                throw new InvalidOperationException("Removal failed.");
+            }
+
+            Consumers.Remove(consumer);
+        }
 
         public Task<IList<string>> Rescan() => Task.FromResult<IList<string>>(Array.Empty<string>());
 
@@ -452,13 +974,28 @@ public sealed class FocuserTelemetryCollectorTests
 
         public void Broadcast(FocuserInfo deviceInfo)
         {
+            CurrentInfo = deviceInfo;
             foreach (var consumer in Consumers.ToArray())
             {
                 consumer.UpdateDeviceInfo(deviceInfo);
             }
         }
 
-        public FocuserInfo GetInfo() => new();
+        public FocuserInfo GetInfo()
+        {
+            if (ThrowOnGetInfo)
+            {
+                throw new InvalidOperationException("GetInfo failed.");
+            }
+
+            return CurrentInfo;
+        }
+
+        public Task RaiseConnectedAsync() =>
+            connected?.Invoke(this, EventArgs.Empty) ?? Task.CompletedTask;
+
+        public Task RaiseDisconnectedAsync() =>
+            disconnected?.Invoke(this, EventArgs.Empty) ?? Task.CompletedTask;
 
         public string Action(string actionName, string actionParameters) => string.Empty;
 
