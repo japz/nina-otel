@@ -226,7 +226,7 @@ public sealed class FlatDeviceTelemetryCollectorTests
         return (FlatDeviceMediatorProxy)(object)mediator;
     }
 
-    private sealed class FlatDeviceMediatorProxy : DispatchProxy
+    private class FlatDeviceMediatorProxy : DispatchProxy
     {
         private Func<object, EventArgs, Task>? connected;
         private Func<object, EventArgs, Task>? disconnected;
