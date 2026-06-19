@@ -35,10 +35,26 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
     private readonly TimeProvider timeProvider;
     private bool disposed;
     private string? lastConnectedGuiderName;
+    private string? lastDisconnectedGuiderName;
     private GuiderInfoSnapshot? currentGuiderSnapshot;
     private bool startAttempted;
+    private bool startupFailed;
+    private bool registrationAttempted;
     private bool registered;
+    private bool connectedSubscriptionAttempted;
+    private bool disconnectedSubscriptionAttempted;
+    private bool guideEventSubscriptionAttempted;
+    private bool guidingStartedSubscriptionAttempted;
+    private bool guidingStoppedSubscriptionAttempted;
+    private bool afterDitherSubscriptionAttempted;
+    private bool subscribedConnected;
+    private bool subscribedDisconnected;
     private bool subscribedToGuideEvent;
+    private bool subscribedGuidingStarted;
+    private bool subscribedGuidingStopped;
+    private bool subscribedAfterDither;
+    private bool lifecycleEventsEnabled;
+    private bool disconnectedEventLogged;
     private string? pendingClearGuiderName;
 
     public GuiderTelemetryCollector(
@@ -63,14 +79,41 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
             startAttempted = true;
             try
             {
+                registrationAttempted = true;
                 mediator.RegisterConsumer(this);
                 registered = true;
 
+                connectedSubscriptionAttempted = true;
+                mediator.Connected += OnConnected;
+                subscribedConnected = true;
+
+                disconnectedSubscriptionAttempted = true;
+                mediator.Disconnected += OnDisconnected;
+                subscribedDisconnected = true;
+
+                guideEventSubscriptionAttempted = true;
                 mediator.GuideEvent += OnGuideEvent;
                 subscribedToGuideEvent = true;
+
+                guidingStartedSubscriptionAttempted = true;
+                mediator.GuidingStarted += OnGuidingStarted;
+                subscribedGuidingStarted = true;
+
+                guidingStoppedSubscriptionAttempted = true;
+                mediator.GuidingStopped += OnGuidingStopped;
+                subscribedGuidingStopped = true;
+
+                afterDitherSubscriptionAttempted = true;
+                mediator.AfterDither += OnAfterDither;
+                subscribedAfterDither = true;
+
+                lifecycleEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                startupFailed = true;
+                lifecycleEventsEnabled = false;
+                CleanupFailedStart();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -87,6 +130,11 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
         {
             lock (syncRoot)
             {
+                if (disposed || startupFailed)
+                {
+                    return;
+                }
+
                 UpdateDeviceInfoCore(deviceInfo);
             }
         }
@@ -106,12 +154,15 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
             }
 
             disposed = true;
+            lifecycleEventsEnabled = false;
 
-            if (subscribedToGuideEvent)
+            if (afterDitherSubscriptionAttempted || subscribedAfterDither)
             {
                 try
                 {
-                    mediator.GuideEvent -= OnGuideEvent;
+                    mediator.AfterDither -= OnAfterDither;
+                    subscribedAfterDither = false;
+                    afterDitherSubscriptionAttempted = false;
                 }
                 catch
                 {
@@ -119,7 +170,77 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
                 }
             }
 
-            if (!registered)
+            if (guidingStoppedSubscriptionAttempted || subscribedGuidingStopped)
+            {
+                try
+                {
+                    mediator.GuidingStopped -= OnGuidingStopped;
+                    subscribedGuidingStopped = false;
+                    guidingStoppedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (guidingStartedSubscriptionAttempted || subscribedGuidingStarted)
+            {
+                try
+                {
+                    mediator.GuidingStarted -= OnGuidingStarted;
+                    subscribedGuidingStarted = false;
+                    guidingStartedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (guideEventSubscriptionAttempted || subscribedToGuideEvent)
+            {
+                try
+                {
+                    mediator.GuideEvent -= OnGuideEvent;
+                    subscribedToGuideEvent = false;
+                    guideEventSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (disconnectedSubscriptionAttempted || subscribedDisconnected)
+            {
+                try
+                {
+                    mediator.Disconnected -= OnDisconnected;
+                    subscribedDisconnected = false;
+                    disconnectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (connectedSubscriptionAttempted || subscribedConnected)
+            {
+                try
+                {
+                    mediator.Connected -= OnConnected;
+                    subscribedConnected = false;
+                    connectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (!registered && !registrationAttempted)
             {
                 return;
             }
@@ -127,6 +248,8 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
             try
             {
                 mediator.RemoveConsumer(this);
+                registered = false;
+                registrationAttempted = false;
             }
             catch
             {
@@ -144,6 +267,7 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
             var clearGuiderName = pendingClearGuiderName ?? lastConnectedGuiderName;
             if (clearGuiderName is not null)
             {
+                lastDisconnectedGuiderName = clearGuiderName;
                 PublishClearMetrics(timeProvider.GetUtcNow(), clearGuiderName);
                 ResetPublishedState();
             }
@@ -158,6 +282,8 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
         }
 
         lastConnectedGuiderName = guiderName;
+        lastDisconnectedGuiderName = null;
+        disconnectedEventLogged = false;
         currentGuiderSnapshot = GuiderInfoSnapshot.From(deviceInfo, guiderName);
     }
 
@@ -173,6 +299,7 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
             lock (syncRoot)
             {
                 if (disposed ||
+                    startupFailed ||
                     currentGuiderSnapshot is null ||
                     lastConnectedGuiderName is null)
                 {
@@ -194,6 +321,129 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
         {
             // NINA guider events must never fail because telemetry handling failed.
         }
+    }
+
+    private Task OnConnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var deviceInfo = TryGetInfo();
+                var guiderName = deviceInfo is { Connected: true }
+                    ? NormalizeGuiderName(deviceInfo.Name)
+                    : NormalizeGuiderName(lastConnectedGuiderName);
+
+                disconnectedEventLogged = false;
+                lastDisconnectedGuiderName = null;
+                if (deviceInfo is { Connected: true })
+                {
+                    if (lastConnectedGuiderName is not null &&
+                        !string.Equals(lastConnectedGuiderName, guiderName, StringComparison.Ordinal))
+                    {
+                        pendingClearGuiderName ??= lastConnectedGuiderName;
+                    }
+
+                    lastConnectedGuiderName = guiderName;
+                    currentGuiderSnapshot = GuiderInfoSnapshot.From(deviceInfo, guiderName);
+                }
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "guider_connected",
+                    "Guider connected",
+                    TelemetryPriority.Normal,
+                    CreateGuiderAttributes(guiderName));
+            }
+        }
+        catch
+        {
+            // NINA guider events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnDisconnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || disconnectedEventLogged || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var clearGuiderName = pendingClearGuiderName ?? lastConnectedGuiderName;
+                var shouldClearMetrics = clearGuiderName is not null;
+                var guiderName = ResolveDisconnectedGuiderName();
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "guider_disconnected",
+                    "Guider disconnected",
+                    TelemetryPriority.Important,
+                    CreateGuiderAttributes(guiderName));
+                if (shouldClearMetrics)
+                {
+                    PublishClearMetrics(timeProvider.GetUtcNow(), clearGuiderName!);
+                }
+
+                ResetPublishedState();
+                disconnectedEventLogged = true;
+            }
+        }
+        catch
+        {
+            // NINA guider events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnAfterDither(object sender, EventArgs e) =>
+        PublishGuiderLifecycleLog("guider_dither", "Dither", TelemetryPriority.Normal);
+
+    private Task OnGuidingStarted(object sender, EventArgs e) =>
+        PublishGuiderLifecycleLog("guider_guiding_started", "Guiding started", TelemetryPriority.Normal);
+
+    private Task OnGuidingStopped(object sender, EventArgs e) =>
+        PublishGuiderLifecycleLog("guider_guiding_stopped", "Guiding stopped", TelemetryPriority.Normal);
+
+    private Task PublishGuiderLifecycleLog(
+        string name,
+        string body,
+        TelemetryPriority priority)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    name,
+                    body,
+                    priority,
+                    CreateGuiderAttributes(ResolveCurrentGuiderName()));
+            }
+        }
+        catch
+        {
+            // NINA guider events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
     }
 
     private void PublishCurrentMetrics(
@@ -277,6 +527,132 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
             }));
     }
 
+    private void CleanupFailedStart()
+    {
+        if (afterDitherSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.AfterDither -= OnAfterDither;
+                subscribedAfterDither = false;
+                afterDitherSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (guidingStoppedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.GuidingStopped -= OnGuidingStopped;
+                subscribedGuidingStopped = false;
+                guidingStoppedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (guidingStartedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.GuidingStarted -= OnGuidingStarted;
+                subscribedGuidingStarted = false;
+                guidingStartedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (guideEventSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.GuideEvent -= OnGuideEvent;
+                subscribedToGuideEvent = false;
+                guideEventSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (disconnectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Disconnected -= OnDisconnected;
+                subscribedDisconnected = false;
+                disconnectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (connectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Connected -= OnConnected;
+                subscribedConnected = false;
+                connectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (registered || registrationAttempted)
+        {
+            try
+            {
+                mediator.RemoveConsumer(this);
+                registered = false;
+                registrationAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        var clearGuiderName = pendingClearGuiderName ?? lastConnectedGuiderName;
+        if (clearGuiderName is not null)
+        {
+            PublishClearMetrics(timeProvider.GetUtcNow(), clearGuiderName);
+        }
+
+        ResetPublishedState();
+        disconnectedEventLogged = false;
+    }
+
+    private void PublishNamedLog(
+        DateTimeOffset timestamp,
+        string name,
+        string body,
+        TelemetryPriority priority,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            name,
+            priority,
+            attributes,
+            Body: body,
+            Severity: TelemetrySeverity.Information));
+
     private void ResetPublishedState()
     {
         currentGuiderSnapshot = null;
@@ -290,6 +666,31 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
         foreach (var metric in metrics)
         {
             metric.HasPublished = false;
+        }
+    }
+
+    private string ResolveCurrentGuiderName()
+    {
+        var deviceInfo = TryGetInfo();
+        return deviceInfo is { Connected: true }
+            ? NormalizeGuiderName(deviceInfo.Name)
+            : NormalizeGuiderName(lastConnectedGuiderName ?? lastDisconnectedGuiderName);
+    }
+
+    private string ResolveDisconnectedGuiderName() =>
+        lastConnectedGuiderName ??
+        lastDisconnectedGuiderName ??
+        NormalizeGuiderName(TryGetInfo()?.Name);
+
+    private GuiderInfo? TryGetInfo()
+    {
+        try
+        {
+            return mediator.GetInfo();
+        }
+        catch
+        {
+            return null;
         }
     }
 
