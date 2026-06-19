@@ -25,7 +25,15 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
     private bool hasPublishedQhyHumidity;
     private bool hasPublishedTemperature;
     private string? lastConnectedCameraName;
-    private bool started;
+    private bool startAttempted;
+    private bool startupFailed;
+    private bool registered;
+    private bool connectedSubscriptionAttempted;
+    private bool disconnectedSubscriptionAttempted;
+    private bool subscribedConnected;
+    private bool subscribedDisconnected;
+    private bool lifecycleEventsEnabled;
+    private bool disconnectedEventLogged;
 
     public CameraTelemetryCollector(
         ICameraMediator mediator,
@@ -51,18 +59,31 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
     {
         lock (syncRoot)
         {
-            if (disposed || started)
+            if (disposed || startAttempted)
             {
                 return;
             }
 
+            startAttempted = true;
             try
             {
                 mediator.RegisterConsumer(this);
-                started = true;
+                registered = true;
+
+                connectedSubscriptionAttempted = true;
+                mediator.Connected += OnConnected;
+                subscribedConnected = true;
+
+                disconnectedSubscriptionAttempted = true;
+                mediator.Disconnected += OnDisconnected;
+                subscribedDisconnected = true;
+                lifecycleEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                startupFailed = true;
+                lifecycleEventsEnabled = false;
+                CleanupFailedStart();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -75,12 +96,36 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
             return;
         }
 
-        lock (syncRoot)
+        try
         {
-            var cameraName = NormalizeCameraName(deviceInfo.Name);
-            if (!deviceInfo.Connected)
+            lock (syncRoot)
             {
-                if (lastConnectedCameraName is not null)
+                if (disposed || startupFailed)
+                {
+                    return;
+                }
+
+                var cameraName = NormalizeCameraName(deviceInfo.Name);
+                if (!deviceInfo.Connected)
+                {
+                    if (lastConnectedCameraName is not null)
+                    {
+                        PublishClearMetrics(
+                            lastConnectedCameraName,
+                            hasPublishedTemperature,
+                            hasPublishedCoolerPower,
+                            hasPublishedBattery,
+                            hasPublishedQhyAirPressure,
+                            hasPublishedQhyHumidity);
+                        ResetPublishedState();
+                    }
+
+                    return;
+                }
+
+                disconnectedEventLogged = false;
+                if (lastConnectedCameraName is not null &&
+                    !string.Equals(lastConnectedCameraName, cameraName, StringComparison.Ordinal))
                 {
                     PublishClearMetrics(
                         lastConnectedCameraName,
@@ -89,27 +134,16 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
                         hasPublishedBattery,
                         hasPublishedQhyAirPressure,
                         hasPublishedQhyHumidity);
-                    ResetPublishedState();
+                    ResetPublishedFlags();
                 }
 
-                return;
+                lastConnectedCameraName = cameraName;
+                PublishCurrentMetrics(deviceInfo, cameraName);
             }
-
-            if (lastConnectedCameraName is not null &&
-                !string.Equals(lastConnectedCameraName, cameraName, StringComparison.Ordinal))
-            {
-                PublishClearMetrics(
-                    lastConnectedCameraName,
-                    hasPublishedTemperature,
-                    hasPublishedCoolerPower,
-                    hasPublishedBattery,
-                    hasPublishedQhyAirPressure,
-                    hasPublishedQhyHumidity);
-                ResetPublishedFlags();
-            }
-
-            lastConnectedCameraName = cameraName;
-            PublishCurrentMetrics(deviceInfo, cameraName);
+        }
+        catch
+        {
+            // NINA equipment callbacks must never fail because telemetry handling failed.
         }
     }
 
@@ -123,7 +157,37 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
             }
 
             disposed = true;
-            if (!started)
+            lifecycleEventsEnabled = false;
+
+            if (connectedSubscriptionAttempted || subscribedConnected)
+            {
+                try
+                {
+                    mediator.Connected -= OnConnected;
+                    subscribedConnected = false;
+                    connectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (disconnectedSubscriptionAttempted || subscribedDisconnected)
+            {
+                try
+                {
+                    mediator.Disconnected -= OnDisconnected;
+                    subscribedDisconnected = false;
+                    disconnectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (!registered)
             {
                 return;
             }
@@ -137,6 +201,107 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
                 // Telemetry teardown must never interfere with NINA shutdown.
             }
         }
+    }
+
+    private Task OnConnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed)
+                {
+                    return Task.CompletedTask;
+                }
+
+                if (!lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var timestamp = timeProvider.GetUtcNow();
+                var deviceInfo = TryGetInfo();
+                var cameraName = deviceInfo is { Connected: true }
+                    ? NormalizeCameraName(deviceInfo.Name)
+                    : NormalizeCameraName(lastConnectedCameraName);
+
+                disconnectedEventLogged = false;
+                if (deviceInfo is { Connected: true })
+                {
+                    if (lastConnectedCameraName is not null &&
+                        !string.Equals(lastConnectedCameraName, cameraName, StringComparison.Ordinal))
+                    {
+                        PublishClearMetrics(
+                            lastConnectedCameraName,
+                            hasPublishedTemperature,
+                            hasPublishedCoolerPower,
+                            hasPublishedBattery,
+                            hasPublishedQhyAirPressure,
+                            hasPublishedQhyHumidity);
+                        ResetPublishedFlags();
+                    }
+
+                    lastConnectedCameraName = cameraName;
+                }
+
+                PublishNamedLog(
+                    timestamp,
+                    "camera_connected",
+                    "Camera connected",
+                    TelemetryPriority.Normal,
+                    CreateCameraAttributes(cameraName));
+            }
+        }
+        catch
+        {
+            // NINA camera events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnDisconnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || disconnectedEventLogged)
+                {
+                    return Task.CompletedTask;
+                }
+
+                if (!lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var timestamp = timeProvider.GetUtcNow();
+                var cameraName = ResolveDisconnectedCameraName();
+
+                PublishNamedLog(
+                    timestamp,
+                    "camera_disconnected",
+                    "Camera disconnected",
+                    TelemetryPriority.Important,
+                    CreateCameraAttributes(cameraName));
+                PublishClearMetrics(
+                    cameraName,
+                    hasPublishedTemperature,
+                    hasPublishedCoolerPower,
+                    hasPublishedBattery,
+                    hasPublishedQhyAirPressure,
+                    hasPublishedQhyHumidity);
+                ResetPublishedState();
+                disconnectedEventLogged = true;
+            }
+        }
+        catch
+        {
+            // NINA camera events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
     }
 
     private void PublishCurrentMetrics(CameraInfo deviceInfo, string cameraName)
@@ -296,6 +461,80 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
             }));
     }
 
+    private void CleanupFailedStart()
+    {
+        if (disconnectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Disconnected -= OnDisconnected;
+                subscribedDisconnected = false;
+                disconnectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (connectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Connected -= OnConnected;
+                subscribedConnected = false;
+                connectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (registered)
+        {
+            try
+            {
+                mediator.RemoveConsumer(this);
+                registered = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (lastConnectedCameraName is not null)
+        {
+            PublishClearMetrics(
+                lastConnectedCameraName,
+                hasPublishedTemperature,
+                hasPublishedCoolerPower,
+                hasPublishedBattery,
+                hasPublishedQhyAirPressure,
+                hasPublishedQhyHumidity);
+        }
+
+        ResetPublishedState();
+        disconnectedEventLogged = false;
+    }
+
+    private void PublishNamedLog(
+        DateTimeOffset timestamp,
+        string name,
+        string body,
+        TelemetryPriority priority,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            name,
+            priority,
+            attributes,
+            Body: body,
+            Severity: TelemetrySeverity.Information));
+
     private void ResetPublishedState()
     {
         lastConnectedCameraName = null;
@@ -401,6 +640,21 @@ public sealed class CameraTelemetryCollector : ICameraConsumer, IDisposable
                     ? qhyCamera.QhySensorHumidity
                     : double.NaN)
             : null;
+    }
+
+    private string ResolveDisconnectedCameraName() =>
+        lastConnectedCameraName ?? NormalizeCameraName(TryGetInfo()?.Name);
+
+    private CameraInfo? TryGetInfo()
+    {
+        try
+        {
+            return mediator.GetInfo();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private void TryPublishSafely(TelemetryRecord record)
