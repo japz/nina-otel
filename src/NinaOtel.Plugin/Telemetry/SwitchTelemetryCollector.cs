@@ -18,8 +18,16 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
     private readonly TimeProvider timeProvider;
     private bool disposed;
     private string? lastConnectedSwitchName;
+    private string? lastDisconnectedSwitchName;
     private bool startAttempted;
+    private bool startupFailed;
     private bool registered;
+    private bool connectedSubscriptionAttempted;
+    private bool disconnectedSubscriptionAttempted;
+    private bool subscribedConnected;
+    private bool subscribedDisconnected;
+    private bool lifecycleEventsEnabled;
+    private bool disconnectedEventLogged;
 
     public SwitchTelemetryCollector(
         ISwitchMediator mediator,
@@ -45,9 +53,21 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
             {
                 mediator.RegisterConsumer(this);
                 registered = true;
+
+                connectedSubscriptionAttempted = true;
+                mediator.Connected += OnConnected;
+                subscribedConnected = true;
+
+                disconnectedSubscriptionAttempted = true;
+                mediator.Disconnected += OnDisconnected;
+                subscribedDisconnected = true;
+                lifecycleEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                startupFailed = true;
+                lifecycleEventsEnabled = false;
+                CleanupFailedStart();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -64,6 +84,11 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
         {
             lock (syncRoot)
             {
+                if (disposed || startupFailed)
+                {
+                    return;
+                }
+
                 UpdateDeviceInfoCore(deviceInfo);
             }
         }
@@ -83,6 +108,36 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
             }
 
             disposed = true;
+            lifecycleEventsEnabled = false;
+
+            if (connectedSubscriptionAttempted || subscribedConnected)
+            {
+                try
+                {
+                    mediator.Connected -= OnConnected;
+                    subscribedConnected = false;
+                    connectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (disconnectedSubscriptionAttempted || subscribedDisconnected)
+            {
+                try
+                {
+                    mediator.Disconnected -= OnDisconnected;
+                    subscribedDisconnected = false;
+                    disconnectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
             if (!registered)
             {
                 return;
@@ -91,6 +146,7 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
             try
             {
                 mediator.RemoveConsumer(this);
+                registered = false;
             }
             catch
             {
@@ -108,6 +164,7 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
         {
             if (lastConnectedSwitchName is not null)
             {
+                lastDisconnectedSwitchName = lastConnectedSwitchName;
                 PublishClearMetrics(timestamp);
                 ResetPublishedState();
             }
@@ -122,6 +179,8 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
             ResetPublishedFlags();
         }
 
+        disconnectedEventLogged = false;
+        lastDisconnectedSwitchName = null;
         lastConnectedSwitchName = switchName;
         var readOnlySwitches = deviceInfo.ReadonlySwitches;
         if (readOnlySwitches is null || readOnlySwitches.Count == 0)
@@ -132,6 +191,85 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
         }
 
         PublishCurrentMetrics(timestamp, switchName, readOnlySwitches);
+    }
+
+    private Task OnConnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var timestamp = timeProvider.GetUtcNow();
+                var deviceInfo = TryGetInfo();
+                var switchName = deviceInfo is { Connected: true }
+                    ? NormalizeName(deviceInfo.Name)
+                    : ResolveConnectedSwitchName();
+
+                disconnectedEventLogged = false;
+                lastDisconnectedSwitchName = null;
+                if (deviceInfo is { Connected: true })
+                {
+                    if (lastConnectedSwitchName is not null &&
+                        !string.Equals(lastConnectedSwitchName, switchName, StringComparison.Ordinal))
+                    {
+                        PublishClearMetrics(timestamp);
+                        ResetPublishedFlags();
+                    }
+
+                    lastConnectedSwitchName = switchName;
+                }
+
+                PublishNamedLog(
+                    timestamp,
+                    "switch_connected",
+                    "Switch connected",
+                    CreateSwitchAttributes(switchName));
+            }
+        }
+        catch
+        {
+            // NINA switch events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnDisconnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || disconnectedEventLogged || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var timestamp = timeProvider.GetUtcNow();
+                var switchName = ResolveDisconnectedSwitchName();
+
+                PublishNamedLog(
+                    timestamp,
+                    "switch_disconnected",
+                    "Switch disconnected",
+                    CreateSwitchAttributes(switchName));
+                PublishClearMetrics(timestamp);
+                lastDisconnectedSwitchName = switchName;
+                ResetPublishedState();
+                disconnectedEventLogged = true;
+            }
+        }
+        catch
+        {
+            // NINA switch events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
     }
 
     private void PublishCurrentMetrics(
@@ -221,6 +359,70 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
             }));
     }
 
+    private void CleanupFailedStart()
+    {
+        if (disconnectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Disconnected -= OnDisconnected;
+                subscribedDisconnected = false;
+                disconnectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (connectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Connected -= OnConnected;
+                subscribedConnected = false;
+                connectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (registered)
+        {
+            try
+            {
+                mediator.RemoveConsumer(this);
+                registered = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        PublishClearMetrics(timeProvider.GetUtcNow());
+        ResetPublishedState();
+        lastDisconnectedSwitchName = null;
+        disconnectedEventLogged = false;
+    }
+
+    private void PublishNamedLog(
+        DateTimeOffset timestamp,
+        string name,
+        string body,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            name,
+            TelemetryPriority.Normal,
+            attributes,
+            Body: body,
+            Severity: TelemetrySeverity.Information));
+
     private void ResetPublishedState()
     {
         lastConnectedSwitchName = null;
@@ -241,6 +443,32 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
             // NINA equipment callbacks must never fail because telemetry is unavailable.
         }
     }
+
+    private string ResolveConnectedSwitchName() =>
+        NormalizeName(lastConnectedSwitchName ?? lastDisconnectedSwitchName);
+
+    private string ResolveDisconnectedSwitchName() =>
+        lastConnectedSwitchName ??
+        lastDisconnectedSwitchName ??
+        NormalizeName(TryGetInfo()?.Name);
+
+    private SwitchInfo? TryGetInfo()
+    {
+        try
+        {
+            return mediator.GetInfo();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static Dictionary<string, object?> CreateSwitchAttributes(string switchName) =>
+        new()
+        {
+            ["switch_name"] = switchName,
+        };
 
     private static PublishedSwitchMetric CreatePublishedMetric(string switchName, ISwitch readOnlySwitch) =>
         new(

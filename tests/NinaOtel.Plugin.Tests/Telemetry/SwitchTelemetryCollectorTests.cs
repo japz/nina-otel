@@ -34,7 +34,7 @@ public sealed class SwitchTelemetryCollectorTests
     }
 
     [Fact]
-    public void Start_RegistersCollectorAsSwitchConsumerOnce()
+    public void Start_RegistersCollectorAsSwitchConsumerAndSubscribesSwitchEventsOnce()
     {
         var proxy = CreateMediator(out var mediator);
         var sink = new RecordingTelemetrySink();
@@ -45,6 +45,10 @@ public sealed class SwitchTelemetryCollectorTests
 
         proxy.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
         proxy.RegisterCalls.Should().Be(1);
+        proxy.AddConnectedCalls.Should().Be(1);
+        proxy.AddDisconnectedCalls.Should().Be(1);
+        proxy.ConnectedSubscriberCount.Should().Be(1);
+        proxy.DisconnectedSubscriberCount.Should().Be(1);
     }
 
     [Fact]
@@ -84,6 +88,8 @@ public sealed class SwitchTelemetryCollectorTests
             record.Priority == TelemetryPriority.Important &&
             Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
             Equals(record.Attributes["error_message"], "Registration failed."));
+        proxy.AddConnectedCalls.Should().Be(0);
+        proxy.AddDisconnectedCalls.Should().Be(0);
     }
 
     [Fact]
@@ -115,6 +121,294 @@ public sealed class SwitchTelemetryCollectorTests
         var act = () => collector.Start();
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task Connected_PublishesSwitchConnectionLogWithCurrentConnectedSwitchName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.CurrentInfo = ConnectedInfo("PowerBox");
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.switch" &&
+            record.Name == "switch_connected" &&
+            record.Body == "Switch connected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["switch_name"], "PowerBox"));
+    }
+
+    [Fact]
+    public async Task Connected_PublishesEachConnectionEvent()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.CurrentInfo = ConnectedInfo("PowerBox");
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().HaveCount(2);
+        sink.Records.Should().OnlyContain(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "switch_connected" &&
+            Equals(record.Attributes["switch_name"], "PowerBox"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenCurrentInfoIsUnavailable_UsesLastKnownSwitchName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5)));
+        sink.Records.Clear();
+        proxy.CurrentInfo = new SwitchInfo
+        {
+            Connected = false,
+            Name = "Ignored stale name",
+        };
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "switch_connected" &&
+            record.Body == "Switch connected" &&
+            Equals(record.Attributes["switch_name"], "PowerBox"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenGetInfoThrows_UsesLastKnownSwitchName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5)));
+        sink.Records.Clear();
+        proxy.ThrowOnGetInfo = true;
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "switch_connected" &&
+            record.Body == "Switch connected" &&
+            Equals(record.Attributes["switch_name"], "PowerBox"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenCurrentSwitchNameChanges_ClearsPreviousMetricsBeforeConnectionLog()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5)));
+        sink.Records.Clear();
+        proxy.CurrentInfo = ConnectedInfo("PowerBox 2");
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "switch_ro_sw1" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["switch_name"], "PowerBox") &&
+            Equals(record.Attributes["switch_channel_name"], "Dew heater"));
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "switch_connected" &&
+            record.Body == "Switch connected" &&
+            Equals(record.Attributes["switch_name"], "PowerBox 2"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenNoKnownSwitch_UsesUnknownName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "switch_connected" &&
+            record.Body == "Switch connected" &&
+            Equals(record.Attributes["switch_name"], "Unknown"));
+    }
+
+    [Fact]
+    public async Task Disconnected_PublishesDisconnectLogClearsMetricsAndSuppressesDuplicateUntilConnectedAgain()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo(
+            "PowerBox",
+            ReadOnlySwitch(1, "Dew heater", 42.5),
+            ReadOnlySwitch(3, "Main power", 1.0)));
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.switch" &&
+            record.Name == "switch_disconnected" &&
+            record.Body == "Switch disconnected" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["switch_name"], "PowerBox"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().HaveCount(2)
+            .And.OnlyContain(record =>
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["switch_name"], "PowerBox"));
+
+        sink.Records.Clear();
+        proxy.CurrentInfo = ConnectedInfo("PowerBox 2");
+        await proxy.RaiseConnectedAsync();
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "switch_disconnected" &&
+            Equals(record.Attributes["switch_name"], "PowerBox 2"));
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenNoKnownSwitch_UsesUnknownName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "switch_disconnected" &&
+            record.Body == "Switch disconnected" &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["switch_name"], "Unknown"));
+    }
+
+    [Fact]
+    public void Start_WhenEventSubscriptionFails_PublishesHealthRollsBackAndClearsInitialMetrics()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddDisconnected = true;
+        proxy.CurrentInfo = ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5));
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        var act = () => collector.Start();
+
+        act.Should().NotThrow();
+        proxy.RegisterCalls.Should().Be(1);
+        proxy.AddConnectedCalls.Should().Be(1);
+        proxy.AddDisconnectedCalls.Should().Be(1);
+        proxy.RemoveConnectedCalls.Should().Be(1);
+        proxy.RemoveCalls.Should().Be(1);
+        proxy.ConnectedSubscriberCount.Should().Be(0);
+        proxy.DisconnectedSubscriberCount.Should().Be(0);
+        proxy.Consumers.Should().BeEmpty();
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "switch_ro_sw1" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["switch_name"], "PowerBox"));
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.switch" &&
+            record.Name == "switch_collector.registration_failed" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Disconnected subscription failed."));
+    }
+
+    [Fact]
+    public async Task Start_WhenConnectedSubscriptionThrowsAfterAttaching_RemovesHandlerAndSuppressesLateCallbacks()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddConnected = true;
+        proxy.AttachConnectedBeforeThrow = true;
+        proxy.CurrentInfo = ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5));
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+
+        proxy.ConnectedSubscriberCount.Should().Be(0);
+        proxy.DisconnectedSubscriberCount.Should().Be(0);
+        proxy.Consumers.Should().BeEmpty();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Start_WhenEventSubscriptionThrowsAfterAttaching_RemovesHandlerAndSuppressesLateCallbacks()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddDisconnected = true;
+        proxy.AttachDisconnectedBeforeThrow = true;
+        proxy.CurrentInfo = ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5));
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+
+        proxy.DisconnectedSubscriberCount.Should().Be(0);
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Start_WhenRollbackRemoveConsumerFails_LateCallbacksDoNotPublish()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddDisconnected = true;
+        proxy.ThrowOnRemove = true;
+        var sink = new RecordingTelemetrySink();
+        using var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        proxy.Broadcast(ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5)));
+        await proxy.RaiseConnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+        proxy.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
     }
 
     [Fact]
@@ -157,6 +451,31 @@ public sealed class SwitchTelemetryCollectorTests
         var act = () => collector.Dispose();
 
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task Dispose_WhenEventUnsubscriptionFails_DoesNotThrowAndLateEventsDoNotPublish()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnRemoveConnected = true;
+        proxy.ThrowOnRemoveDisconnected = true;
+        proxy.CurrentInfo = ConnectedInfo("PowerBox");
+        var sink = new RecordingTelemetrySink();
+        var collector = new SwitchTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        var act = () => collector.Dispose();
+
+        act.Should().NotThrow();
+        proxy.RemoveConnectedCalls.Should().Be(1);
+        proxy.RemoveDisconnectedCalls.Should().Be(1);
+        proxy.RemoveCalls.Should().Be(1);
+
+        await proxy.RaiseConnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
     }
 
     [Fact]
@@ -393,7 +712,25 @@ public sealed class SwitchTelemetryCollectorTests
     }
 
     [Fact]
-    public void Collector_DoesNotSubscribeToSwitchEventsOrCallControlApis()
+    public async Task LifecycleEvents_WhenSinkThrows_DoNotThrow()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.CurrentInfo = ConnectedInfo("PowerBox");
+        using var collector = new SwitchTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+        collector.Start();
+
+        var connectedAct = async () => await proxy.RaiseConnectedAsync();
+        var disconnectedAct = async () => await proxy.RaiseDisconnectedAsync();
+
+        await connectedAct.Should().NotThrowAsync();
+        await disconnectedAct.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Collector_DoesNotCallSwitchControlApis()
     {
         var proxy = CreateMediator(out var mediator);
         var sink = new RecordingTelemetrySink();
@@ -401,6 +738,8 @@ public sealed class SwitchTelemetryCollectorTests
 
         collector.Start();
         collector.UpdateDeviceInfo(ConnectedInfo("PowerBox", ReadOnlySwitch(1, "Dew heater", 42.5)));
+        await proxy.RaiseConnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
         collector.Dispose();
 
         proxy.ForbiddenCalls.Should().BeEmpty();
@@ -467,18 +806,11 @@ public sealed class SwitchTelemetryCollectorTests
 
     public class PassiveSwitchMediatorProxy : DispatchProxy
     {
-        private static readonly HashSet<string> ForbiddenEvents =
-        [
-            "Connected",
-            "Disconnected",
-        ];
-
         private static readonly HashSet<string> ForbiddenMethods =
         [
             "Connect",
             "Disconnect",
             "Rescan",
-            "GetInfo",
             "GetDevice",
             "GetDeviceInfo",
             "Broadcast",
@@ -491,17 +823,61 @@ public sealed class SwitchTelemetryCollectorTests
 
         public List<ISwitchConsumer> Consumers { get; } = [];
 
+        private Func<object, EventArgs, Task>? connected;
+        private Func<object, EventArgs, Task>? disconnected;
+
         public SwitchInfo CurrentInfo { get; set; } = new();
 
         public bool ThrowOnRegister { get; set; }
 
         public bool ThrowOnRemove { get; set; }
 
+        public bool ThrowOnAddConnected { get; set; }
+
+        public bool ThrowOnAddDisconnected { get; set; }
+
+        public bool AttachConnectedBeforeThrow { get; set; }
+
+        public bool AttachDisconnectedBeforeThrow { get; set; }
+
+        public bool ThrowOnRemoveConnected { get; set; }
+
+        public bool ThrowOnRemoveDisconnected { get; set; }
+
+        public bool ThrowOnGetInfo { get; set; }
+
         public int RegisterCalls { get; private set; }
 
         public int RemoveCalls { get; private set; }
 
+        public int AddConnectedCalls { get; private set; }
+
+        public int AddDisconnectedCalls { get; private set; }
+
+        public int RemoveConnectedCalls { get; private set; }
+
+        public int RemoveDisconnectedCalls { get; private set; }
+
+        public int ConnectedSubscriberCount => connected?.GetInvocationList().Length ?? 0;
+
+        public int DisconnectedSubscriberCount => disconnected?.GetInvocationList().Length ?? 0;
+
         public List<string> ForbiddenCalls { get; } = [];
+
+        public Task RaiseConnectedAsync() =>
+            connected?.Invoke(this, EventArgs.Empty) ?? Task.CompletedTask;
+
+        public Task RaiseDisconnectedAsync() =>
+            disconnected?.Invoke(this, EventArgs.Empty) ?? Task.CompletedTask;
+
+        public void Broadcast(SwitchInfo deviceInfo)
+        {
+            CurrentInfo = deviceInfo;
+            foreach (var consumer in Consumers.ToArray())
+            {
+                consumer.UpdateDeviceInfo(deviceInfo);
+            }
+        }
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
@@ -523,7 +899,7 @@ public sealed class SwitchTelemetryCollectorTests
                 return nameof(PassiveSwitchMediatorProxy);
             }
 
-            if (IsForbiddenEventAccessor(methodName) || ForbiddenMethods.Contains(methodName))
+            if (ForbiddenMethods.Contains(methodName))
             {
                 ForbiddenCalls.Add(methodName);
                 throw new NotSupportedException($"Switch telemetry must not call {methodName}.");
@@ -531,6 +907,11 @@ public sealed class SwitchTelemetryCollectorTests
 
             return methodName switch
             {
+                "add_Connected" => AddConnected(args),
+                "remove_Connected" => RemoveConnected(args),
+                "add_Disconnected" => AddDisconnected(args),
+                "remove_Disconnected" => RemoveDisconnected(args),
+                "GetInfo" => GetInfo(),
                 "RegisterConsumer" => RegisterConsumer(args),
                 "RemoveConsumer" => RemoveConsumer(args),
                 "RegisterHandler" => null,
@@ -566,16 +947,76 @@ public sealed class SwitchTelemetryCollectorTests
             return null;
         }
 
-        private static bool IsForbiddenEventAccessor(string methodName)
+        private object? AddConnected(object?[]? args)
         {
-            if (!methodName.StartsWith("add_", StringComparison.Ordinal) &&
-                !methodName.StartsWith("remove_", StringComparison.Ordinal))
+            AddConnectedCalls++;
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            if (ThrowOnAddConnected)
             {
-                return false;
+                if (AttachConnectedBeforeThrow && handler is not null)
+                {
+                    connected += handler;
+                }
+
+                throw new InvalidOperationException("Connected subscription failed.");
             }
 
-            var eventName = methodName[(methodName.IndexOf('_') + 1)..];
-            return ForbiddenEvents.Contains(eventName);
+            connected += handler;
+            return null;
+        }
+
+        private object? RemoveConnected(object?[]? args)
+        {
+            RemoveConnectedCalls++;
+            if (ThrowOnRemoveConnected)
+            {
+                throw new InvalidOperationException("Connected unsubscription failed.");
+            }
+
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            connected -= handler;
+            return null;
+        }
+
+        private object? AddDisconnected(object?[]? args)
+        {
+            AddDisconnectedCalls++;
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            if (ThrowOnAddDisconnected)
+            {
+                if (AttachDisconnectedBeforeThrow && handler is not null)
+                {
+                    disconnected += handler;
+                }
+
+                throw new InvalidOperationException("Disconnected subscription failed.");
+            }
+
+            disconnected += handler;
+            return null;
+        }
+
+        private object? RemoveDisconnected(object?[]? args)
+        {
+            RemoveDisconnectedCalls++;
+            if (ThrowOnRemoveDisconnected)
+            {
+                throw new InvalidOperationException("Disconnected unsubscription failed.");
+            }
+
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            disconnected -= handler;
+            return null;
+        }
+
+        private SwitchInfo GetInfo()
+        {
+            if (ThrowOnGetInfo)
+            {
+                throw new InvalidOperationException("GetInfo failed.");
+            }
+
+            return CurrentInfo;
         }
 
         private static object? DefaultReturnValue(Type returnType)
