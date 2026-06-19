@@ -50,7 +50,7 @@ public sealed class WeatherTelemetryCollectorTests
     }
 
     [Fact]
-    public void Start_RegistersCollectorAsWeatherConsumerOnce()
+    public void Start_RegistersCollectorAsWeatherConsumerAndSubscribesWeatherEventsOnce()
     {
         var proxy = CreateMediator(out var mediator);
         var sink = new RecordingTelemetrySink();
@@ -61,6 +61,10 @@ public sealed class WeatherTelemetryCollectorTests
 
         proxy.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
         proxy.RegisterCalls.Should().Be(1);
+        proxy.AddConnectedCalls.Should().Be(1);
+        proxy.AddDisconnectedCalls.Should().Be(1);
+        proxy.ConnectedSubscriberCount.Should().Be(1);
+        proxy.DisconnectedSubscriberCount.Should().Be(1);
     }
 
     [Fact]
@@ -94,6 +98,8 @@ public sealed class WeatherTelemetryCollectorTests
             record.Priority == TelemetryPriority.Important &&
             Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
             Equals(record.Attributes["error_message"], "Registration failed."));
+        proxy.AddConnectedCalls.Should().Be(0);
+        proxy.AddDisconnectedCalls.Should().Be(0);
     }
 
     [Fact]
@@ -110,6 +116,307 @@ public sealed class WeatherTelemetryCollectorTests
 
         proxy.RegisterCalls.Should().Be(1);
         proxy.RemoveCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Connected_PublishesWeatherConnectionLogWithCurrentConnectedDeviceName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = true,
+            Name = "AAG CloudWatcher",
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.weather" &&
+            record.Name == "wx_connected" &&
+            record.Body == "Weather source connected" &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["wx_device_name"], "AAG CloudWatcher"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenCurrentInfoIsUnavailable_UsesLastConnectedWeatherDeviceName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo("AAG CloudWatcher"));
+        sink.Records.Clear();
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = false,
+            Name = "Ignored stale name",
+        };
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "wx_connected" &&
+            record.Body == "Weather source connected" &&
+            Equals(record.Attributes["wx_device_name"], "AAG CloudWatcher"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenNoKnownWeatherDevice_UsesUnknownName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "wx_connected" &&
+            record.Body == "Weather source connected" &&
+            Equals(record.Attributes["wx_device_name"], "Unknown"));
+    }
+
+    [Fact]
+    public async Task Connected_WhenWeatherDeviceNameChanges_ClearsPreviousMetricsBeforeUpdatingName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo("AAG CloudWatcher"));
+        sink.Records.Clear();
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = true,
+            Name = "Weather Station 2",
+        };
+
+        await proxy.RaiseConnectedAsync();
+        collector.UpdateDeviceInfo(ConnectedInfo("Weather Station 2"));
+
+        sink.Records.Should().Contain(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name == "wx_temperature" &&
+            double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["wx_device_name"], "AAG CloudWatcher"));
+    }
+
+    [Fact]
+    public async Task Disconnected_PublishesDisconnectLogClearsMetricsAndSuppressesDuplicateUntilConnectedAgain()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo("AAG CloudWatcher"));
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.weather" &&
+            record.Name == "wx_disconnected" &&
+            record.Body == "Weather source disconnected" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["wx_device_name"], "AAG CloudWatcher"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().HaveCount(13)
+            .And.OnlyContain(record =>
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["wx_device_name"], "AAG CloudWatcher"));
+
+        sink.Records.Clear();
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = true,
+            Name = "Weather Station 2",
+        };
+        await proxy.RaiseConnectedAsync();
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "wx_disconnected" &&
+            Equals(record.Attributes["wx_device_name"], "Weather Station 2"));
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenDeviceInfoAlreadyClearedMetrics_StillUsesPreviousDeviceName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        collector.UpdateDeviceInfo(ConnectedInfo("AAG CloudWatcher"));
+        collector.UpdateDeviceInfo(new WeatherDataInfo
+        {
+            Connected = false,
+            Name = "AAG CloudWatcher",
+        });
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "wx_disconnected" &&
+            Equals(record.Attributes["wx_device_name"], "AAG CloudWatcher"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Disconnected_WhenNoKnownWeatherDevice_UsesUnknownName()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "wx_disconnected" &&
+            record.Body == "Weather source disconnected" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["wx_device_name"], "Unknown"));
+    }
+
+    [Fact]
+    public void Start_WhenEventSubscriptionFails_PublishesHealthAndDoesNotThrow()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddDisconnected = true;
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        var act = () => collector.Start();
+
+        act.Should().NotThrow();
+        proxy.RegisterCalls.Should().Be(1);
+        proxy.AddConnectedCalls.Should().Be(1);
+        proxy.AddDisconnectedCalls.Should().Be(1);
+        proxy.RemoveConnectedCalls.Should().Be(1);
+        proxy.RemoveCalls.Should().Be(1);
+        proxy.ConnectedSubscriberCount.Should().Be(0);
+        proxy.DisconnectedSubscriberCount.Should().Be(0);
+        proxy.Consumers.Should().BeEmpty();
+        sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.weather" &&
+            record.Name == "weather_collector.registration_failed" &&
+            record.Priority == TelemetryPriority.Important &&
+            Equals(record.Attributes["error_type"], nameof(InvalidOperationException)) &&
+            Equals(record.Attributes["error_message"], "Disconnected subscription failed."));
+    }
+
+    [Fact]
+    public void Start_WhenEventSubscriptionFailsAfterInitialMetrics_ClearsThoseMetrics()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddDisconnected = true;
+        proxy.CurrentInfo = ConnectedInfo("AAG CloudWatcher");
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+
+        collector.Start();
+
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().Contain(record =>
+                record.Name == "wx_temperature" &&
+                double.IsNaN(record.NumericValue!.Value) &&
+                Equals(record.Attributes["wx_device_name"], "AAG CloudWatcher"));
+    }
+
+    [Fact]
+    public async Task Start_WhenEventSubscriptionFails_LateMediatorEventsDoNotPublishLifecycleLogs()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddDisconnected = true;
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = true,
+            Name = "AAG CloudWatcher",
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Start_WhenRollbackRemoveConsumerFails_LateDeviceUpdatesDoNotPublishMetrics()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddDisconnected = true;
+        proxy.ThrowOnRemove = true;
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        proxy.Broadcast(ConnectedInfo("AAG CloudWatcher"));
+
+        sink.Records.Should().BeEmpty();
+        proxy.Consumers.Should().ContainSingle().Which.Should().BeSameAs(collector);
+    }
+
+    [Fact]
+    public async Task Start_WhenEventAccessorAttachesThenThrows_RollbackUnsubscribesLateLifecycleCallback()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddConnected = true;
+        proxy.AttachConnectedBeforeThrow = true;
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = true,
+            Name = "AAG CloudWatcher",
+        };
+        var sink = new RecordingTelemetrySink();
+        using var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseConnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+        proxy.ConnectedSubscriberCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void Dispose_WhenRollbackUnsubscribeFailedAfterPartialAttach_RetriesUnsubscribe()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnAddConnected = true;
+        proxy.AttachConnectedBeforeThrow = true;
+        proxy.ThrowOnRemoveConnected = true;
+        var sink = new RecordingTelemetrySink();
+        var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+
+        var act = () => collector.Dispose();
+
+        act.Should().NotThrow();
+        proxy.RemoveConnectedCalls.Should().Be(2);
     }
 
     [Fact]
@@ -375,7 +682,58 @@ public sealed class WeatherTelemetryCollectorTests
     }
 
     [Fact]
-    public void Collector_DoesNotSubscribeToWeatherEventsOrCallControlApis()
+    public async Task Callbacks_WhenSinkThrows_DoNotThrowIntoNina()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = true,
+            Name = "AAG CloudWatcher",
+        };
+        using var collector = new WeatherTelemetryCollector(
+            mediator,
+            new ThrowingTelemetrySink(),
+            TimeProvider.System);
+        collector.Start();
+
+        var connectedAct = async () => await proxy.RaiseConnectedAsync();
+        var disconnectedAct = async () => await proxy.RaiseDisconnectedAsync();
+
+        await connectedAct.Should().NotThrowAsync();
+        await disconnectedAct.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Dispose_WhenEventUnsubscriptionFails_DoesNotThrowAndLateEventsDoNotPublish()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.ThrowOnRemoveConnected = true;
+        proxy.ThrowOnRemoveDisconnected = true;
+        proxy.CurrentInfo = new WeatherDataInfo
+        {
+            Connected = true,
+            Name = "AAG CloudWatcher",
+        };
+        var sink = new RecordingTelemetrySink();
+        var collector = new WeatherTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        sink.Records.Clear();
+
+        var act = () => collector.Dispose();
+
+        act.Should().NotThrow();
+        proxy.RemoveConnectedCalls.Should().Be(1);
+        proxy.RemoveDisconnectedCalls.Should().Be(1);
+        proxy.RemoveCalls.Should().Be(1);
+
+        await proxy.RaiseConnectedAsync();
+        await proxy.RaiseDisconnectedAsync();
+
+        sink.Records.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Collector_DoesNotCallWeatherControlApis()
     {
         var proxy = CreateMediator(out var mediator);
         var sink = new RecordingTelemetrySink();
@@ -478,19 +836,12 @@ public sealed class WeatherTelemetryCollectorTests
 
     public class PassiveWeatherMediatorProxy : DispatchProxy
     {
-        private static readonly HashSet<string> ForbiddenEvents =
-        [
-            "Connected",
-            "Disconnected",
-        ];
-
         private static readonly HashSet<string> ForbiddenMethods =
         [
             "Connect",
             "Disconnect",
             "Rescan",
             "GetDevice",
-            "GetInfo",
             "GetDeviceInfo",
             "Action",
             "SendCommandString",
@@ -500,17 +851,61 @@ public sealed class WeatherTelemetryCollectorTests
 
         public List<IWeatherDataConsumer> Consumers { get; } = [];
 
+        private Func<object, EventArgs, Task>? connected;
+        private Func<object, EventArgs, Task>? disconnected;
+
         public WeatherDataInfo CurrentInfo { get; set; } = new();
 
         public bool ThrowOnRegister { get; set; }
 
         public bool ThrowOnRemove { get; set; }
 
+        public bool ThrowOnAddConnected { get; set; }
+
+        public bool ThrowOnAddDisconnected { get; set; }
+
+        public bool AttachConnectedBeforeThrow { get; set; }
+
+        public bool AttachDisconnectedBeforeThrow { get; set; }
+
+        public bool ThrowOnRemoveConnected { get; set; }
+
+        public bool ThrowOnRemoveDisconnected { get; set; }
+
+        public bool ThrowOnGetInfo { get; set; }
+
         public int RegisterCalls { get; private set; }
 
         public int RemoveCalls { get; private set; }
 
+        public int AddConnectedCalls { get; private set; }
+
+        public int AddDisconnectedCalls { get; private set; }
+
+        public int RemoveConnectedCalls { get; private set; }
+
+        public int RemoveDisconnectedCalls { get; private set; }
+
+        public int ConnectedSubscriberCount => connected?.GetInvocationList().Length ?? 0;
+
+        public int DisconnectedSubscriberCount => disconnected?.GetInvocationList().Length ?? 0;
+
         public List<string> ForbiddenCalls { get; } = [];
+
+        public Task RaiseConnectedAsync() =>
+            connected?.Invoke(this, EventArgs.Empty) ?? Task.CompletedTask;
+
+        public Task RaiseDisconnectedAsync() =>
+            disconnected?.Invoke(this, EventArgs.Empty) ?? Task.CompletedTask;
+
+        public void Broadcast(WeatherDataInfo deviceInfo)
+        {
+            CurrentInfo = deviceInfo;
+            foreach (var consumer in Consumers.ToArray())
+            {
+                consumer.UpdateDeviceInfo(deviceInfo);
+            }
+        }
 
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
@@ -532,7 +927,7 @@ public sealed class WeatherTelemetryCollectorTests
                 return nameof(PassiveWeatherMediatorProxy);
             }
 
-            if (IsForbiddenEventAccessor(methodName) || ForbiddenMethods.Contains(methodName))
+            if (ForbiddenMethods.Contains(methodName))
             {
                 ForbiddenCalls.Add(methodName);
                 throw new NotSupportedException($"Weather telemetry must not call {methodName}.");
@@ -540,6 +935,11 @@ public sealed class WeatherTelemetryCollectorTests
 
             return methodName switch
             {
+                "add_Connected" => AddConnected(args),
+                "remove_Connected" => RemoveConnected(args),
+                "add_Disconnected" => AddDisconnected(args),
+                "remove_Disconnected" => RemoveDisconnected(args),
+                "GetInfo" => GetInfo(),
                 "RegisterConsumer" => RegisterConsumer(args),
                 "RemoveConsumer" => RemoveConsumer(args),
                 "RegisterHandler" => null,
@@ -575,16 +975,76 @@ public sealed class WeatherTelemetryCollectorTests
             return null;
         }
 
-        private static bool IsForbiddenEventAccessor(string methodName)
+        private object? AddConnected(object?[]? args)
         {
-            if (!methodName.StartsWith("add_", StringComparison.Ordinal) &&
-                !methodName.StartsWith("remove_", StringComparison.Ordinal))
+            AddConnectedCalls++;
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            if (ThrowOnAddConnected)
             {
-                return false;
+                if (AttachConnectedBeforeThrow && handler is not null)
+                {
+                    connected += handler;
+                }
+
+                throw new InvalidOperationException("Connected subscription failed.");
             }
 
-            var eventName = methodName[(methodName.IndexOf('_') + 1)..];
-            return ForbiddenEvents.Contains(eventName);
+            connected += handler;
+            return null;
+        }
+
+        private object? RemoveConnected(object?[]? args)
+        {
+            RemoveConnectedCalls++;
+            if (ThrowOnRemoveConnected)
+            {
+                throw new InvalidOperationException("Connected unsubscription failed.");
+            }
+
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            connected -= handler;
+            return null;
+        }
+
+        private object? AddDisconnected(object?[]? args)
+        {
+            AddDisconnectedCalls++;
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            if (ThrowOnAddDisconnected)
+            {
+                if (AttachDisconnectedBeforeThrow && handler is not null)
+                {
+                    disconnected += handler;
+                }
+
+                throw new InvalidOperationException("Disconnected subscription failed.");
+            }
+
+            disconnected += handler;
+            return null;
+        }
+
+        private object? RemoveDisconnected(object?[]? args)
+        {
+            RemoveDisconnectedCalls++;
+            if (ThrowOnRemoveDisconnected)
+            {
+                throw new InvalidOperationException("Disconnected unsubscription failed.");
+            }
+
+            var handler = args?.Length > 0 ? args[0] as Func<object, EventArgs, Task> : null;
+            disconnected -= handler;
+            return null;
+        }
+
+        private WeatherDataInfo GetInfo()
+        {
+            if (ThrowOnGetInfo)
+            {
+                throw new InvalidOperationException("GetInfo failed.");
+            }
+
+            return CurrentInfo;
         }
 
         private static object? DefaultReturnValue(Type returnType)

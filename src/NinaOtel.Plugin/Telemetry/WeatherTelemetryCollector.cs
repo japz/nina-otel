@@ -31,8 +31,16 @@ public sealed class WeatherTelemetryCollector : IWeatherDataConsumer, IDisposabl
     private readonly TimeProvider timeProvider;
     private bool disposed;
     private string? lastConnectedWeatherDeviceName;
+    private string? lastDisconnectedWeatherDeviceName;
     private bool startAttempted;
+    private bool startupFailed;
     private bool registered;
+    private bool connectedSubscriptionAttempted;
+    private bool disconnectedSubscriptionAttempted;
+    private bool subscribedConnected;
+    private bool subscribedDisconnected;
+    private bool lifecycleEventsEnabled;
+    private bool disconnectedEventLogged;
 
     public WeatherTelemetryCollector(
         IWeatherDataMediator mediator,
@@ -58,9 +66,21 @@ public sealed class WeatherTelemetryCollector : IWeatherDataConsumer, IDisposabl
             {
                 mediator.RegisterConsumer(this);
                 registered = true;
+
+                connectedSubscriptionAttempted = true;
+                mediator.Connected += OnConnected;
+                subscribedConnected = true;
+
+                disconnectedSubscriptionAttempted = true;
+                mediator.Disconnected += OnDisconnected;
+                subscribedDisconnected = true;
+                lifecycleEventsEnabled = true;
             }
             catch (Exception ex)
             {
+                startupFailed = true;
+                lifecycleEventsEnabled = false;
+                CleanupFailedStart();
                 PublishRegistrationFailure(ex);
             }
         }
@@ -73,30 +93,45 @@ public sealed class WeatherTelemetryCollector : IWeatherDataConsumer, IDisposabl
             return;
         }
 
-        lock (syncRoot)
+        try
         {
-            var weatherDeviceName = NormalizeWeatherDeviceName(deviceInfo.Name);
-            if (!deviceInfo.Connected)
+            lock (syncRoot)
             {
-                if (lastConnectedWeatherDeviceName is not null)
+                if (disposed || startupFailed)
                 {
-                    PublishClearMetrics(timeProvider.GetUtcNow(), lastConnectedWeatherDeviceName);
-                    ResetPublishedState();
+                    return;
                 }
 
-                return;
-            }
+                var weatherDeviceName = NormalizeWeatherDeviceName(deviceInfo.Name);
+                if (!deviceInfo.Connected)
+                {
+                    if (lastConnectedWeatherDeviceName is not null)
+                    {
+                        lastDisconnectedWeatherDeviceName = lastConnectedWeatherDeviceName;
+                        PublishClearMetrics(timeProvider.GetUtcNow(), lastConnectedWeatherDeviceName);
+                        ResetPublishedState();
+                    }
 
-            var timestamp = timeProvider.GetUtcNow();
-            if (lastConnectedWeatherDeviceName is not null &&
-                !string.Equals(lastConnectedWeatherDeviceName, weatherDeviceName, StringComparison.Ordinal))
-            {
-                PublishClearMetrics(timestamp, lastConnectedWeatherDeviceName);
-                ResetPublishedFlags();
-            }
+                    return;
+                }
 
-            lastConnectedWeatherDeviceName = weatherDeviceName;
-            PublishCurrentMetrics(timestamp, deviceInfo, weatherDeviceName);
+                var timestamp = timeProvider.GetUtcNow();
+                if (lastConnectedWeatherDeviceName is not null &&
+                    !string.Equals(lastConnectedWeatherDeviceName, weatherDeviceName, StringComparison.Ordinal))
+                {
+                    PublishClearMetrics(timestamp, lastConnectedWeatherDeviceName);
+                    ResetPublishedFlags();
+                }
+
+                disconnectedEventLogged = false;
+                lastDisconnectedWeatherDeviceName = null;
+                lastConnectedWeatherDeviceName = weatherDeviceName;
+                PublishCurrentMetrics(timestamp, deviceInfo, weatherDeviceName);
+            }
+        }
+        catch
+        {
+            // NINA equipment callbacks must never fail because telemetry handling failed.
         }
     }
 
@@ -110,6 +145,36 @@ public sealed class WeatherTelemetryCollector : IWeatherDataConsumer, IDisposabl
             }
 
             disposed = true;
+            lifecycleEventsEnabled = false;
+
+            if (connectedSubscriptionAttempted || subscribedConnected)
+            {
+                try
+                {
+                    mediator.Connected -= OnConnected;
+                    subscribedConnected = false;
+                    connectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
+            if (disconnectedSubscriptionAttempted || subscribedDisconnected)
+            {
+                try
+                {
+                    mediator.Disconnected -= OnDisconnected;
+                    subscribedDisconnected = false;
+                    disconnectedSubscriptionAttempted = false;
+                }
+                catch
+                {
+                    // Telemetry teardown must never interfere with NINA shutdown.
+                }
+            }
+
             if (!registered)
             {
                 return;
@@ -118,12 +183,96 @@ public sealed class WeatherTelemetryCollector : IWeatherDataConsumer, IDisposabl
             try
             {
                 mediator.RemoveConsumer(this);
+                registered = false;
             }
             catch
             {
                 // Telemetry teardown must never interfere with NINA shutdown.
             }
         }
+    }
+
+    private Task OnConnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var deviceInfo = TryGetInfo();
+                var weatherDeviceName = deviceInfo is { Connected: true }
+                    ? NormalizeWeatherDeviceName(deviceInfo.Name)
+                    : NormalizeWeatherDeviceName(lastConnectedWeatherDeviceName);
+
+                disconnectedEventLogged = false;
+                lastDisconnectedWeatherDeviceName = null;
+                if (deviceInfo is { Connected: true })
+                {
+                    if (lastConnectedWeatherDeviceName is not null &&
+                        !string.Equals(lastConnectedWeatherDeviceName, weatherDeviceName, StringComparison.Ordinal))
+                    {
+                        PublishClearMetrics(timeProvider.GetUtcNow(), lastConnectedWeatherDeviceName);
+                        ResetPublishedFlags();
+                    }
+
+                    lastConnectedWeatherDeviceName = weatherDeviceName;
+                }
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "wx_connected",
+                    "Weather source connected",
+                    TelemetryPriority.Normal,
+                    CreateWeatherAttributes(weatherDeviceName));
+            }
+        }
+        catch
+        {
+            // NINA weather events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task OnDisconnected(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || disconnectedEventLogged || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var shouldClearMetrics = lastConnectedWeatherDeviceName is not null;
+                var weatherDeviceName = ResolveDisconnectedWeatherDeviceName();
+
+                PublishNamedLog(
+                    timeProvider.GetUtcNow(),
+                    "wx_disconnected",
+                    "Weather source disconnected",
+                    TelemetryPriority.Important,
+                    CreateWeatherAttributes(weatherDeviceName));
+                if (shouldClearMetrics)
+                {
+                    PublishClearMetrics(timeProvider.GetUtcNow(), weatherDeviceName);
+                }
+
+                ResetPublishedState();
+                disconnectedEventLogged = true;
+            }
+        }
+        catch
+        {
+            // NINA weather events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
     }
 
     private void PublishCurrentMetrics(
@@ -207,6 +356,74 @@ public sealed class WeatherTelemetryCollector : IWeatherDataConsumer, IDisposabl
             }));
     }
 
+    private void CleanupFailedStart()
+    {
+        if (disconnectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Disconnected -= OnDisconnected;
+                subscribedDisconnected = false;
+                disconnectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (connectedSubscriptionAttempted)
+        {
+            try
+            {
+                mediator.Connected -= OnConnected;
+                subscribedConnected = false;
+                connectedSubscriptionAttempted = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (registered)
+        {
+            try
+            {
+                mediator.RemoveConsumer(this);
+                registered = false;
+            }
+            catch
+            {
+                // Startup cleanup must never interfere with NINA.
+            }
+        }
+
+        if (lastConnectedWeatherDeviceName is not null)
+        {
+            PublishClearMetrics(timeProvider.GetUtcNow(), lastConnectedWeatherDeviceName);
+        }
+
+        ResetPublishedState();
+        disconnectedEventLogged = false;
+    }
+
+    private void PublishNamedLog(
+        DateTimeOffset timestamp,
+        string name,
+        string body,
+        TelemetryPriority priority,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TryPublishSafely(new TelemetryRecord(
+            TelemetrySignal.Log,
+            timestamp,
+            SourceName,
+            name,
+            priority,
+            attributes,
+            Body: body,
+            Severity: TelemetrySeverity.Information));
+
     private void ResetPublishedState()
     {
         lastConnectedWeatherDeviceName = null;
@@ -218,6 +435,23 @@ public sealed class WeatherTelemetryCollector : IWeatherDataConsumer, IDisposabl
         foreach (var metric in metrics)
         {
             metric.HasPublished = false;
+        }
+    }
+
+    private string ResolveDisconnectedWeatherDeviceName() =>
+        lastConnectedWeatherDeviceName ??
+        lastDisconnectedWeatherDeviceName ??
+        NormalizeWeatherDeviceName(TryGetInfo()?.Name);
+
+    private WeatherDataInfo? TryGetInfo()
+    {
+        try
+        {
+            return mediator.GetInfo();
+        }
+        catch
+        {
+            return null;
         }
     }
 
