@@ -1,5 +1,7 @@
+using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Health;
 using NinaOtel.Core.Options;
+using NinaOtel.Plugin.Addons;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
@@ -24,6 +26,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string CaCertificatePemPathKey = nameof(CaCertificatePemPath);
     private const string ClientCertificatePemPathKey = nameof(ClientCertificatePemPath);
     private const string ClientPrivateKeyPemPathKey = nameof(ClientPrivateKeyPemPath);
+    private const string AddonSettingsPrefix = "Addon";
     private const string PemTlsProtocolChangedStatus = "PEM TLS uses HTTP/protobuf; protocol changed.";
     private const string PemTlsProtocolSavedStatus = "PEM TLS uses HTTP/protobuf; settings saved.";
     private const string PemTlsGrpcRejectedStatus =
@@ -35,6 +38,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
     private readonly INinaOtelSettingsStore settingsStore;
     private readonly ISecretProtector secretProtector;
+    private readonly IReadOnlyList<AddonOptionViewModel> addons;
     private readonly NinaOtelOptions defaults = NinaOtelOptions.CreateDefault();
     private readonly SynchronizationContext? synchronizationContext = SynchronizationContext.Current;
     private string collectorEndpoint = string.Empty;
@@ -72,6 +76,13 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     {
         this.settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
         this.secretProtector = secretProtector ?? throw new ArgumentNullException(nameof(secretProtector));
+        addons = FirstPartyAddonCatalog.Descriptors
+            .Select(descriptor => new AddonOptionViewModel(
+                descriptor.Id,
+                descriptor.DisplayName,
+                descriptor.Source,
+                OnAddonSettingChanged))
+            .ToArray();
         var warningStatus = LoadFromSettings();
         if (!string.IsNullOrEmpty(warningStatus))
         {
@@ -85,6 +96,8 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
     public IReadOnlyList<OtlpAuthenticationMode> AvailableAuthenticationModes { get; } =
         Enum.GetValues<OtlpAuthenticationMode>();
+
+    public IReadOnlyList<AddonOptionViewModel> Addons => addons;
 
     public NinaOtelOptions Options => CreateOptions();
 
@@ -363,6 +376,38 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
     }
 
+    public void UpdateAddonHealth(string addonId, string status, string message)
+    {
+        try
+        {
+            var context = synchronizationContext;
+            if (context is not null && context != SynchronizationContext.Current)
+            {
+                context.Post(
+                    static state =>
+                    {
+                        var update = (AddonHealthUpdate)state!;
+                        update.ViewModel.ApplyAddonHealthSafely(update.AddonId, update.Status, update.Message);
+                    },
+                    new AddonHealthUpdate(this, addonId, status, message));
+                return;
+            }
+
+            ApplyAddonHealthSafely(addonId, status, message);
+        }
+        catch
+        {
+            // Health updates originate from add-on background work and must not break startup.
+        }
+    }
+
+    public void UpdateAddonHealth(
+        string addonId,
+        string status,
+        string message,
+        TelemetryPriority priority)
+        => UpdateAddonHealth(addonId, status, message);
+
     private string? LoadFromSettings()
     {
         string? warningStatus = null;
@@ -395,6 +440,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         caCertificatePemPath = settingsStore.GetString(CaCertificatePemPathKey, string.Empty);
         clientCertificatePemPath = settingsStore.GetString(ClientCertificatePemPathKey, string.Empty);
         clientPrivateKeyPemPath = settingsStore.GetString(ClientPrivateKeyPemPathKey, string.Empty);
+        LoadAddonSettings();
         if (HasPemTlsConfigured() && EnsureHttpProtobufForPemTls())
         {
             warningStatus ??= PemTlsProtocolChangedStatus;
@@ -415,6 +461,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(ClientCertificatePemPath));
         RaisePropertyChanged(nameof(ClientPrivateKeyPemPath));
         RaisePropertyChanged(nameof(AvailableAuthenticationModes));
+        RaisePropertyChanged(nameof(Addons));
         RaisePropertyChanged(nameof(Options));
         return warningStatus;
     }
@@ -486,8 +533,51 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
                 MaxSpoolBytes = appliedMaxSpoolBytes,
                 MaxSpoolAge = appliedMaxSpoolAge,
             },
+            Addons = CreateAddonOptions(),
         };
     }
+
+    private IReadOnlyDictionary<string, AddonOptions> CreateAddonOptions()
+        => addons.ToDictionary(
+            static addon => addon.Id,
+            static addon => addon.CreateOptions());
+
+    private void LoadAddonSettings()
+    {
+        foreach (var addon in addons)
+        {
+            addon.Load(
+                settingsStore.GetBoolean(GetAddonSettingsKey(addon.Id, "Enabled"), defaultValue: false),
+                settingsStore.GetBoolean(GetAddonSettingsKey(addon.Id, "RawForwardingEnabled"), defaultValue: false));
+        }
+    }
+
+    private void OnAddonSettingChanged(AddonOptionViewModel addon, string settingName, bool value)
+    {
+        settingsStore.SetBoolean(GetAddonSettingsKey(addon.Id, settingName), value);
+        RaisePropertyChanged(nameof(Options));
+        Status = "Settings saved; reload plugin to apply add-on changes.";
+    }
+
+    private void ApplyAddonHealthSafely(string addonId, string status, string message)
+    {
+        try
+        {
+            var addon = addons.FirstOrDefault(candidate => string.Equals(
+                candidate.Id,
+                addonId,
+                StringComparison.Ordinal));
+
+            addon?.UpdateHealth(status, message);
+        }
+        catch
+        {
+            // PropertyChanged subscribers are UI-owned; health reporting should never throw outward.
+        }
+    }
+
+    private static string GetAddonSettingsKey(string addonId, string settingName) =>
+        $"{AddonSettingsPrefix}.{addonId}.{settingName}";
 
     private IReadOnlyDictionary<string, string> CreateEffectiveHeaders()
     {
@@ -825,6 +915,12 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private sealed record CollectorHealthUpdate(
         NinaOtelOptionsViewModel ViewModel,
         CollectorHealthSnapshot Snapshot);
+
+    private sealed record AddonHealthUpdate(
+        NinaOtelOptionsViewModel ViewModel,
+        string AddonId,
+        string Status,
+        string Message);
 
     private enum NumericRangeValidationFailure
     {

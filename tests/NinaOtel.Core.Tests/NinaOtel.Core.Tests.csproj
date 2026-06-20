@@ -11,6 +11,10 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\NinaOtel.Addons.NightSummary\NinaOtel.Addons.NightSummary.csproj" />
+    <ProjectReference Include="..\..\src\NinaOtel.Addons.OnStepX\NinaOtel.Addons.OnStepX.csproj" />
+    <ProjectReference Include="..\..\src\NinaOtel.Addons.PHD2\NinaOtel.Addons.PHD2.csproj" />
+    <ProjectReference Include="..\..\src\NinaOtel.Addons.TargetScheduler\NinaOtel.Addons.TargetScheduler.csproj" />
     <ProjectReference Include="..\..\src\NinaOtel.Abstractions\NinaOtel.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\NinaOtel.Core\NinaOtel.Core.csproj" />
   </ItemGroup>

@@ -24,6 +24,48 @@
                 FontSize="11"
                 TextWrapping="Wrap" />
             <TextBlock Text="{Binding NinaOtelOptionsViewModel.Status}" Margin="0,8,0,0" />
+            <TextBlock Text="Add-ons" FontWeight="Bold" Margin="0,12,0,0" />
+            <ItemsControl ItemsSource="{Binding NinaOtelOptionsViewModel.Addons}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="140" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="220" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding DisplayName}" FontWeight="SemiBold" />
+                            <TextBlock Grid.Row="0" Grid.Column="2" Text="{Binding Source}" Foreground="#666666" />
+
+                            <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal">
+                                <CheckBox
+                                    Content="Enabled"
+                                    IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                    Margin="0,0,16,0" />
+                                <CheckBox
+                                    Content="Raw forwarding"
+                                    IsChecked="{Binding RawForwardingEnabled, Mode=TwoWay}" />
+                            </StackPanel>
+
+                            <TextBlock Grid.Row="4" Grid.Column="0" Text="{Binding Status}" Foreground="#666666" />
+                            <TextBlock
+                                Grid.Row="4"
+                                Grid.Column="2"
+                                Text="{Binding Message}"
+                                Foreground="#666666"
+                                TextWrapping="Wrap" />
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
             <Grid Margin="0,8,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />

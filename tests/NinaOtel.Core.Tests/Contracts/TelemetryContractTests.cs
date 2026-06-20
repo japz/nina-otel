@@ -1,6 +1,10 @@
 using FluentAssertions;
 using NinaOtel.Abstractions.Addons;
 using NinaOtel.Abstractions.Telemetry;
+using NinaOtel.Addons.NightSummary;
+using NinaOtel.Addons.OnStepX;
+using NinaOtel.Addons.PHD2;
+using NinaOtel.Addons.TargetScheduler;
 using Xunit;
 
 namespace NinaOtel.Core.Tests.Contracts;
@@ -143,6 +147,27 @@ public sealed class TelemetryContractTests
             var mutate = () => mutableSettings["endpoint"] = "mutated again";
 
             mutate.Should().Throw<NotSupportedException>();
+        }
+    }
+
+    [Fact]
+    public void FirstPartyAddons_ExposeStableMetadata()
+    {
+        ITelemetryAddon[] addons =
+        [
+            new Phd2TelemetryAddon(),
+            new TargetSchedulerTelemetryAddon(),
+            new NightSummaryTelemetryAddon(),
+            new OnStepXTelemetryAddon(),
+        ];
+
+        addons.Select(addon => addon.Metadata.Id)
+            .Should()
+            .Equal("phd2", "target-scheduler", "night-summary", "onstepx");
+
+        foreach (var addon in addons)
+        {
+            addon.Validate(AddonConfiguration.Default).IsValid.Should().BeTrue();
         }
     }
 }

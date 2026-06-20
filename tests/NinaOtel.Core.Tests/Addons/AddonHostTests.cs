@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using FluentAssertions;
 using NinaOtel.Abstractions.Addons;
@@ -166,6 +167,30 @@ public sealed class AddonHostTests
         addon.ValidatedConfiguration.RawForwardingEnabled.Should().BeTrue();
         addon.ValidatedConfiguration.Settings["endpoint"].Should().Be("tcp://camera");
         addon.StartConfiguration.Should().BeSameAs(addon.ValidatedConfiguration);
+    }
+
+    [Fact]
+    public async Task StartAsync_WhenAddonConfigurationIsDisabled_ReportsDisabledWithoutValidatingOrStarting()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(
+            sink,
+            TimeProvider.System,
+            LifecycleTimeout,
+            LifecycleTimeout,
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = new(enabled: false),
+            });
+        var addon = new ConfigurationRecordingAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+
+        var record = await WaitForHealthRecordAsync(sink, "configured", "disabled");
+
+        record.Priority.Should().Be(TelemetryPriority.Routine);
+        addon.ValidateCalls.Should().Be(0);
+        addon.StartCalls.Should().Be(0);
     }
 
     [Fact]
@@ -654,6 +679,36 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task AddonHost_WithHealthCallbackPublishesTelemetryAndInvokesCallbackForAddonHealth()
+    {
+        var sink = new RecordingSink();
+        var healthCallbacks = new ConcurrentQueue<AddonHealthCallback>();
+        var host = new AddonHost(
+            sink,
+            TimeProvider.System,
+            LifecycleTimeout,
+            LifecycleTimeout,
+            addonConfigurations: null,
+            healthCallback: (addonId, status, message, priority) =>
+                healthCallbacks.Enqueue(new(addonId, status, message, priority)));
+        var addon = new ContextHealthAddon();
+
+        await host.StartAsync([addon], CancellationToken.None);
+
+        var record = await WaitForHealthRecordAsync(sink, "context-health", "waiting");
+        await WaitUntilAsync(() => healthCallbacks.Any(callback =>
+            callback.AddonId == "context-health" &&
+            callback.Status == "waiting"));
+
+        record.Priority.Should().Be(TelemetryPriority.Routine);
+        healthCallbacks.Should().Contain(callback =>
+            callback.AddonId == "context-health" &&
+            callback.Status == "waiting" &&
+            callback.Message == "Add-on shell loaded; source collection is not implemented yet." &&
+            callback.Priority == TelemetryPriority.Routine);
+    }
+
+    [Fact]
     public async Task Lifecycle_DoesNotBlockWhenAddonStartAndStopHang()
     {
         var sink = new RecordingSink();
@@ -879,9 +934,11 @@ public sealed class AddonHostTests
     {
         public AddonConfiguration? ValidatedConfiguration { get; private set; }
         public AddonConfiguration? StartConfiguration { get; private set; }
+        public int ValidateCalls { get; private set; }
 
         public override AddonValidationResult Validate(AddonConfiguration configuration)
         {
+            ValidateCalls++;
             ValidatedConfiguration = configuration;
             return AddonValidationResult.Success;
         }
@@ -892,6 +949,25 @@ public sealed class AddonHostTests
             return Task.CompletedTask;
         }
     }
+
+    private sealed class ContextHealthAddon() : TestAddon("context-health", "Context Health")
+    {
+        protected override Task StartCoreAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            context.ReportHealth(
+                Metadata.Id,
+                "waiting",
+                "Add-on shell loaded; source collection is not implemented yet.",
+                TelemetryPriority.Routine);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed record AddonHealthCallback(
+        string AddonId,
+        string Status,
+        string Message,
+        TelemetryPriority Priority);
 
     private sealed class RecordingLifecycleAddon() : TestAddon("queued-start", "Queued Start");
 

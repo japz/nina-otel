@@ -11,6 +11,10 @@
     <AssemblyName>NinaOtel.Plugin</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\NinaOtel.Addons.NightSummary\NinaOtel.Addons.NightSummary.csproj" />
+    <ProjectReference Include="..\NinaOtel.Addons.OnStepX\NinaOtel.Addons.OnStepX.csproj" />
+    <ProjectReference Include="..\NinaOtel.Addons.PHD2\NinaOtel.Addons.PHD2.csproj" />
+    <ProjectReference Include="..\NinaOtel.Addons.TargetScheduler\NinaOtel.Addons.TargetScheduler.csproj" />
     <ProjectReference Include="..\NinaOtel.Abstractions\NinaOtel.Abstractions.csproj" />
     <ProjectReference Include="..\NinaOtel.Core\NinaOtel.Core.csproj" />
   </ItemGroup>

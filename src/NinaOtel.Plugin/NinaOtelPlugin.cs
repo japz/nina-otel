@@ -12,6 +12,7 @@ using NinaOtel.Core.Addons;
 using NinaOtel.Core.Options;
 using NinaOtel.Core.Pipeline;
 using NinaOtel.Core.Telemetry;
+using NinaOtel.Plugin.Addons;
 using NinaOtel.Plugin.Options;
 using NinaOtel.Plugin.Telemetry;
 
@@ -97,7 +98,9 @@ public sealed class NinaOtelPlugin : PluginBase
             telemetrySink,
             timeProvider,
             TimeSpan.FromSeconds(1),
-            TimeSpan.FromSeconds(1));
+            TimeSpan.FromSeconds(1),
+            CreateAddonConfigurations(options.Addons),
+            NinaOtelOptionsViewModel.UpdateAddonHealth);
         profileService.ProfileChanged += ProfileService_ProfileChanged;
         NinaOtelOptionsViewModel.PropertyChanged += NinaOtelOptionsViewModel_PropertyChanged;
     }
@@ -121,7 +124,7 @@ public sealed class NinaOtelPlugin : PluginBase
         domeTelemetry.Start();
         imageTelemetry.Start();
         lifecycleTelemetry.PluginInitialized();
-        await addonHost.StartAsync(Array.Empty<ITelemetryAddon>(), shutdownCts.Token).ConfigureAwait(false);
+        await addonHost.StartAsync(FirstPartyAddonCatalog.CreateAll(), shutdownCts.Token).ConfigureAwait(false);
         Logger.Info("NinaOtel foundation initialized.");
     }
 
@@ -165,6 +168,25 @@ public sealed class NinaOtelPlugin : PluginBase
         exporter.Update(CreateCollectorExporter(options));
         lifecycleTelemetry.ProfileChanged(options);
         Logger.Info("NinaOtel exporter settings applied.");
+    }
+
+    private static IReadOnlyDictionary<string, AddonConfiguration> CreateAddonConfigurations(
+        IReadOnlyDictionary<string, AddonOptions> addonOptions)
+    {
+        var configurations = new Dictionary<string, AddonConfiguration>(StringComparer.Ordinal);
+        foreach (var descriptor in FirstPartyAddonCatalog.Descriptors)
+        {
+            var options = addonOptions.TryGetValue(descriptor.Id, out var configuredOptions)
+                ? configuredOptions
+                : new AddonOptions();
+
+            configurations[descriptor.Id] = new AddonConfiguration(
+                rawForwardingEnabled: options.RawForwardingEnabled,
+                settings: options.Settings,
+                enabled: options.Enabled);
+        }
+
+        return configurations;
     }
 
     private ITelemetryExporter CreateCollectorExporter(NinaOtelOptions options)

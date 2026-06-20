@@ -41,6 +41,70 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void Constructor_LoadsFirstPartyAddonsDisabledByDefault()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.Addons.Select(addon => addon.Id)
+            .Should()
+            .Equal("phd2", "target-scheduler", "night-summary", "onstepx");
+        viewModel.Addons.Should().OnlyContain(addon => !addon.IsEnabled);
+        viewModel.Addons.Should().OnlyContain(addon => !addon.RawForwardingEnabled);
+        viewModel.Options.Addons.Keys
+            .Should()
+            .Equal("phd2", "target-scheduler", "night-summary", "onstepx");
+        viewModel.Options.Addons.Values.Should().OnlyContain(addon => !addon.Enabled);
+        viewModel.Options.Addons.Values.Should().OnlyContain(addon => !addon.RawForwardingEnabled);
+    }
+
+    [Fact]
+    public void AddonSettings_SaveEnabledRawForwardingAndUpdateOptions()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var phd2 = viewModel.Addons.Single(addon => addon.Id == "phd2");
+
+        phd2.IsEnabled = true;
+        phd2.RawForwardingEnabled = true;
+
+        settings.GetBoolean("Addon.phd2.Enabled", false).Should().BeTrue();
+        settings.GetBoolean("Addon.phd2.RawForwardingEnabled", false).Should().BeTrue();
+        viewModel.Options.Addons["phd2"].Enabled.Should().BeTrue();
+        viewModel.Options.Addons["phd2"].RawForwardingEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Constructor_LoadsPersistedAddonSettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetBoolean("Addon.phd2.Enabled", true);
+        settings.SetBoolean("Addon.phd2.RawForwardingEnabled", true);
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var phd2 = viewModel.Addons.Single(addon => addon.Id == "phd2");
+
+        phd2.IsEnabled.Should().BeTrue();
+        phd2.RawForwardingEnabled.Should().BeTrue();
+        viewModel.Options.Addons["phd2"].Enabled.Should().BeTrue();
+        viewModel.Options.Addons["phd2"].RawForwardingEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public void UpdateAddonHealth_UpdatesMatchingAddonStatusAndMessage()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var phd2 = viewModel.Addons.Single(addon => addon.Id == "phd2");
+
+        viewModel.UpdateAddonHealth("phd2", "started", "Add-on started.");
+
+        phd2.Status.Should().Be("started");
+        phd2.Message.Should().Be("Add-on started.");
+    }
+
+    [Fact]
     public void Constructor_LoadsPersistedSettingsFromStore()
     {
         var settings = new InMemoryPluginSettingsStore();

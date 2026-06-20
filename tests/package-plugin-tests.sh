@@ -44,6 +44,10 @@ touch \
   "$build_output/NinaOtel.Plugin.runtimeconfig.json" \
   "$build_output/NinaOtel.Core.dll" \
   "$build_output/NinaOtel.Abstractions.dll" \
+  "$build_output/NinaOtel.Addons.NightSummary.dll" \
+  "$build_output/NinaOtel.Addons.OnStepX.dll" \
+  "$build_output/NinaOtel.Addons.PHD2.dll" \
+  "$build_output/NinaOtel.Addons.TargetScheduler.dll" \
   "$build_output/NINA.Core.dll" \
   "$build_output/NINA.Plugin.dll" \
   "$build_output/OpenTelemetry.dll" \
@@ -86,6 +90,10 @@ Microsoft.Extensions.Options.ConfigurationExtensions.dll
 Microsoft.Extensions.Options.dll
 Microsoft.Extensions.Primitives.dll
 NinaOtel.Abstractions.dll
+NinaOtel.Addons.NightSummary.dll
+NinaOtel.Addons.OnStepX.dll
+NinaOtel.Addons.PHD2.dll
+NinaOtel.Addons.TargetScheduler.dll
 NinaOtel.Core.dll
 NinaOtel.Plugin.deps.json
 NinaOtel.Plugin.dll

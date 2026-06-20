@@ -135,6 +135,17 @@ public sealed class NinaOtelPluginWiringTests
         source.Substring(addonHostStart, 120).Should().Contain("telemetrySink,");
     }
 
+    [Fact]
+    public void Plugin_StartsFirstPartyAddonCatalogWithOptionsAndHealthCallback()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("FirstPartyAddonCatalog.CreateAll()");
+        source.Should().Contain("CreateAddonConfigurations(options.Addons)");
+        source.Should().Contain("NinaOtelOptionsViewModel.UpdateAddonHealth");
+        source.Should().NotContain("Array.Empty<ITelemetryAddon>()");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

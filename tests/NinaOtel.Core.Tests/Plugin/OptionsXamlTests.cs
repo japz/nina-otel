@@ -67,6 +67,30 @@ public sealed class OptionsXamlTests
         textbox.Attribute("Text")?.Value.Should().Contain("UpdateSourceTrigger=LostFocus");
     }
 
+    [Fact]
+    public void OptionsTemplate_AddonsExposeEnableRawAndHealthBindings()
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+
+        var itemsControl = document
+            .Descendants(PresentationNamespace + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value.Contains("NinaOtelOptionsViewModel.Addons", StringComparison.Ordinal) == true);
+        var checkboxes = itemsControl
+            .Descendants(PresentationNamespace + "CheckBox")
+            .ToArray();
+
+        checkboxes.Single(element => element.Attribute("IsChecked")?.Value.Contains("IsEnabled", StringComparison.Ordinal) == true)
+            .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
+        checkboxes.Single(element => element.Attribute("IsChecked")?.Value.Contains("RawForwardingEnabled", StringComparison.Ordinal) == true)
+            .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
+        itemsControl.Descendants(PresentationNamespace + "TextBlock")
+            .Should()
+            .Contain(element => element.Attribute("Text")?.Value.Contains("Status", StringComparison.Ordinal) == true);
+        itemsControl.Descendants(PresentationNamespace + "TextBlock")
+            .Should()
+            .Contain(element => element.Attribute("Text")?.Value.Contains("Message", StringComparison.Ordinal) == true);
+    }
+
     [Theory]
     [InlineData(
         "BearerTokenPasswordBox_Loaded",

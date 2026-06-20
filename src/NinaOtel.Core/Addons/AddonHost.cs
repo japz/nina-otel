@@ -15,6 +15,7 @@ public sealed class AddonHost
     private readonly Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler;
     private readonly Func<CancellationToken, Task> startCallbackCommitObserver;
     private readonly Func<Func<Task>, CancellationToken, Task> addonCallbackScheduler;
+    private readonly Action<string, string, string, TelemetryPriority>? healthCallback;
     private readonly CancellationTokenSource shutdownCts = new();
     private readonly List<AddonRuntime> knownAddons = [];
     private bool shutdownRequested;
@@ -24,14 +25,16 @@ public sealed class AddonHost
         TimeProvider timeProvider,
         TimeSpan startTimeout,
         TimeSpan stopTimeout,
-        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations = null)
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations = null,
+        Action<string, string, string, TelemetryPriority>? healthCallback = null)
         : this(
             sink,
             timeProvider,
             startTimeout,
             stopTimeout,
             static startWork => Task.Run(startWork),
-            addonConfigurations)
+            addonConfigurations,
+            healthCallback)
     {
     }
 
@@ -59,7 +62,8 @@ public sealed class AddonHost
         TimeSpan startTimeout,
         TimeSpan stopTimeout,
         Func<Func<Task>, Task> startWorkScheduler,
-        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations)
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations,
+        Action<string, string, string, TelemetryPriority>? healthCallback)
         : this(
             sink,
             timeProvider,
@@ -69,7 +73,8 @@ public sealed class AddonHost
             static (startWork, cancellationToken) => Task.Run(startWork, cancellationToken),
             static _ => Task.CompletedTask,
             static (callbackWork, cancellationToken) => Task.Run(callbackWork, cancellationToken),
-            addonConfigurations)
+            addonConfigurations,
+            healthCallback)
     {
     }
 
@@ -91,6 +96,7 @@ public sealed class AddonHost
             startLifecycleScheduler,
             startCallbackCommitObserver,
             addonCallbackScheduler,
+            null,
             null)
     {
     }
@@ -104,7 +110,8 @@ public sealed class AddonHost
         Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler,
         Func<CancellationToken, Task> startCallbackCommitObserver,
         Func<Func<Task>, CancellationToken, Task> addonCallbackScheduler,
-        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations)
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations,
+        Action<string, string, string, TelemetryPriority>? healthCallback)
     {
         if (startTimeout <= TimeSpan.Zero)
         {
@@ -128,6 +135,7 @@ public sealed class AddonHost
             startCallbackCommitObserver ?? throw new ArgumentNullException(nameof(startCallbackCommitObserver));
         this.addonCallbackScheduler =
             addonCallbackScheduler ?? throw new ArgumentNullException(nameof(addonCallbackScheduler));
+        this.healthCallback = healthCallback;
     }
 
     public Task StartAsync(IEnumerable<ITelemetryAddon> addons, CancellationToken cancellationToken)
@@ -413,6 +421,12 @@ public sealed class AddonHost
         var metadata = metadataResult.Value!;
         SetMetadataSnapshot(runtime, metadata);
         var configuration = ResolveAddonConfiguration(metadata.Id);
+        if (!configuration.Enabled)
+        {
+            PublishHealth(runtime, "disabled", "Add-on disabled.", TelemetryPriority.Routine);
+            return StartLifecycleResult.Skipped;
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
         if (ShouldCancelCommittedStartBeforeAddonCallbacks(runtime, cancellationToken))
         {
@@ -436,7 +450,7 @@ public sealed class AddonHost
             return StartLifecycleResult.ValidationFailed(message);
         }
 
-        var context = new AddonContext(sink, timeProvider, shutdownCts.Token, configuration);
+        var context = new AddonContext(sink, timeProvider, shutdownCts.Token, configuration, healthCallback);
         var startEntered = await InvokeAddonStartAsync(runtime, context, cancellationToken).ConfigureAwait(false);
         return startEntered
             ? StartLifecycleResult.Started
@@ -794,6 +808,8 @@ public sealed class AddonHost
                 "ninaotel.addon.health",
                 priority,
                 attributes));
+
+            healthCallback?.Invoke(metadata.Id, status, message, priority);
         }
         catch
         {
