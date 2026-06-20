@@ -400,8 +400,11 @@ public sealed class ImageTelemetryCollector : IDisposable
     {
         try
         {
+            var body = CreateImageLogBody(args);
             var attributes = new Dictionary<string, object?>(baseAttributes, StringComparer.Ordinal)
             {
+                ["name"] = "image",
+                ["text"] = body,
                 ["title"] = "Image taken",
             };
 
@@ -412,7 +415,7 @@ public sealed class ImageTelemetryCollector : IDisposable
                 "image",
                 TelemetryPriority.Normal,
                 attributes,
-                Body: CreateImageLogBody(args),
+                Body: body,
                 Severity: TelemetrySeverity.Information));
         }
         catch

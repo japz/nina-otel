@@ -149,6 +149,8 @@ public sealed class ImageTelemetryCollectorTests
         log.Priority.Should().Be(TelemetryPriority.Normal);
         log.Severity.Should().Be(TelemetrySeverity.Information);
         log.Body.Should().Be("Image; Type: LIGHT, Target: M42, Filter: L, Exp: 120.50s, Mean: 101.20");
+        log.Attributes.Should().Contain("name", "image");
+        log.Attributes.Should().Contain("text", log.Body);
         log.Attributes.Should().Contain("title", "Image taken");
         log.Attributes.Should().Contain("image_file_name", "M42_L_001.fit");
         log.Attributes.Should().Contain("target_name", "M42");
@@ -188,6 +190,8 @@ public sealed class ImageTelemetryCollectorTests
         log.Body.Should().NotContain("Target:");
         log.Body.Should().NotContain("Filter:");
         log.Body.Should().NotContain("Mean:");
+        log.Attributes.Should().Contain("name", "image");
+        log.Attributes.Should().Contain("text", log.Body);
         log.Attributes.Should().Contain("title", "Image taken");
         log.Attributes.Should().NotContainKey("image_type");
         log.Attributes.Should().NotContainKey("filter_name");
