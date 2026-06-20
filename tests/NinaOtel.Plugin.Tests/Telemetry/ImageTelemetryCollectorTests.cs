@@ -97,6 +97,9 @@ public sealed class ImageTelemetryCollectorTests
             Equals(record.Attributes["sequence_title"], "Orion sequence") &&
             Equals(record.Attributes["camera_name"], "ASI2600MM") &&
             Equals(record.Attributes["readout_mode"], "High gain") &&
+            Equals(record.Attributes["image_type"], "LIGHT") &&
+            Equals(record.Attributes["filter_name"], "L") &&
+            Equals(record.Attributes["exposure_duration_seconds"], 120.5) &&
             !record.Attributes.ContainsKey("profile_name") &&
             !record.Attributes.ContainsKey("host_name"));
         metrics.Select(static record => record.Name).Should().BeEquivalentTo(
@@ -152,6 +155,9 @@ public sealed class ImageTelemetryCollectorTests
         log.Attributes.Should().Contain("sequence_title", "Orion sequence");
         log.Attributes.Should().Contain("camera_name", "ASI2600MM");
         log.Attributes.Should().Contain("readout_mode", "High gain");
+        log.Attributes.Should().Contain("image_type", "LIGHT");
+        log.Attributes.Should().Contain("filter_name", "L");
+        log.Attributes.Should().Contain("exposure_duration_seconds", 120.5);
         log.Attributes.Should().NotContainKey("profile_name");
         log.Attributes.Should().NotContainKey("host_name");
     }
@@ -183,6 +189,9 @@ public sealed class ImageTelemetryCollectorTests
         log.Body.Should().NotContain("Filter:");
         log.Body.Should().NotContain("Mean:");
         log.Attributes.Should().Contain("title", "Image taken");
+        log.Attributes.Should().NotContainKey("image_type");
+        log.Attributes.Should().NotContainKey("filter_name");
+        log.Attributes.Should().NotContainKey("exposure_duration_seconds");
         log.Attributes.Should().NotContainKey("profile_name");
         log.Attributes.Should().NotContainKey("host_name");
     }
@@ -220,6 +229,9 @@ public sealed class ImageTelemetryCollectorTests
         span.Attributes.Should().Contain("sequence_title", "Orion sequence");
         span.Attributes.Should().Contain("camera_name", "ASI2600MM");
         span.Attributes.Should().Contain("readout_mode", "High gain");
+        span.Attributes.Should().Contain("image_type", "LIGHT");
+        span.Attributes.Should().Contain("filter_name", "L");
+        span.Attributes.Should().Contain("exposure_duration_seconds", 120.5);
         span.Attributes.Should().Contain("exposure_start", "2026-06-18T20:15:30.0000000Z");
 
         var firstSpanId = span.SpanId;
@@ -277,6 +289,8 @@ public sealed class ImageTelemetryCollectorTests
         startSpan.Attributes.Should().Contain("sequence_title", "Orion sequence");
         startSpan.Attributes.Should().Contain("camera_name", "ASI2600MM");
         startSpan.Attributes.Should().Contain("readout_mode", "High gain");
+        startSpan.Attributes.Should().Contain("image_type", "LIGHT");
+        startSpan.Attributes.Should().Contain("filter_name", "L");
         startSpan.Attributes.Should().Contain("exposure_start", "2026-06-18T20:15:30.0000000Z");
         startSpan.Attributes.Should().Contain("exposure_duration_seconds", 120.5);
         stopSpan.Attributes.Should().BeEquivalentTo(startSpan.Attributes);
@@ -297,6 +311,27 @@ public sealed class ImageTelemetryCollectorTests
 
         sink.Records.Should().NotContain(static record => record.Name == "nina.exposure");
         sink.Records.Should().ContainSingle(static record => record.Name == "nina.image_save");
+        sink.Records.Should().NotContain(static record =>
+            record.Attributes.ContainsKey("exposure_duration_seconds"));
+    }
+
+    [Fact]
+    public void ImageSaved_WhenExposureDurationIsZero_DoesNotPublishExposureSpan()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+        var imageSavedEvent = CompleteImageSavedEvent(new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc));
+        imageSavedEvent.Duration = 0;
+
+        proxy.RaiseImageSaved(imageSavedEvent);
+
+        sink.Records.Should().NotContain(static record => record.Name == "nina.exposure");
+        sink.Records.Should().ContainSingle(static record => record.Name == "nina.image_save");
+        sink.Records.Should().OnlyContain(static record =>
+            record.Attributes.ContainsKey("exposure_duration_seconds") &&
+            Equals(record.Attributes["exposure_duration_seconds"], 0.0));
     }
 
     [Fact]
@@ -549,7 +584,7 @@ public sealed class ImageTelemetryCollectorTests
             },
             Filter = "L",
             PathToImage = new Uri("file:///Users/jasper/images/M42_L_001.fit"),
-            Duration = 120,
+            Duration = 120.5,
             Statistics = ImageStatistics(
                 mean: 101.2,
                 median: 99.9,
@@ -564,7 +599,6 @@ public sealed class ImageTelemetryCollectorTests
 
     public static TheoryData<double> InvalidExposureDurations { get; } =
     [
-        0,
         -1,
         double.NaN,
         double.PositiveInfinity,
@@ -576,6 +610,7 @@ public sealed class ImageTelemetryCollectorTests
         {
             MetaData = null!,
             PathToImage = null!,
+            Duration = double.NaN,
             Statistics = null!,
             StarDetectionAnalysis = null!,
         };

@@ -85,6 +85,12 @@ public sealed class NinaMetricCatalogTests
 
         imageMean.ExportKind.Should().Be(NinaMetricExportKind.DeferredPointInTime);
         imageMean.AttributeNames.Should().Contain("image_file_name");
+        imageMean.AttributeNames.Should().Contain(
+            [
+                "image_type",
+                "filter_name",
+                "exposure_duration_seconds",
+            ]);
         NinaMetricCatalog.IsLiveObservableGauge("image_mean").Should().BeFalse();
     }
 

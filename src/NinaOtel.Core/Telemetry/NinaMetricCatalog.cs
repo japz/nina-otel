@@ -29,6 +29,9 @@ public static class NinaMetricCatalog
             "sequence_title",
             "camera_name",
             "readout_mode",
+            "image_type",
+            "filter_name",
+            "exposure_duration_seconds",
         ]);
 
     public static IReadOnlyList<NinaMetricDefinition> All { get; } =

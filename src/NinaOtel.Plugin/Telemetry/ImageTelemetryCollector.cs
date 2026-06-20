@@ -137,6 +137,13 @@ public sealed class ImageTelemetryCollector : IDisposable
         AddIfPresent(attributes, "sequence_title", args.MetaData?.Sequence?.Title);
         AddIfPresent(attributes, "camera_name", args.MetaData?.Camera?.Name);
         AddIfPresent(attributes, "readout_mode", args.MetaData?.Camera?.ReadoutModeName);
+        AddIfPresent(attributes, "image_type", args.MetaData?.Image?.ImageType);
+        AddIfPresent(attributes, "filter_name", args.Filter);
+
+        if (TryNormalizeExposureDuration(args.Duration, out var durationSeconds))
+        {
+            attributes["exposure_duration_seconds"] = durationSeconds;
+        }
 
         return attributes;
     }
@@ -201,8 +208,7 @@ public sealed class ImageTelemetryCollector : IDisposable
             return false;
         }
 
-        durationSeconds = args.Duration;
-        if (!double.IsFinite(durationSeconds) || durationSeconds <= 0)
+        if (!TryNormalizeExposureDuration(args.Duration, out durationSeconds) || durationSeconds <= 0)
         {
             return false;
         }
@@ -218,6 +224,12 @@ public sealed class ImageTelemetryCollector : IDisposable
         }
 
         return true;
+    }
+
+    private static bool TryNormalizeExposureDuration(double durationSeconds, out double normalized)
+    {
+        normalized = durationSeconds;
+        return double.IsFinite(durationSeconds) && durationSeconds >= 0;
     }
 
     private static string CreateExposureStartAttributeValue(ImageSavedEventArgs args)
