@@ -41,6 +41,47 @@ public sealed class OptionsXamlTests
         binding.Should().Contain("UpdateSourceTrigger=LostFocus");
     }
 
+    [Fact]
+    public void OptionsTemplate_AuthenticationModeComboBoxUsesTwoWayBinding()
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+
+        var comboBox = document
+            .Descendants(PresentationNamespace + "ComboBox")
+            .Single(element => element.Attribute("SelectedItem")?.Value.Contains("AuthenticationMode", StringComparison.Ordinal) == true);
+
+        comboBox.Attribute("ItemsSource")?.Value.Should().Contain("AvailableAuthenticationModes");
+        comboBox.Attribute("SelectedItem")?.Value.Should().Contain("Mode=TwoWay");
+    }
+
+    [Fact]
+    public void OptionsTemplate_BasicUsernameUsesTwoWayLostFocusBinding()
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+
+        var textbox = SingleTextBoxBoundTo(document, "BasicUsername");
+        textbox.Attribute("Text")?.Value.Should().Contain("Mode=TwoWay");
+        textbox.Attribute("Text")?.Value.Should().Contain("UpdateSourceTrigger=LostFocus");
+    }
+
+    [Theory]
+    [InlineData("BearerTokenPasswordBox_Loaded", "BearerTokenPasswordBox_LostFocus")]
+    [InlineData("BasicPasswordBox_Loaded", "BasicPasswordBox_LostFocus")]
+    public void OptionsTemplate_SecretsUsePasswordBoxesWithoutPasswordBinding(
+        string loadedHandler,
+        string lostFocusHandler)
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+
+        var passwordBox = document
+            .Descendants(PresentationNamespace + "PasswordBox")
+            .Single(element =>
+                element.Attribute("Loaded")?.Value == loadedHandler &&
+                element.Attribute("LostFocus")?.Value == lostFocusHandler);
+
+        passwordBox.Attributes().Should().NotContain(attribute => attribute.Name.LocalName == "Password");
+    }
+
     private static XElement SingleTextBoxBoundTo(XDocument document, string propertyName)
     {
         return document

@@ -36,6 +36,14 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="8" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Collector:" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -64,6 +72,38 @@
                     TextWrapping="NoWrap"
                     VerticalScrollBarVisibility="Auto"
                     Text="{Binding NinaOtelOptionsViewModel.StaticHeaders, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="Authentication:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <ComboBox
+                    Grid.Row="6"
+                    Grid.Column="2"
+                    Width="160"
+                    HorizontalAlignment="Left"
+                    ItemsSource="{Binding NinaOtelOptionsViewModel.AvailableAuthenticationModes}"
+                    SelectedItem="{Binding NinaOtelOptionsViewModel.AuthenticationMode, Mode=TwoWay}" />
+
+                <TextBlock Grid.Row="8" Grid.Column="0" Text="Bearer token:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <PasswordBox
+                    Grid.Row="8"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Loaded="BearerTokenPasswordBox_Loaded"
+                    LostFocus="BearerTokenPasswordBox_LostFocus" />
+
+                <TextBlock Grid.Row="10" Grid.Column="0" Text="Basic username:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="10"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Text="{Binding NinaOtelOptionsViewModel.BasicUsername, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+
+                <TextBlock Grid.Row="12" Grid.Column="0" Text="Basic password:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <PasswordBox
+                    Grid.Row="12"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Loaded="BasicPasswordBox_Loaded"
+                    LostFocus="BasicPasswordBox_LostFocus" />
             </Grid>
             <CheckBox
                 Content="Disk spool on collector failure"
