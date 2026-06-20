@@ -3,6 +3,8 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+    <BooleanToVisibilityConverter x:Key="NinaOtel_BooleanToVisibilityConverter" />
+
     <DataTemplate x:Key="NinaOtel_Options">
         <StackPanel Orientation="Vertical" Margin="8">
             <TextBlock Text="NinaOtel" FontWeight="Bold" FontSize="16" />
@@ -40,6 +42,10 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="4" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding DisplayName}" FontWeight="SemiBold" />
@@ -55,9 +61,37 @@
                                     IsChecked="{Binding RawForwardingEnabled, Mode=TwoWay}" />
                             </StackPanel>
 
-                            <TextBlock Grid.Row="4" Grid.Column="0" Text="{Binding Status}" Foreground="#666666" />
                             <TextBlock
                                 Grid.Row="4"
+                                Grid.Column="0"
+                                Text="PHD2 debug log:"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                            <TextBox
+                                Grid.Row="4"
+                                Grid.Column="2"
+                                MinWidth="220"
+                                Text="{Binding Phd2DebugLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+
+                            <TextBlock
+                                Grid.Row="6"
+                                Grid.Column="0"
+                                Text="PHD2 guide log:"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                            <TextBox
+                                Grid.Row="6"
+                                Grid.Column="2"
+                                MinWidth="220"
+                                Text="{Binding Phd2GuideLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+
+                            <TextBlock Grid.Row="8" Grid.Column="0" Text="{Binding Status}" Foreground="#666666" />
+                            <TextBlock
+                                Grid.Row="8"
                                 Grid.Column="2"
                                 Text="{Binding Message}"
                                 Foreground="#666666"

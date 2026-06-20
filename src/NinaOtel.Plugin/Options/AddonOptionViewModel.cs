@@ -6,10 +6,16 @@ namespace NinaOtel.Plugin.Options;
 
 public sealed class AddonOptionViewModel : INotifyPropertyChanged
 {
-    private readonly Action<AddonOptionViewModel, string, bool> settingChanged;
+    private const string Phd2AddonId = "phd2";
+    private const string Phd2DebugLogPathSettingName = "DebugLogPath";
+    private const string Phd2GuideLogPathSettingName = "GuideLogPath";
+
+    private readonly Action<AddonOptionViewModel, string, object> settingChanged;
     private bool isEnabled;
     private bool rawForwardingEnabled;
     private bool hasSourceSpecificHealth;
+    private string phd2DebugLogPath = string.Empty;
+    private string phd2GuideLogPath = string.Empty;
     private string status = "disabled";
     private string message = "Add-on disabled.";
 
@@ -17,7 +23,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         string id,
         string displayName,
         string source,
-        Action<AddonOptionViewModel, string, bool> settingChanged)
+        Action<AddonOptionViewModel, string, object> settingChanged)
     {
         Id = id;
         DisplayName = displayName;
@@ -30,6 +36,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     public string Id { get; }
     public string DisplayName { get; }
     public string Source { get; }
+    public bool IsPhd2 => string.Equals(Id, Phd2AddonId, StringComparison.Ordinal);
 
     public bool IsEnabled
     {
@@ -58,6 +65,18 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         }
     }
 
+    public string Phd2DebugLogPath
+    {
+        get => phd2DebugLogPath;
+        set => SetPhd2Path(ref phd2DebugLogPath, value, Phd2DebugLogPathSettingName);
+    }
+
+    public string Phd2GuideLogPath
+    {
+        get => phd2GuideLogPath;
+        set => SetPhd2Path(ref phd2GuideLogPath, value, Phd2GuideLogPathSettingName);
+    }
+
     public string Status
     {
         get => status;
@@ -74,12 +93,25 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     {
         Enabled = IsEnabled,
         RawForwardingEnabled = RawForwardingEnabled,
+        Settings = CreateSettings(),
     };
 
-    internal void Load(bool enabled, bool rawForwarding)
+    internal void Load(bool enabled, bool rawForwarding, IReadOnlyDictionary<string, string> settings)
     {
         SetField(ref isEnabled, enabled, nameof(IsEnabled));
         SetField(ref rawForwardingEnabled, rawForwarding, nameof(RawForwardingEnabled));
+        SetField(
+            ref phd2DebugLogPath,
+            IsPhd2 && settings.TryGetValue(Phd2DebugLogPathSettingName, out var debugLogPath)
+                ? debugLogPath
+                : string.Empty,
+            nameof(Phd2DebugLogPath));
+        SetField(
+            ref phd2GuideLogPath,
+            IsPhd2 && settings.TryGetValue(Phd2GuideLogPathSettingName, out var guideLogPath)
+                ? guideLogPath
+                : string.Empty,
+            nameof(Phd2GuideLogPath));
         ApplyConfiguredStatus();
     }
 
@@ -130,6 +162,44 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
             "stopped" or
             "stop_timeout" or
             "stop_error";
+
+    private IReadOnlyDictionary<string, string> CreateSettings()
+    {
+        if (!IsPhd2)
+        {
+            return new Dictionary<string, string>();
+        }
+
+        var settings = new Dictionary<string, string>();
+        AddSettingIfConfigured(settings, Phd2DebugLogPathSettingName, Phd2DebugLogPath);
+        AddSettingIfConfigured(settings, Phd2GuideLogPathSettingName, Phd2GuideLogPath);
+        return settings;
+    }
+
+    private void SetPhd2Path(ref string field, string? value, string settingName)
+    {
+        if (!IsPhd2)
+        {
+            return;
+        }
+
+        var normalized = value?.Trim() ?? string.Empty;
+        if (SetField(ref field, normalized))
+        {
+            settingChanged(this, settingName, normalized);
+        }
+    }
+
+    private static void AddSettingIfConfigured(
+        Dictionary<string, string> settings,
+        string name,
+        string value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            settings[name] = value;
+        }
+    }
 
     private bool SetField<T>(
         ref T field,

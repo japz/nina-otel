@@ -94,6 +94,24 @@ public sealed class OptionsXamlTests
     }
 
     [Theory]
+    [InlineData("Phd2DebugLogPath")]
+    [InlineData("Phd2GuideLogPath")]
+    public void OptionsTemplate_Phd2LogPathTextBoxesUseTwoWayLostFocusBindings(string propertyName)
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+        var itemsControl = document
+            .Descendants(PresentationNamespace + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value.Contains("NinaOtelOptionsViewModel.Addons", StringComparison.Ordinal) == true);
+
+        var textbox = SingleTextBoxBoundTo(itemsControl, propertyName);
+        var binding = textbox.Attribute("Text")?.Value;
+
+        binding.Should().Contain("Mode=TwoWay");
+        binding.Should().Contain("UpdateSourceTrigger=LostFocus");
+        textbox.Attribute("Visibility")?.Value.Should().Contain("IsPhd2");
+    }
+
+    [Theory]
     [InlineData(
         "BearerTokenPasswordBox_Loaded",
         "BearerTokenPasswordBox_LostFocus",
@@ -125,6 +143,13 @@ public sealed class OptionsXamlTests
         return document
             .Descendants(PresentationNamespace + "TextBox")
             .Single(element => element.Attribute("Text")?.Value.Contains(propertyName, StringComparison.Ordinal) == true);
+    }
+
+    private static XElement SingleTextBoxBoundTo(XElement element, string propertyName)
+    {
+        return element
+            .Descendants(PresentationNamespace + "TextBox")
+            .Single(candidate => candidate.Attribute("Text")?.Value.Contains(propertyName, StringComparison.Ordinal) == true);
     }
 
     private static string FindOptionsXamlPath()

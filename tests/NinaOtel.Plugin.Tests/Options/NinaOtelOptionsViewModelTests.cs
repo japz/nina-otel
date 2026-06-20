@@ -92,6 +92,38 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void Phd2AddonSettings_SaveLogPathsAndExposeOptionsSettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var phd2 = viewModel.Addons.Single(addon => addon.Id == "phd2");
+
+        phd2.Phd2DebugLogPath = "C:\\PHD2\\PHD2_DebugLog.txt";
+        phd2.Phd2GuideLogPath = "C:\\PHD2\\PHD2_GuideLog.txt";
+
+        settings.GetString("Addon.phd2.DebugLogPath", string.Empty).Should().Be("C:\\PHD2\\PHD2_DebugLog.txt");
+        settings.GetString("Addon.phd2.GuideLogPath", string.Empty).Should().Be("C:\\PHD2\\PHD2_GuideLog.txt");
+        viewModel.Options.Addons["phd2"].Settings.Should().Contain("DebugLogPath", "C:\\PHD2\\PHD2_DebugLog.txt");
+        viewModel.Options.Addons["phd2"].Settings.Should().Contain("GuideLogPath", "C:\\PHD2\\PHD2_GuideLog.txt");
+    }
+
+    [Fact]
+    public void Constructor_LoadsPersistedPhd2LogPathSettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("Addon.phd2.DebugLogPath", "D:\\Logs\\debug.txt");
+        settings.SetString("Addon.phd2.GuideLogPath", "D:\\Logs\\guide.txt");
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var phd2 = viewModel.Addons.Single(addon => addon.Id == "phd2");
+
+        phd2.Phd2DebugLogPath.Should().Be("D:\\Logs\\debug.txt");
+        phd2.Phd2GuideLogPath.Should().Be("D:\\Logs\\guide.txt");
+        viewModel.Options.Addons["phd2"].Settings.Should().Contain("DebugLogPath", "D:\\Logs\\debug.txt");
+        viewModel.Options.Addons["phd2"].Settings.Should().Contain("GuideLogPath", "D:\\Logs\\guide.txt");
+    }
+
+    [Fact]
     public void UpdateAddonHealth_UpdatesMatchingAddonStatusAndMessage()
     {
         var settings = new InMemoryPluginSettingsStore();

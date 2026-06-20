@@ -27,6 +27,11 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string ClientCertificatePemPathKey = nameof(ClientCertificatePemPath);
     private const string ClientPrivateKeyPemPathKey = nameof(ClientPrivateKeyPemPath);
     private const string AddonSettingsPrefix = "Addon";
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> AddonStringSettings =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+        {
+            ["phd2"] = ["DebugLogPath", "GuideLogPath"],
+        };
     private const string PemTlsProtocolChangedStatus = "PEM TLS uses HTTP/protobuf; protocol changed.";
     private const string PemTlsProtocolSavedStatus = "PEM TLS uses HTTP/protobuf; settings saved.";
     private const string PemTlsGrpcRejectedStatus =
@@ -548,13 +553,38 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         {
             addon.Load(
                 settingsStore.GetBoolean(GetAddonSettingsKey(addon.Id, "Enabled"), defaultValue: false),
-                settingsStore.GetBoolean(GetAddonSettingsKey(addon.Id, "RawForwardingEnabled"), defaultValue: false));
+                settingsStore.GetBoolean(GetAddonSettingsKey(addon.Id, "RawForwardingEnabled"), defaultValue: false),
+                LoadAddonStringSettings(addon.Id));
         }
     }
 
-    private void OnAddonSettingChanged(AddonOptionViewModel addon, string settingName, bool value)
+    private IReadOnlyDictionary<string, string> LoadAddonStringSettings(string addonId)
     {
-        settingsStore.SetBoolean(GetAddonSettingsKey(addon.Id, settingName), value);
+        if (!AddonStringSettings.TryGetValue(addonId, out var settingNames))
+        {
+            return new Dictionary<string, string>();
+        }
+
+        return settingNames.ToDictionary(
+            static settingName => settingName,
+            settingName => settingsStore.GetString(GetAddonSettingsKey(addonId, settingName), string.Empty),
+            StringComparer.Ordinal);
+    }
+
+    private void OnAddonSettingChanged(AddonOptionViewModel addon, string settingName, object value)
+    {
+        switch (value)
+        {
+            case bool booleanValue:
+                settingsStore.SetBoolean(GetAddonSettingsKey(addon.Id, settingName), booleanValue);
+                break;
+            case string stringValue:
+                settingsStore.SetString(GetAddonSettingsKey(addon.Id, settingName), stringValue);
+                break;
+            default:
+                return;
+        }
+
         RaisePropertyChanged(nameof(Options));
         Status = "Settings saved; reload plugin to apply add-on changes.";
     }
