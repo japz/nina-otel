@@ -56,6 +56,43 @@
                 Content="Disk spool on collector failure"
                 IsChecked="{Binding NinaOtelOptionsViewModel.DiskOnFailureEnabled, Mode=TwoWay}"
                 Margin="0,8,0,0" />
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="320" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Spool path:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="0"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Text="{Binding NinaOtelOptionsViewModel.SpoolPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="Max spool GB:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="2"
+                    Grid.Column="2"
+                    Width="120"
+                    HorizontalAlignment="Left"
+                    Text="{Binding NinaOtelOptionsViewModel.MaxSpoolSizeGb, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="Max spool days:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="4"
+                    Grid.Column="2"
+                    Width="120"
+                    HorizontalAlignment="Left"
+                    Text="{Binding NinaOtelOptionsViewModel.MaxSpoolAgeDays, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+            </Grid>
         </StackPanel>
     </DataTemplate>
 </ResourceDictionary>

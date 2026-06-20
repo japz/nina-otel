@@ -25,6 +25,28 @@ public sealed class OptionsXamlTests
         checkbox.Attribute("IsEnabled")?.Value.Should().NotBe("False");
     }
 
+    [Theory]
+    [InlineData("SpoolPath")]
+    [InlineData("MaxSpoolSizeGb")]
+    [InlineData("MaxSpoolAgeDays")]
+    public void OptionsTemplate_SpoolTextBoxesUseTwoWayLostFocusBindings(string propertyName)
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+
+        var textbox = SingleTextBoxBoundTo(document, propertyName);
+        var binding = textbox.Attribute("Text")?.Value;
+
+        binding.Should().Contain("Mode=TwoWay");
+        binding.Should().Contain("UpdateSourceTrigger=LostFocus");
+    }
+
+    private static XElement SingleTextBoxBoundTo(XDocument document, string propertyName)
+    {
+        return document
+            .Descendants(PresentationNamespace + "TextBox")
+            .Single(element => element.Attribute("Text")?.Value.Contains(propertyName, StringComparison.Ordinal) == true);
+    }
+
     private static string FindOptionsXamlPath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
