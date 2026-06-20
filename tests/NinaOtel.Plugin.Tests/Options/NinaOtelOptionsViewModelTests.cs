@@ -224,6 +224,88 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void BearerAuth_SavesProtectedTokenAndGeneratesAuthorizationHeader()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+
+        viewModel.AuthenticationMode = OtlpAuthenticationMode.BearerToken;
+        viewModel.SetBearerToken("secret-token");
+
+        settings.GetString("BearerTokenProtected", string.Empty).Should().Be("protected:secret-token");
+        settings.GetString("BearerTokenProtected", string.Empty).Should().NotBe("secret-token");
+        viewModel.GetBearerToken().Should().Be("secret-token");
+        viewModel.Options.Otlp.Auth.Mode.Should().Be(OtlpAuthenticationMode.BearerToken);
+        viewModel.Options.Otlp.Headers.Should().Contain("Authorization", "Bearer secret-token");
+        viewModel.Status.Should().Be("Settings saved");
+        viewModel.Status.Should().NotContain("secret-token");
+    }
+
+    [Fact]
+    public void BasicAuth_SavesProtectedPasswordAndOverridesStaticAuthorizationHeader()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+        viewModel.StaticHeaders = "Authorization: Bearer static\r\nx-scope: nina";
+
+        viewModel.AuthenticationMode = OtlpAuthenticationMode.Basic;
+        viewModel.BasicUsername = "jasper";
+        viewModel.SetBasicPassword("plain-password");
+
+        settings.GetString("BasicUsername", string.Empty).Should().Be("jasper");
+        settings.GetString("BasicPasswordProtected", string.Empty).Should().Be("protected:plain-password");
+        viewModel.GetBasicPassword().Should().Be("plain-password");
+        viewModel.Options.Otlp.Auth.Mode.Should().Be(OtlpAuthenticationMode.Basic);
+        viewModel.Options.Otlp.Auth.BasicUsername.Should().Be("jasper");
+        viewModel.Options.Otlp.Auth.BasicPasswordProtected.Should().Be("protected:plain-password");
+        viewModel.Options.Otlp.Headers.Should().Contain("x-scope", "nina");
+        viewModel.Options.Otlp.Headers.Should().Contain(
+            "Authorization",
+            "Basic amFzcGVyOnBsYWluLXBhc3N3b3Jk");
+    }
+
+    [Fact]
+    public void AuthModeNone_PreservesStaticAuthorizationHeader()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+        viewModel.StaticHeaders = "Authorization: Bearer static";
+
+        viewModel.AuthenticationMode = OtlpAuthenticationMode.None;
+
+        viewModel.Options.Otlp.Headers.Should().Contain("Authorization", "Bearer static");
+    }
+
+    [Fact]
+    public void ClearingBearerToken_RemovesGeneratedAuthorizationHeaderAndProtectedValue()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+        viewModel.AuthenticationMode = OtlpAuthenticationMode.BearerToken;
+        viewModel.SetBearerToken("secret-token");
+
+        viewModel.SetBearerToken(string.Empty);
+
+        settings.GetString("BearerTokenProtected", "fallback").Should().BeEmpty();
+        viewModel.GetBearerToken().Should().BeEmpty();
+        viewModel.Options.Otlp.Headers.Should().NotContainKey("Authorization");
+    }
+
+    [Fact]
+    public void Constructor_WhenProtectedBearerCannotDecrypt_DoesNotGenerateAuthorizationHeader()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("AuthenticationMode", OtlpAuthenticationMode.BearerToken.ToString());
+        settings.SetString("BearerTokenProtected", "unreadable-ciphertext");
+
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+
+        viewModel.GetBearerToken().Should().BeEmpty();
+        viewModel.Options.Otlp.Headers.Should().NotContainKey("Authorization");
+        viewModel.Status.Should().Be("Bearer token could not be decrypted; re-enter it.");
+    }
+
+    [Fact]
     public void Reload_LoadsSettingsForCurrentProfile()
     {
         var settings = new InMemoryPluginSettingsStore();
@@ -289,6 +371,23 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.CollectorHealthSummary.Should().Be("Collector export failed");
         viewModel.CollectorHealthDebugInfo.Should().Contain("SocketException");
         viewModel.CollectorHealthDebugInfo.Should().Contain("connection refused");
+    }
+
+    private sealed class FakeSecretProtector : ISecretProtector
+    {
+        public string Protect(string secret) => $"protected:{secret}";
+
+        public bool TryUnprotect(string protectedSecret, out string secret)
+        {
+            if (protectedSecret.StartsWith("protected:", StringComparison.Ordinal))
+            {
+                secret = protectedSecret["protected:".Length..];
+                return true;
+            }
+
+            secret = string.Empty;
+            return false;
+        }
     }
 
     private sealed class InMemoryPluginSettingsStore : INinaOtelSettingsStore

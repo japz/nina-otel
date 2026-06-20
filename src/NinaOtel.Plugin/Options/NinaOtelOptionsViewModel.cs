@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text;
 
 namespace NinaOtel.Plugin.Options;
 
@@ -16,12 +17,17 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string MaxSpoolSizeGbKey = nameof(MaxSpoolSizeGb);
     private const string MaxSpoolAgeDaysKey = nameof(MaxSpoolAgeDays);
     private const string StaticHeadersKey = nameof(StaticHeaders);
+    private const string AuthenticationModeKey = nameof(AuthenticationMode);
+    private const string BearerTokenProtectedKey = "BearerTokenProtected";
+    private const string BasicUsernameKey = nameof(BasicUsername);
+    private const string BasicPasswordProtectedKey = "BasicPasswordProtected";
     private const decimal BytesPerGb = 1024m * 1024m * 1024m;
     private const decimal TicksPerDay = TimeSpan.TicksPerDay;
     private const decimal MaxSpoolSizeGbValue = long.MaxValue / BytesPerGb;
     private static readonly decimal MaxSpoolAgeDaysValue = TimeSpan.MaxValue.Ticks / TicksPerDay;
 
     private readonly INinaOtelSettingsStore settingsStore;
+    private readonly ISecretProtector secretProtector;
     private readonly NinaOtelOptions defaults = NinaOtelOptions.CreateDefault();
     private readonly SynchronizationContext? synchronizationContext = SynchronizationContext.Current;
     private string collectorEndpoint = string.Empty;
@@ -36,19 +42,34 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private TimeSpan appliedMaxSpoolAge;
     private string staticHeaders = string.Empty;
     private IReadOnlyDictionary<string, string> appliedStaticHeaders = new Dictionary<string, string>();
+    private OtlpAuthenticationMode authenticationMode;
+    private string bearerToken = string.Empty;
+    private string bearerTokenProtected = string.Empty;
+    private string basicUsername = string.Empty;
+    private string basicPassword = string.Empty;
+    private string basicPasswordProtected = string.Empty;
     private string status = "NinaOtel foundation loaded";
     private CollectorHealthState collectorHealthState = CollectorHealthState.Unknown;
     private CollectorHealthSnapshot? collectorHealthSnapshot;
 
     public NinaOtelOptionsViewModel(INinaOtelSettingsStore settingsStore)
+        : this(settingsStore, DpapiSecretProtector.Instance)
+    {
+    }
+
+    internal NinaOtelOptionsViewModel(INinaOtelSettingsStore settingsStore, ISecretProtector secretProtector)
     {
         this.settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
+        this.secretProtector = secretProtector ?? throw new ArgumentNullException(nameof(secretProtector));
         LoadFromSettings();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public IReadOnlyList<OtlpProtocol> AvailableProtocols { get; } = Enum.GetValues<OtlpProtocol>();
+
+    public IReadOnlyList<OtlpAuthenticationMode> AvailableAuthenticationModes { get; } =
+        Enum.GetValues<OtlpAuthenticationMode>();
 
     public NinaOtelOptions Options => CreateOptions();
 
@@ -214,6 +235,56 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
     }
 
+    public OtlpAuthenticationMode AuthenticationMode
+    {
+        get => authenticationMode;
+        set
+        {
+            if (SetField(ref authenticationMode, value))
+            {
+                settingsStore.SetString(AuthenticationModeKey, value.ToString());
+                Status = "Settings saved";
+            }
+        }
+    }
+
+    public string BasicUsername
+    {
+        get => basicUsername;
+        set
+        {
+            if (SetField(ref basicUsername, value ?? string.Empty))
+            {
+                settingsStore.SetString(BasicUsernameKey, basicUsername);
+                Status = "Settings saved";
+            }
+        }
+    }
+
+    public string GetBearerToken() => bearerToken;
+
+    public void SetBearerToken(string? token)
+    {
+        SetProtectedSecret(
+            token,
+            ref bearerToken,
+            ref bearerTokenProtected,
+            BearerTokenProtectedKey,
+            nameof(GetBearerToken));
+    }
+
+    public string GetBasicPassword() => basicPassword;
+
+    public void SetBasicPassword(string? password)
+    {
+        SetProtectedSecret(
+            password,
+            ref basicPassword,
+            ref basicPasswordProtected,
+            BasicPasswordProtectedKey,
+            nameof(GetBasicPassword));
+    }
+
     public string Status
     {
         get => status;
@@ -273,6 +344,12 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         appliedStaticHeaders = TryParseHeaders(staticHeaders, out var parsedHeaders, out _)
             ? parsedHeaders
             : defaults.Otlp.Headers;
+        authenticationMode = LoadAuthenticationMode();
+        basicUsername = settingsStore.GetString(BasicUsernameKey, string.Empty);
+        bearerTokenProtected = settingsStore.GetString(BearerTokenProtectedKey, string.Empty);
+        basicPasswordProtected = settingsStore.GetString(BasicPasswordProtectedKey, string.Empty);
+        bearerToken = UnprotectOrWarn(bearerTokenProtected, "Bearer token");
+        basicPassword = UnprotectOrWarn(basicPasswordProtected, "Basic password");
 
         RaisePropertyChanged(nameof(CollectorEndpoint));
         RaisePropertyChanged(nameof(CollectorProtocol));
@@ -281,6 +358,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(MaxSpoolSizeGb));
         RaisePropertyChanged(nameof(MaxSpoolAgeDays));
         RaisePropertyChanged(nameof(StaticHeaders));
+        RaisePropertyChanged(nameof(AuthenticationMode));
+        RaisePropertyChanged(nameof(BasicUsername));
+        RaisePropertyChanged(nameof(AvailableAuthenticationModes));
         RaisePropertyChanged(nameof(Options));
     }
 
@@ -304,6 +384,17 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
             : defaults.Otlp.Protocol;
     }
 
+    private OtlpAuthenticationMode LoadAuthenticationMode()
+    {
+        var configured = settingsStore.GetString(
+            AuthenticationModeKey,
+            OtlpAuthenticationMode.None.ToString());
+
+        return Enum.TryParse<OtlpAuthenticationMode>(configured, ignoreCase: true, out var mode)
+            ? mode
+            : OtlpAuthenticationMode.None;
+    }
+
     private NinaOtelOptions CreateOptions()
     {
         return defaults with
@@ -312,7 +403,23 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
             {
                 Endpoint = new Uri(appliedCollectorEndpoint),
                 Protocol = collectorProtocol,
-                Headers = appliedStaticHeaders,
+                Headers = CreateEffectiveHeaders(),
+                Auth = new OtlpAuthOptions
+                {
+                    Mode = authenticationMode,
+                    BearerToken = authenticationMode == OtlpAuthenticationMode.BearerToken &&
+                        !string.IsNullOrEmpty(bearerToken)
+                            ? bearerToken
+                            : null,
+                    BasicUsername = authenticationMode == OtlpAuthenticationMode.Basic &&
+                        !string.IsNullOrEmpty(basicUsername)
+                            ? basicUsername
+                            : null,
+                    BasicPasswordProtected = authenticationMode == OtlpAuthenticationMode.Basic &&
+                        !string.IsNullOrEmpty(basicPasswordProtected)
+                            ? basicPasswordProtected
+                            : null,
+                },
             },
             Buffer = defaults.Buffer with
             {
@@ -322,6 +429,64 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
                 MaxSpoolAge = appliedMaxSpoolAge,
             },
         };
+    }
+
+    private IReadOnlyDictionary<string, string> CreateEffectiveHeaders()
+    {
+        var headers = new Dictionary<string, string>(appliedStaticHeaders, StringComparer.OrdinalIgnoreCase);
+        switch (authenticationMode)
+        {
+            case OtlpAuthenticationMode.BearerToken when !string.IsNullOrEmpty(bearerToken):
+                headers["Authorization"] = $"Bearer {bearerToken}";
+                break;
+            case OtlpAuthenticationMode.Basic
+                when !string.IsNullOrEmpty(basicUsername) && !string.IsNullOrEmpty(basicPassword):
+                var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{basicUsername}:{basicPassword}"));
+                headers["Authorization"] = $"Basic {credentials}";
+                break;
+        }
+
+        return headers;
+    }
+
+    private string UnprotectOrWarn(string protectedSecret, string label)
+    {
+        if (string.IsNullOrEmpty(protectedSecret))
+        {
+            return string.Empty;
+        }
+
+        if (secretProtector.TryUnprotect(protectedSecret, out var secret))
+        {
+            return secret;
+        }
+
+        Status = $"{label} could not be decrypted; re-enter it.";
+        return string.Empty;
+    }
+
+    private void SetProtectedSecret(
+        string? value,
+        ref string secretField,
+        ref string protectedField,
+        string settingsKey,
+        string propertyName)
+    {
+        var normalized = value ?? string.Empty;
+        if (secretField == normalized &&
+            (!string.IsNullOrEmpty(normalized) || string.IsNullOrEmpty(protectedField)))
+        {
+            return;
+        }
+
+        secretField = normalized;
+        protectedField = string.IsNullOrEmpty(normalized)
+            ? string.Empty
+            : secretProtector.Protect(normalized);
+        settingsStore.SetString(settingsKey, protectedField);
+        RaisePropertyChanged(propertyName);
+        RaisePropertyChanged(nameof(Options));
+        Status = "Settings saved";
     }
 
     private bool SetField<T>(
