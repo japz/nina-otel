@@ -48,6 +48,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private string basicUsername = string.Empty;
     private string basicPassword = string.Empty;
     private string basicPasswordProtected = string.Empty;
+    private int secretRevision;
     private string status = "NinaOtel foundation loaded";
     private CollectorHealthState collectorHealthState = CollectorHealthState.Unknown;
     private CollectorHealthSnapshot? collectorHealthSnapshot;
@@ -61,7 +62,11 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     {
         this.settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
         this.secretProtector = secretProtector ?? throw new ArgumentNullException(nameof(secretProtector));
-        LoadFromSettings();
+        var warningStatus = LoadFromSettings();
+        if (!string.IsNullOrEmpty(warningStatus))
+        {
+            Status = warningStatus;
+        }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -72,6 +77,8 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         Enum.GetValues<OtlpAuthenticationMode>();
 
     public NinaOtelOptions Options => CreateOptions();
+
+    public int SecretRevision => secretRevision;
 
     public CollectorHealthState CollectorHealthState => collectorHealthState;
 
@@ -293,8 +300,8 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
     public void Reload()
     {
-        LoadFromSettings();
-        Status = "Settings loaded";
+        var warningStatus = LoadFromSettings();
+        Status = string.IsNullOrEmpty(warningStatus) ? "Settings loaded" : warningStatus;
     }
 
     public void UpdateCollectorHealth(CollectorHealthSnapshot snapshot)
@@ -322,8 +329,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
     }
 
-    private void LoadFromSettings()
+    private string? LoadFromSettings()
     {
+        string? warningStatus = null;
         collectorEndpoint = LoadEndpoint();
         appliedCollectorEndpoint = collectorEndpoint;
         collectorProtocol = LoadProtocol();
@@ -348,8 +356,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         basicUsername = settingsStore.GetString(BasicUsernameKey, string.Empty);
         bearerTokenProtected = settingsStore.GetString(BearerTokenProtectedKey, string.Empty);
         basicPasswordProtected = settingsStore.GetString(BasicPasswordProtectedKey, string.Empty);
-        bearerToken = UnprotectOrWarn(bearerTokenProtected, "Bearer token");
-        basicPassword = UnprotectOrWarn(basicPasswordProtected, "Basic password");
+        bearerToken = UnprotectOrWarn(bearerTokenProtected, "Bearer token", ref warningStatus);
+        basicPassword = UnprotectOrWarn(basicPasswordProtected, "Basic password", ref warningStatus);
+        IncrementSecretRevision();
 
         RaisePropertyChanged(nameof(CollectorEndpoint));
         RaisePropertyChanged(nameof(CollectorProtocol));
@@ -362,6 +371,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(BasicUsername));
         RaisePropertyChanged(nameof(AvailableAuthenticationModes));
         RaisePropertyChanged(nameof(Options));
+        return warningStatus;
     }
 
     private string LoadEndpoint()
@@ -434,6 +444,11 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private IReadOnlyDictionary<string, string> CreateEffectiveHeaders()
     {
         var headers = new Dictionary<string, string>(appliedStaticHeaders, StringComparer.OrdinalIgnoreCase);
+        if (authenticationMode != OtlpAuthenticationMode.None)
+        {
+            headers.Remove("Authorization");
+        }
+
         switch (authenticationMode)
         {
             case OtlpAuthenticationMode.BearerToken when !string.IsNullOrEmpty(bearerToken):
@@ -449,7 +464,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         return headers;
     }
 
-    private string UnprotectOrWarn(string protectedSecret, string label)
+    private string UnprotectOrWarn(string protectedSecret, string label, ref string? warningStatus)
     {
         if (string.IsNullOrEmpty(protectedSecret))
         {
@@ -461,7 +476,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
             return secret;
         }
 
-        Status = $"{label} could not be decrypted; re-enter it.";
+        warningStatus ??= $"{label} could not be decrypted; re-enter it.";
         return string.Empty;
     }
 
@@ -486,7 +501,18 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         settingsStore.SetString(settingsKey, protectedField);
         RaisePropertyChanged(propertyName);
         RaisePropertyChanged(nameof(Options));
+        IncrementSecretRevision();
         Status = "Settings saved";
+    }
+
+    private void IncrementSecretRevision()
+    {
+        unchecked
+        {
+            secretRevision++;
+        }
+
+        RaisePropertyChanged(nameof(SecretRevision));
     }
 
     private bool SetField<T>(

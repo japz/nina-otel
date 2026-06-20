@@ -65,11 +65,18 @@ public sealed class OptionsXamlTests
     }
 
     [Theory]
-    [InlineData("BearerTokenPasswordBox_Loaded", "BearerTokenPasswordBox_LostFocus")]
-    [InlineData("BasicPasswordBox_Loaded", "BasicPasswordBox_LostFocus")]
+    [InlineData(
+        "BearerTokenPasswordBox_Loaded",
+        "BearerTokenPasswordBox_LostFocus",
+        "BearerTokenPasswordBox_PasswordChanged")]
+    [InlineData(
+        "BasicPasswordBox_Loaded",
+        "BasicPasswordBox_LostFocus",
+        "BasicPasswordBox_PasswordChanged")]
     public void OptionsTemplate_SecretsUsePasswordBoxesWithoutPasswordBinding(
         string loadedHandler,
-        string lostFocusHandler)
+        string lostFocusHandler,
+        string passwordChangedHandler)
     {
         var document = XDocument.Load(FindOptionsXamlPath());
 
@@ -80,6 +87,8 @@ public sealed class OptionsXamlTests
                 element.Attribute("LostFocus")?.Value == lostFocusHandler);
 
         passwordBox.Attributes().Should().NotContain(attribute => attribute.Name.LocalName == "Password");
+        passwordBox.Attribute("PasswordChanged")?.Value.Should().Be(passwordChangedHandler);
+        passwordBox.Attribute("Unloaded")?.Value.Should().Be("SecretPasswordBox_Unloaded");
     }
 
     private static XElement SingleTextBoxBoundTo(XDocument document, string propertyName)

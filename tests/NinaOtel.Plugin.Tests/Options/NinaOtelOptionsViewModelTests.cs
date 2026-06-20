@@ -292,6 +292,40 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void ClearingBearerToken_WithStaticAuthorization_SuppressesAuthorizationHeader()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+        viewModel.StaticHeaders = "Authorization: Bearer static\r\nx-scope: nina";
+        viewModel.AuthenticationMode = OtlpAuthenticationMode.BearerToken;
+        viewModel.SetBearerToken("secret-token");
+
+        viewModel.SetBearerToken(string.Empty);
+
+        viewModel.Options.Otlp.Headers.Should().NotContainKey("Authorization");
+        viewModel.Options.Otlp.Headers.Should().Contain("x-scope", "nina");
+    }
+
+    [Theory]
+    [InlineData("jasper", "")]
+    [InlineData("", "plain-password")]
+    public void BasicAuth_WithIncompleteCredentials_SuppressesStaticAuthorizationHeader(
+        string username,
+        string password)
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+        viewModel.StaticHeaders = "Authorization: Bearer static\r\nx-scope: nina";
+
+        viewModel.AuthenticationMode = OtlpAuthenticationMode.Basic;
+        viewModel.BasicUsername = username;
+        viewModel.SetBasicPassword(password);
+
+        viewModel.Options.Otlp.Headers.Should().NotContainKey("Authorization");
+        viewModel.Options.Otlp.Headers.Should().Contain("x-scope", "nina");
+    }
+
+    [Fact]
     public void Constructor_WhenProtectedBearerCannotDecrypt_DoesNotGenerateAuthorizationHeader()
     {
         var settings = new InMemoryPluginSettingsStore();
@@ -303,6 +337,49 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.GetBearerToken().Should().BeEmpty();
         viewModel.Options.Otlp.Headers.Should().NotContainKey("Authorization");
         viewModel.Status.Should().Be("Bearer token could not be decrypted; re-enter it.");
+    }
+
+    [Fact]
+    public void Constructor_WhenProtectedBearerCannotDecrypt_SuppressesStaticAuthorizationHeader()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("AuthenticationMode", OtlpAuthenticationMode.BearerToken.ToString());
+        settings.SetString("StaticHeaders", "Authorization: Bearer static\r\nx-scope: nina");
+        settings.SetString("BearerTokenProtected", "unreadable-ciphertext");
+
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+
+        viewModel.Options.Otlp.Headers.Should().NotContainKey("Authorization");
+        viewModel.Options.Otlp.Headers.Should().Contain("x-scope", "nina");
+        viewModel.Status.Should().Be("Bearer token could not be decrypted; re-enter it.");
+    }
+
+    [Fact]
+    public void Reload_WhenProtectedBearerCannotDecrypt_PreservesDecryptWarningStatus()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+        settings.SetString("AuthenticationMode", OtlpAuthenticationMode.BearerToken.ToString());
+        settings.SetString("BearerTokenProtected", "unreadable-ciphertext");
+
+        viewModel.Reload();
+
+        viewModel.Status.Should().Be("Bearer token could not be decrypted; re-enter it.");
+    }
+
+    [Fact]
+    public void Reload_IncrementsSecretRevisionAndRaisesChangeNotification()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings, new FakeSecretProtector());
+        var initialRevision = viewModel.SecretRevision;
+        var changedProperties = new List<string>();
+        viewModel.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName ?? string.Empty);
+
+        viewModel.Reload();
+
+        viewModel.SecretRevision.Should().Be(initialRevision + 1);
+        changedProperties.Should().Contain(nameof(NinaOtelOptionsViewModel.SecretRevision));
     }
 
     [Fact]

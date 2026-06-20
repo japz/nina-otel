@@ -88,7 +88,9 @@
                     Grid.Column="2"
                     MinWidth="320"
                     Loaded="BearerTokenPasswordBox_Loaded"
-                    LostFocus="BearerTokenPasswordBox_LostFocus" />
+                    LostFocus="BearerTokenPasswordBox_LostFocus"
+                    PasswordChanged="BearerTokenPasswordBox_PasswordChanged"
+                    Unloaded="SecretPasswordBox_Unloaded" />
 
                 <TextBlock Grid.Row="10" Grid.Column="0" Text="Basic username:" FontWeight="SemiBold" VerticalAlignment="Center" />
                 <TextBox
@@ -103,7 +105,9 @@
                     Grid.Column="2"
                     MinWidth="320"
                     Loaded="BasicPasswordBox_Loaded"
-                    LostFocus="BasicPasswordBox_LostFocus" />
+                    LostFocus="BasicPasswordBox_LostFocus"
+                    PasswordChanged="BasicPasswordBox_PasswordChanged"
+                    Unloaded="SecretPasswordBox_Unloaded" />
             </Grid>
             <CheckBox
                 Content="Disk spool on collector failure"
