@@ -95,6 +95,24 @@ public sealed class TargetSchedulerLogParserTests
     }
 
     [Fact]
+    public void TryParse_WhenMessageContainsPipes_PreservesFullMessageRemainder()
+    {
+        const string message = "Target Scheduler: planning run started | target=M31 | filter=L";
+        const string line = $"2026-06-18T22:00:00.0000|INFO|Scheduler.cs|Run|10|{message}";
+
+        var parsed = TargetSchedulerLogParser.TryParse(
+            line,
+            SourcePath,
+            new FixedTimeProvider(DateTimeOffset.UtcNow),
+            out var logEvent);
+
+        parsed.Should().BeTrue();
+        logEvent.Should().NotBeNull();
+        logEvent!.Kind.Should().Be(TargetSchedulerLogEventKind.PlanningStarted);
+        logEvent.Message.Should().Be(message);
+    }
+
+    [Fact]
     public void TryParse_WhenMalformedTimestampLineIsRecognized_UsesCurrentUtcTime()
     {
         var currentTime = new DateTimeOffset(2026, 6, 19, 1, 2, 3, TimeSpan.Zero);

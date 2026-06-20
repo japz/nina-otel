@@ -27,7 +27,7 @@ internal static class TargetSchedulerLogParser
             return false;
         }
 
-        var parts = line.Split('|');
+        var parts = line.Split(['|'], 6);
         if (parts.Length != 6)
         {
             return false;
