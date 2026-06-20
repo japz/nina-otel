@@ -6,7 +6,6 @@ namespace NinaOtel.Addons.NightSummary;
 public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
 {
     private const string LogPathSetting = "LogPath";
-    private const string ProfileLogPathSetting = "Addon.night-summary.LogPath";
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
     private readonly TimeSpan pollInterval;
@@ -124,12 +123,6 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
             return path;
         }
 
-        if (configuration.Settings.TryGetValue(ProfileLogPathSetting, out var profilePath) &&
-            !string.IsNullOrWhiteSpace(profilePath))
-        {
-            return profilePath;
-        }
-
         return null;
     }
 
@@ -187,7 +180,7 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
             ["addon.id"] = "night-summary",
             ["source"] = logEvent.Source,
             ["source.file"] = logEvent.SourcePath,
-            ["event.kind"] = logEvent.Kind.ToString(),
+            ["event.kind"] = ToEventKindName(logEvent.Kind),
             ["message"] = logEvent.Message,
         };
 
@@ -203,6 +196,29 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
 
         return attributes;
     }
+
+    private static string ToEventKindName(NightSummaryLogEventKind kind) =>
+        kind switch
+        {
+            NightSummaryLogEventKind.SessionStarted => "session_started",
+            NightSummaryLogEventKind.SessionEnded => "session_ended",
+            NightSummaryLogEventKind.CameraInfoStored => "camera_info_stored",
+            NightSummaryLogEventKind.EquipmentCaptured => "equipment_captured",
+            NightSummaryLogEventKind.RoofOpen => "roof_open",
+            NightSummaryLogEventKind.RoofClosed => "roof_closed",
+            NightSummaryLogEventKind.AutoFocusCompleted => "autofocus_completed",
+            NightSummaryLogEventKind.MeridianFlip => "meridian_flip",
+            NightSummaryLogEventKind.TargetSchedulerGradingSynced => "ts_grading_synced",
+            NightSummaryLogEventKind.TargetSchedulerGradingFailed => "ts_grading_failed",
+            NightSummaryLogEventKind.ReportGenerating => "report_generating",
+            NightSummaryLogEventKind.ReportDelivering => "report_delivering",
+            NightSummaryLogEventKind.ReportSaved => "report_saved",
+            NightSummaryLogEventKind.ReportDelivered => "report_delivered",
+            NightSummaryLogEventKind.ReportFailed => "report_failed",
+            NightSummaryLogEventKind.Warning => "warning",
+            NightSummaryLogEventKind.Error => "error",
+            _ => kind.ToString(),
+        };
 
     private void ReportDegraded(IAddonContext context, string message) =>
         context.ReportHealth(

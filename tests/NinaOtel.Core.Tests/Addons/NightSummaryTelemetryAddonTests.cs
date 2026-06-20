@@ -53,16 +53,14 @@ public sealed class NightSummaryTelemetryAddonTests
         await addon.StopAsync(CancellationToken.None);
     }
 
-    [Theory]
-    [InlineData("LogPath")]
-    [InlineData("Addon.night-summary.LogPath")]
-    public async Task StartAsync_WhenConfiguredFileExists_ReportsRunning(string settingKey)
+    [Fact]
+    public async Task StartAsync_WhenConfiguredFileExists_ReportsRunning()
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
         var addon = new NightSummaryTelemetryAddon(PollInterval);
         using var shutdown = new CancellationTokenSource();
-        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, settingKey: settingKey);
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
         await addon.StartAsync(context, CancellationToken.None);
 
@@ -73,6 +71,28 @@ public sealed class NightSummaryTelemetryAddonTests
         health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("Night Summary");
 
         await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task StartAsync_WhenOnlyProfileStorageLogPathKeyIsConfigured_ReportsDegraded()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(
+            sink,
+            shutdown.Token,
+            logPath: temp.Path,
+            settingKey: "Addon.night-summary.LogPath");
+
+        await addon.StartAsync(context, CancellationToken.None);
+
+        var health = sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Health &&
+            Equals(record.Attributes["addon.id"], "night-summary") &&
+            Equals(record.Attributes["status"], "degraded")).Subject;
+        health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("log path");
     }
 
     [Fact]
@@ -94,7 +114,7 @@ public sealed class NightSummaryTelemetryAddonTests
         record.Severity.Should().Be(TelemetrySeverity.Information);
         record.Body.Should().Be("NightSummary: Session started. SessionId=abc-123");
         record.Attributes["source.file"].Should().Be(temp.Path);
-        record.Attributes["event.kind"].Should().Be("SessionStarted");
+        record.Attributes["event.kind"].Should().Be("session_started");
         record.Attributes["session.id"].Should().Be("abc-123");
 
         await addon.StopAsync(CancellationToken.None);
