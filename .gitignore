@@ -3,5 +3,6 @@ obj/
 .vs/
 .vscode/
 TestResults/
+.worktrees/
 *.user
 *.suo
