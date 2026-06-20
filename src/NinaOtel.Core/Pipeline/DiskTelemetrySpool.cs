@@ -1,0 +1,337 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Text.Json;
+using NinaOtel.Abstractions.Telemetry;
+
+namespace NinaOtel.Core.Pipeline;
+
+internal sealed class DiskTelemetrySpool
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.General);
+
+    private readonly string spoolPath;
+
+    public DiskTelemetrySpool(string spoolPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(spoolPath);
+        this.spoolPath = ExpandLocalAppData(spoolPath);
+    }
+
+    public async Task AppendBatchAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(records);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        Directory.CreateDirectory(spoolPath);
+
+        var baseName = CreateSpoolFileBaseName();
+        var temporaryPath = Path.Combine(spoolPath, baseName + ".tmp");
+        var readyPath = Path.Combine(spoolPath, baseName + ".ready");
+        var dto = BatchDto.FromRecords(records);
+
+        try
+        {
+            await using (var stream = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 16 * 1024,
+                useAsync: true))
+            {
+                await JsonSerializer.SerializeAsync(stream, dto, JsonOptions, cancellationToken).ConfigureAwait(false);
+            }
+
+            File.Move(temporaryPath, readyPath);
+        }
+        catch
+        {
+            TryDelete(temporaryPath);
+            throw;
+        }
+    }
+
+    public async Task<IReadOnlyList<Batch>> ReadBatchesAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!Directory.Exists(spoolPath))
+        {
+            return Array.Empty<Batch>();
+        }
+
+        var batches = new List<Batch>();
+        foreach (var path in Directory.EnumerateFiles(spoolPath, "*.ready").OrderBy(path => path, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                await using var stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 16 * 1024,
+                    useAsync: true);
+                var dto = await JsonSerializer.DeserializeAsync<BatchDto>(stream, JsonOptions, cancellationToken)
+                    .ConfigureAwait(false);
+                if (dto is null)
+                {
+                    throw new InvalidDataException($"Telemetry spool batch '{path}' is empty or invalid.");
+                }
+
+                batches.Add(new Batch(path, dto.ToRecords()));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new BatchReadException(path, ex);
+            }
+        }
+
+        return batches;
+    }
+
+    public void Quarantine(BatchReadException exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        if (!File.Exists(exception.Path))
+        {
+            return;
+        }
+
+        File.Move(exception.Path, CreateSidecarPath(exception.Path, "invalid"));
+    }
+
+    private static string ExpandLocalAppData(string path)
+    {
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return path.Replace("%LOCALAPPDATA%", localAppData, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CreateSpoolFileBaseName() =>
+        DateTime.UtcNow.Ticks.ToString("D19", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N");
+
+    private static string CreateSidecarPath(string path, string extension)
+    {
+        var directory = Path.GetDirectoryName(path) ?? string.Empty;
+        var fileName = Path.GetFileName(path);
+        return Path.Combine(directory, fileName + "-" + Guid.NewGuid().ToString("N") + "." + extension);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    internal sealed class Batch
+    {
+        private readonly Action<string, string> moveFile;
+        private readonly Action<string> deleteFile;
+        private readonly string path;
+
+        public Batch(string path, IReadOnlyList<TelemetryRecord> records)
+            : this(path, records, File.Move, File.Delete)
+        {
+        }
+
+        internal Batch(
+            string path,
+            IReadOnlyList<TelemetryRecord> records,
+            Action<string, string> moveFile,
+            Action<string> deleteFile)
+        {
+            this.path = path;
+            this.moveFile = moveFile;
+            this.deleteFile = deleteFile;
+            Records = records;
+        }
+
+        public IReadOnlyList<TelemetryRecord> Records { get; }
+
+        public void Complete()
+        {
+            var sentPath = CreateSidecarPath(path, "sent");
+            moveFile(path, sentPath);
+            try
+            {
+                deleteFile(sentPath);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    internal sealed class BatchReadException : IOException
+    {
+        public BatchReadException(string path, Exception innerException)
+            : base($"Telemetry spool batch '{path}' could not be read.", innerException)
+        {
+            Path = path;
+        }
+
+        public string Path { get; }
+    }
+
+    private sealed class BatchDto
+    {
+        public List<RecordDto> Records { get; init; } = [];
+
+        public static BatchDto FromRecords(IReadOnlyList<TelemetryRecord> records) =>
+            new()
+            {
+                Records = records.Select(RecordDto.FromRecord).ToList(),
+            };
+
+        public IReadOnlyList<TelemetryRecord> ToRecords() =>
+            Records.Select(record => record.ToRecord()).ToArray();
+    }
+
+    private sealed class RecordDto
+    {
+        public TelemetrySignal Signal { get; init; }
+        public DateTimeOffset Timestamp { get; init; }
+        public string Source { get; init; } = string.Empty;
+        public string Name { get; init; } = string.Empty;
+        public TelemetryPriority Priority { get; init; }
+        public List<AttributeDto> Attributes { get; init; } = [];
+        public double? NumericValue { get; init; }
+        public string? Body { get; init; }
+        public TelemetrySeverity? Severity { get; init; }
+        public SpanEventKind? SpanKind { get; init; }
+        public string? SpanId { get; init; }
+        public string? ParentSpanId { get; init; }
+        public string? TraceId { get; init; }
+
+        public static RecordDto FromRecord(TelemetryRecord record) =>
+            new()
+            {
+                Signal = record.Signal,
+                Timestamp = record.Timestamp,
+                Source = record.Source,
+                Name = record.Name,
+                Priority = record.Priority,
+                Attributes = record.Attributes.Select(AttributeDto.FromAttribute).ToList(),
+                NumericValue = record.NumericValue,
+                Body = record.Body,
+                Severity = record.Severity,
+                SpanKind = record.SpanKind,
+                SpanId = record.SpanId,
+                ParentSpanId = record.ParentSpanId,
+                TraceId = record.TraceId,
+            };
+
+        public TelemetryRecord ToRecord() =>
+            new(
+                Signal,
+                Timestamp,
+                Source,
+                Name,
+                Priority,
+                new ReadOnlyDictionary<string, object?>(
+                    Attributes.ToDictionary(attribute => attribute.Key, attribute => attribute.ToValue())),
+                NumericValue,
+                Body,
+                Severity,
+                SpanKind,
+                SpanId,
+                ParentSpanId)
+            {
+                TraceId = TraceId,
+            };
+    }
+
+    private sealed class AttributeDto
+    {
+        private const string NullType = "null";
+        private const string StringType = "string";
+        private const string BooleanType = "bool";
+        private const string ByteType = "byte";
+        private const string SByteType = "sbyte";
+        private const string Int16Type = "short";
+        private const string UInt16Type = "ushort";
+        private const string Int32Type = "int";
+        private const string UInt32Type = "uint";
+        private const string Int64Type = "long";
+        private const string UInt64Type = "ulong";
+        private const string DoubleType = "double";
+        private const string SingleType = "float";
+        private const string DecimalType = "decimal";
+
+        public string Key { get; init; } = string.Empty;
+        public string Type { get; init; } = NullType;
+        public string? StringValue { get; init; }
+        public bool? BooleanValue { get; init; }
+        public byte? ByteValue { get; init; }
+        public sbyte? SByteValue { get; init; }
+        public short? Int16Value { get; init; }
+        public ushort? UInt16Value { get; init; }
+        public int? Int32Value { get; init; }
+        public uint? UInt32Value { get; init; }
+        public long? Int64Value { get; init; }
+        public ulong? UInt64Value { get; init; }
+        public double? DoubleValue { get; init; }
+        public float? SingleValue { get; init; }
+        public decimal? DecimalValue { get; init; }
+
+        public static AttributeDto FromAttribute(KeyValuePair<string, object?> attribute)
+        {
+            return attribute.Value switch
+            {
+                null => new AttributeDto { Key = attribute.Key, Type = NullType },
+                string value => new AttributeDto { Key = attribute.Key, Type = StringType, StringValue = value },
+                bool value => new AttributeDto { Key = attribute.Key, Type = BooleanType, BooleanValue = value },
+                byte value => new AttributeDto { Key = attribute.Key, Type = ByteType, ByteValue = value },
+                sbyte value => new AttributeDto { Key = attribute.Key, Type = SByteType, SByteValue = value },
+                short value => new AttributeDto { Key = attribute.Key, Type = Int16Type, Int16Value = value },
+                ushort value => new AttributeDto { Key = attribute.Key, Type = UInt16Type, UInt16Value = value },
+                int value => new AttributeDto { Key = attribute.Key, Type = Int32Type, Int32Value = value },
+                uint value => new AttributeDto { Key = attribute.Key, Type = UInt32Type, UInt32Value = value },
+                long value => new AttributeDto { Key = attribute.Key, Type = Int64Type, Int64Value = value },
+                ulong value => new AttributeDto { Key = attribute.Key, Type = UInt64Type, UInt64Value = value },
+                double value => new AttributeDto { Key = attribute.Key, Type = DoubleType, DoubleValue = value },
+                float value => new AttributeDto { Key = attribute.Key, Type = SingleType, SingleValue = value },
+                decimal value => new AttributeDto { Key = attribute.Key, Type = DecimalType, DecimalValue = value },
+                _ => throw new NotSupportedException(
+                    $"Telemetry spool attribute '{attribute.Key}' has unsupported value type '{attribute.Value.GetType().FullName}'."),
+            };
+        }
+
+        public object? ToValue()
+        {
+            return Type switch
+            {
+                NullType => null,
+                StringType => StringValue,
+                BooleanType => BooleanValue,
+                ByteType => ByteValue,
+                SByteType => SByteValue,
+                Int16Type => Int16Value,
+                UInt16Type => UInt16Value,
+                Int32Type => Int32Value,
+                UInt32Type => UInt32Value,
+                Int64Type => Int64Value,
+                UInt64Type => UInt64Value,
+                DoubleType => DoubleValue,
+                SingleType => SingleValue,
+                DecimalType => DecimalValue,
+                _ => throw new NotSupportedException($"Telemetry spool attribute type '{Type}' is not supported."),
+            };
+        }
+    }
+}

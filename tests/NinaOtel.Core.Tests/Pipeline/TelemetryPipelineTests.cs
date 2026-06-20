@@ -111,6 +111,38 @@ public sealed class TelemetryPipelineTests
     }
 
     [Fact]
+    public async Task ExporterFailure_WithDurableExporter_DoesNotCountPersistedBatchAsDropped()
+    {
+        var spoolPath = Path.Combine(Path.GetTempPath(), "nina-otel-pipeline-spool-tests", Guid.NewGuid().ToString("N"));
+        var inner = new FailingOnceExporter();
+        var exporter = new DurableTelemetryExporter(inner, new DiskTelemetrySpool(spoolPath));
+        var pipeline = new TelemetryPipeline(exporter, capacity: 10);
+        var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Important);
+        var second = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "second", TelemetryPriority.Routine);
+
+        try
+        {
+            await pipeline.StartAsync(CancellationToken.None);
+            pipeline.TryPublish(first).Should().BeTrue();
+            await inner.WaitForAttemptAsync(TimeSpan.FromSeconds(2));
+
+            pipeline.TryPublish(second).Should().BeTrue();
+
+            await inner.WaitForCountAsync(2, TimeSpan.FromSeconds(2));
+            pipeline.DroppedRecords.Should().Be(0);
+            inner.Records.Select(record => record.Name).Should().Equal("first", "second");
+        }
+        finally
+        {
+            await pipeline.DisposeAsync();
+            if (Directory.Exists(spoolPath))
+            {
+                Directory.Delete(spoolPath, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task DisposeAsync_DrainsQueuedRecordsBeforeReturning()
     {
         var exporter = new BlockingFirstExportExporter();
