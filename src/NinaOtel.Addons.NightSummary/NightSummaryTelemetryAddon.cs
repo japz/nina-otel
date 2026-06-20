@@ -5,6 +5,31 @@ namespace NinaOtel.Addons.NightSummary;
 
 public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
 {
+    private const string LogPathSetting = "LogPath";
+    private const string ProfileLogPathSetting = "Addon.night-summary.LogPath";
+    private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
+    private readonly TimeSpan pollInterval;
+    private readonly TimeSpan stopTimeout;
+    private readonly object syncRoot = new();
+    private NightSummaryLogTailer? tailer;
+
+    public NightSummaryTelemetryAddon()
+        : this(DefaultPollInterval, DefaultStopTimeout)
+    {
+    }
+
+    internal NightSummaryTelemetryAddon(TimeSpan pollInterval)
+        : this(pollInterval, DefaultStopTimeout)
+    {
+    }
+
+    internal NightSummaryTelemetryAddon(TimeSpan pollInterval, TimeSpan stopTimeout)
+    {
+        this.pollInterval = pollInterval > TimeSpan.Zero ? pollInterval : DefaultPollInterval;
+        this.stopTimeout = stopTimeout > TimeSpan.Zero ? stopTimeout : DefaultStopTimeout;
+    }
+
     public AddonMetadata Metadata { get; } = new(
         "night-summary",
         "Night Summary",
@@ -13,17 +38,176 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
 
     public AddonValidationResult Validate(AddonConfiguration configuration) => AddonValidationResult.Success;
 
-    public Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
+    public async Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
         cancellationToken.ThrowIfCancellationRequested();
-        context.ReportHealth(
-            Metadata.Id,
-            "waiting",
-            "Add-on shell loaded; source collection is not implemented yet.",
-            TelemetryPriority.Routine);
-        return Task.CompletedTask;
+
+        var logPath = GetConfiguredPath(context.Configuration);
+        if (string.IsNullOrWhiteSpace(logPath))
+        {
+            await StopCurrentTailerAsync(cancellationToken).ConfigureAwait(false);
+            ReportDegraded(context, "Configure the Night Summary/NINA log path to collect source telemetry.");
+            return;
+        }
+
+        await StopCurrentTailerAsync(cancellationToken).ConfigureAwait(false);
+
+        var nextTailer = new NightSummaryLogTailer(
+            logPath,
+            pollInterval,
+            (line, token) =>
+            {
+                PublishLine(context, line, logPath);
+                return Task.CompletedTask;
+            },
+            missingPath => ReportDegraded(context, $"Night Summary/NINA log file not found: {missingPath}"));
+
+        lock (syncRoot)
+        {
+            tailer = nextTailer;
+        }
+
+        if (File.Exists(logPath))
+        {
+            context.ReportHealth(
+                Metadata.Id,
+                "running",
+                "Collecting Night Summary log telemetry.",
+                TelemetryPriority.Routine);
+        }
+        else
+        {
+            ReportDegraded(context, $"Night Summary/NINA log file not found: {logPath}");
+        }
+
+        _ = nextTailer.StartAsync(cancellationToken);
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken) =>
+        StopCurrentTailerAsync(cancellationToken);
+
+    private async Task StopCurrentTailerAsync(CancellationToken cancellationToken)
+    {
+        NightSummaryLogTailer? tailerToStop;
+        lock (syncRoot)
+        {
+            tailerToStop = tailer;
+            tailer = null;
+        }
+
+        if (tailerToStop is null)
+        {
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(stopTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+
+        try
+        {
+            await tailerToStop.StopAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private static string? GetConfiguredPath(AddonConfiguration configuration)
+    {
+        if (configuration.Settings.TryGetValue(LogPathSetting, out var path) &&
+            !string.IsNullOrWhiteSpace(path))
+        {
+            return path;
+        }
+
+        if (configuration.Settings.TryGetValue(ProfileLogPathSetting, out var profilePath) &&
+            !string.IsNullOrWhiteSpace(profilePath))
+        {
+            return profilePath;
+        }
+
+        return null;
+    }
+
+    private static void PublishLine(IAddonContext context, string line, string sourcePath)
+    {
+        if (!NightSummaryLogParser.TryParse(line, sourcePath, context.TimeProvider, out var logEvent) ||
+            logEvent is null)
+        {
+            return;
+        }
+
+        context.Sink.TryPublish(CreateTelemetryRecord(logEvent, context.Configuration.RawForwardingEnabled));
+    }
+
+    private static TelemetryRecord CreateTelemetryRecord(
+        NightSummaryLogEvent logEvent,
+        bool rawForwardingEnabled) =>
+        TelemetryRecord.Log(
+            logEvent.Timestamp,
+            logEvent.Source,
+            GetSeverity(logEvent),
+            logEvent.Message,
+            GetPriority(logEvent),
+            CreateAttributes(logEvent, rawForwardingEnabled)) with
+        {
+            Name = "night_summary.log_event",
+        };
+
+    private static TelemetrySeverity GetSeverity(NightSummaryLogEvent logEvent) =>
+        logEvent.Kind switch
+        {
+            NightSummaryLogEventKind.Warning => TelemetrySeverity.Warning,
+            NightSummaryLogEventKind.Error => TelemetrySeverity.Error,
+            NightSummaryLogEventKind.ReportFailed => TelemetrySeverity.Error,
+            NightSummaryLogEventKind.TargetSchedulerGradingFailed => TelemetrySeverity.Error,
+            _ => TelemetrySeverity.Information,
+        };
+
+    private static TelemetryPriority GetPriority(NightSummaryLogEvent logEvent) =>
+        logEvent.Kind switch
+        {
+            NightSummaryLogEventKind.Warning => TelemetryPriority.Important,
+            NightSummaryLogEventKind.Error => TelemetryPriority.Important,
+            NightSummaryLogEventKind.ReportFailed => TelemetryPriority.Important,
+            NightSummaryLogEventKind.TargetSchedulerGradingFailed => TelemetryPriority.Important,
+            _ => TelemetryPriority.Normal,
+        };
+
+    private static Dictionary<string, object?> CreateAttributes(
+        NightSummaryLogEvent logEvent,
+        bool rawForwardingEnabled)
+    {
+        var attributes = new Dictionary<string, object?>
+        {
+            ["addon.id"] = "night-summary",
+            ["source"] = logEvent.Source,
+            ["source.file"] = logEvent.SourcePath,
+            ["event.kind"] = logEvent.Kind.ToString(),
+            ["message"] = logEvent.Message,
+        };
+
+        if (!string.IsNullOrWhiteSpace(logEvent.SessionId))
+        {
+            attributes["session.id"] = logEvent.SessionId;
+        }
+
+        if (rawForwardingEnabled)
+        {
+            attributes["raw.line"] = logEvent.OriginalLine;
+        }
+
+        return attributes;
+    }
+
+    private void ReportDegraded(IAddonContext context, string message) =>
+        context.ReportHealth(
+            Metadata.Id,
+            "degraded",
+            message,
+            TelemetryPriority.Routine);
 }
