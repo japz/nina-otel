@@ -1,12 +1,41 @@
 using FluentAssertions;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Pipeline;
+using NinaOtel.Core.Telemetry;
 using Xunit;
 
 namespace NinaOtel.Core.Tests.Pipeline;
 
 public sealed class OtlpPointInTimeMetricSerializerTests
 {
+    [Fact]
+    public void Serialize_WritesNonEmptyPayloadForEveryCatalogDeferredPointInTimeMetric()
+    {
+        var deferredMetrics = NinaMetricCatalog.All
+            .Where(static metric => metric.ExportKind == NinaMetricExportKind.DeferredPointInTime)
+            .ToArray();
+
+        foreach (var metric in deferredMetrics)
+        {
+            var payload = OtlpPointInTimeMetricSerializer.Serialize([CreateMetricRecord(metric)]);
+
+            payload.Should().NotBeEmpty(metric.Name);
+        }
+    }
+
+    [Fact]
+    public void Serialize_ExcludesEveryCatalogLiveObservableGauge()
+    {
+        var liveGaugeRecords = NinaMetricCatalog.All
+            .Where(static metric => metric.ExportKind == NinaMetricExportKind.LiveObservableGauge)
+            .Select(static metric => CreateMetricRecord(metric))
+            .ToArray();
+
+        var payload = OtlpPointInTimeMetricSerializer.Serialize(liveGaugeRecords);
+
+        payload.Should().BeEmpty();
+    }
+
     [Fact]
     public void Serialize_PreservesDeferredMetricTimestampAsOtlpTimeUnixNano()
     {
@@ -56,6 +85,18 @@ public sealed class OtlpPointInTimeMetricSerializerTests
 
     private static ulong ToUnixNanoseconds(DateTimeOffset timestamp) =>
         (ulong)((timestamp.ToUniversalTime().Ticks - DateTimeOffset.UnixEpoch.Ticks) * 100);
+
+    private static TelemetryRecord CreateMetricRecord(NinaMetricDefinition metric) =>
+        TelemetryRecord.Metric(
+            DateTimeOffset.UnixEpoch,
+            $"nina.{metric.Category}",
+            metric.Name,
+            42.5,
+            TelemetryPriority.Normal,
+            metric.AttributeNames.ToDictionary(
+                static attributeName => attributeName,
+                static attributeName => (object?)$"{attributeName}-value",
+                StringComparer.Ordinal));
 
     private static class ProtobufFieldScanner
     {

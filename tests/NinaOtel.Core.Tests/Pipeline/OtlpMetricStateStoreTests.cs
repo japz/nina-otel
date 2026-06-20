@@ -2,12 +2,57 @@ using FluentAssertions;
 using System.Diagnostics.Metrics;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Pipeline;
+using NinaOtel.Core.Telemetry;
 using Xunit;
 
 namespace NinaOtel.Core.Tests.Pipeline;
 
 public sealed class OtlpMetricStateStoreTests
 {
+    [Fact]
+    public void Apply_AcceptsEveryCatalogLiveObservableGauge()
+    {
+        using var meter = new Meter("ninaotel.test");
+        var store = new OtlpMetricStateStore(meter);
+        var liveMetrics = NinaMetricCatalog.All
+            .Where(static metric => metric.ExportKind == NinaMetricExportKind.LiveObservableGauge)
+            .ToArray();
+        var records = liveMetrics
+            .Select(static (metric, index) => CreateMetricRecord(metric, index + 0.5))
+            .ToArray();
+
+        var accepted = store.Apply(records);
+
+        accepted.Should().Be(liveMetrics.Length);
+        store.InstrumentNames.Should().BeEquivalentTo(liveMetrics.Select(static metric => metric.Name));
+        foreach (var metric in liveMetrics)
+        {
+            store.CollectMeasurements(metric.Name).Should().ContainSingle();
+        }
+    }
+
+    [Fact]
+    public void Apply_TreatsEveryCatalogDeferredPointInTimeMetricAsOneShot()
+    {
+        using var meter = new Meter("ninaotel.test");
+        var store = new OtlpMetricStateStore(meter);
+        var deferredMetrics = NinaMetricCatalog.All
+            .Where(static metric => metric.ExportKind == NinaMetricExportKind.DeferredPointInTime)
+            .ToArray();
+        var records = deferredMetrics
+            .Select(static (metric, index) => CreateMetricRecord(metric, index + 0.5))
+            .ToArray();
+
+        var accepted = store.Apply(records);
+
+        accepted.Should().Be(deferredMetrics.Length);
+        foreach (var metric in deferredMetrics)
+        {
+            store.CollectMeasurements(metric.Name).Should().ContainSingle();
+            store.CollectMeasurements(metric.Name).Should().BeEmpty();
+        }
+    }
+
     [Fact]
     public void Apply_StoresMetricRecordsAsObservableGaugeMeasurements()
     {
@@ -202,4 +247,16 @@ public sealed class OtlpMetricStateStoreTests
         store.CollectMeasurements("switch_ro_sw1").Should().ContainSingle().Which.Value.Should().Be(0.0);
         store.CollectMeasurements("switch_ro_sw3").Should().ContainSingle().Which.Value.Should().Be(12.3);
     }
+
+    private static TelemetryRecord CreateMetricRecord(NinaMetricDefinition metric, double value) =>
+        TelemetryRecord.Metric(
+            DateTimeOffset.UnixEpoch,
+            $"nina.{metric.Category}",
+            metric.Name,
+            value,
+            TelemetryPriority.Normal,
+            metric.AttributeNames.ToDictionary(
+                static attributeName => attributeName,
+                static attributeName => (object?)$"{attributeName}-value",
+                StringComparer.Ordinal));
 }
