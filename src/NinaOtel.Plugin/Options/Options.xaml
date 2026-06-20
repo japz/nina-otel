@@ -34,6 +34,8 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="8" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Collector:" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -51,6 +53,17 @@
                     HorizontalAlignment="Left"
                     ItemsSource="{Binding NinaOtelOptionsViewModel.AvailableProtocols}"
                     SelectedItem="{Binding NinaOtelOptionsViewModel.CollectorProtocol, Mode=TwoWay}" />
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="Static headers:" FontWeight="SemiBold" VerticalAlignment="Top" />
+                <TextBox
+                    Grid.Row="4"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    MinHeight="56"
+                    AcceptsReturn="True"
+                    TextWrapping="NoWrap"
+                    VerticalScrollBarVisibility="Auto"
+                    Text="{Binding NinaOtelOptionsViewModel.StaticHeaders, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
             </Grid>
             <CheckBox
                 Content="Disk spool on collector failure"

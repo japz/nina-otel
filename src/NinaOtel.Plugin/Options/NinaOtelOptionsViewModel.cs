@@ -14,6 +14,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string SpoolPathKey = nameof(SpoolPath);
     private const string MaxSpoolSizeGbKey = nameof(MaxSpoolSizeGb);
     private const string MaxSpoolAgeDaysKey = nameof(MaxSpoolAgeDays);
+    private const string StaticHeadersKey = nameof(StaticHeaders);
     private const decimal BytesPerGb = 1024m * 1024m * 1024m;
     private const decimal TicksPerDay = TimeSpan.TicksPerDay;
     private const decimal MaxSpoolSizeGbValue = long.MaxValue / BytesPerGb;
@@ -32,6 +33,8 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private long appliedMaxSpoolBytes;
     private string maxSpoolAgeDays = string.Empty;
     private TimeSpan appliedMaxSpoolAge;
+    private string staticHeaders = string.Empty;
+    private IReadOnlyDictionary<string, string> appliedStaticHeaders = new Dictionary<string, string>();
     private string status = "NinaOtel foundation loaded";
     private CollectorHealthState collectorHealthState = CollectorHealthState.Unknown;
     private CollectorHealthSnapshot? collectorHealthSnapshot;
@@ -188,6 +191,28 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
     }
 
+    public string StaticHeaders
+    {
+        get => staticHeaders;
+        set
+        {
+            if (!TryParseHeaders(value, out var headers, out var failure))
+            {
+                SetField(ref staticHeaders, value, saveOptions: false);
+                Status = failure;
+                return;
+            }
+
+            if (SetField(ref staticHeaders, value, saveOptions: false))
+            {
+                appliedStaticHeaders = headers;
+                settingsStore.SetString(StaticHeadersKey, value);
+                RaisePropertyChanged(nameof(Options));
+                Status = "Settings saved";
+            }
+        }
+    }
+
     public string Status
     {
         get => status;
@@ -243,6 +268,10 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         appliedMaxSpoolAge = TryConvertDaysToAge(maxSpoolAgeDays, out var age, out _)
             ? age
             : defaults.Buffer.MaxSpoolAge;
+        staticHeaders = settingsStore.GetString(StaticHeadersKey, string.Empty);
+        appliedStaticHeaders = TryParseHeaders(staticHeaders, out var parsedHeaders, out _)
+            ? parsedHeaders
+            : defaults.Otlp.Headers;
 
         RaisePropertyChanged(nameof(CollectorEndpoint));
         RaisePropertyChanged(nameof(CollectorProtocol));
@@ -250,6 +279,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(SpoolPath));
         RaisePropertyChanged(nameof(MaxSpoolSizeGb));
         RaisePropertyChanged(nameof(MaxSpoolAgeDays));
+        RaisePropertyChanged(nameof(StaticHeaders));
         RaisePropertyChanged(nameof(Options));
     }
 
@@ -281,6 +311,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
             {
                 Endpoint = new Uri(appliedCollectorEndpoint),
                 Protocol = collectorProtocol,
+                Headers = appliedStaticHeaders,
             },
             Buffer = defaults.Buffer with
             {
@@ -345,6 +376,70 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
 
         return null;
+    }
+
+    private static bool TryParseHeaders(
+        string? value,
+        out IReadOnlyDictionary<string, string> headers,
+        out string status)
+    {
+        var parsed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        headers = parsed;
+        status = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        using var reader = new StringReader(value);
+        for (var lineNumber = 1; ; lineNumber++)
+        {
+            var line = reader.ReadLine();
+            if (line is null)
+            {
+                break;
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            var colonIndex = line.IndexOf(':');
+            var equalsIndex = line.IndexOf('=');
+            var separatorIndex = (colonIndex, equalsIndex) switch
+            {
+                (>= 0, >= 0) => Math.Min(colonIndex, equalsIndex),
+                (>= 0, _) => colonIndex,
+                (_, >= 0) => equalsIndex,
+                _ => -1,
+            };
+
+            if (separatorIndex <= 0)
+            {
+                status = $"Static header line {lineNumber} must use 'Name: value'.";
+                return false;
+            }
+
+            var name = line[..separatorIndex].Trim();
+            var headerValue = line[(separatorIndex + 1)..].Trim();
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                status = $"Static header line {lineNumber} must include a header name.";
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(headerValue))
+            {
+                status = $"Static header line {lineNumber} must include a header value.";
+                return false;
+            }
+
+            parsed[name] = headerValue;
+        }
+
+        return true;
     }
 
     private static bool TryParsePositiveDecimal(string? value, out decimal parsed)

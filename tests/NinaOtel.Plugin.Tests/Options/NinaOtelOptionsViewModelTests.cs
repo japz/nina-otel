@@ -27,6 +27,8 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Buffer.SpoolPath.Should().Be("%LOCALAPPDATA%\\NINA\\NinaOtel\\spool");
         viewModel.Options.Buffer.MaxSpoolBytes.Should().Be(1L * 1024 * 1024 * 1024);
         viewModel.Options.Buffer.MaxSpoolAge.Should().Be(TimeSpan.FromDays(7));
+        viewModel.StaticHeaders.Should().BeEmpty();
+        viewModel.Options.Otlp.Headers.Should().BeEmpty();
         viewModel.CollectorHealthState.Should().Be(CollectorHealthState.Unknown);
         viewModel.CollectorHealthBrush.Should().Be("#808080");
         viewModel.CollectorHealthSummary.Should().Be("Collector not checked yet");
@@ -42,6 +44,7 @@ public sealed class NinaOtelOptionsViewModelTests
         settings.SetString("SpoolPath", "D:\\NinaOtel\\spool");
         settings.SetString("MaxSpoolSizeGb", "2.5");
         settings.SetString("MaxSpoolAgeDays", "14");
+        settings.SetString("StaticHeaders", "Authorization: Bearer abc\r\nx-scope = nina");
 
         var viewModel = new NinaOtelOptionsViewModel(settings);
 
@@ -57,6 +60,9 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Buffer.SpoolPath.Should().Be("D:\\NinaOtel\\spool");
         viewModel.Options.Buffer.MaxSpoolBytes.Should().Be(2684354560);
         viewModel.Options.Buffer.MaxSpoolAge.Should().Be(TimeSpan.FromDays(14));
+        viewModel.StaticHeaders.Should().Be("Authorization: Bearer abc\r\nx-scope = nina");
+        viewModel.Options.Otlp.Headers.Should().Contain("Authorization", "Bearer abc");
+        viewModel.Options.Otlp.Headers.Should().Contain("x-scope", "nina");
     }
 
     [Fact]
@@ -183,6 +189,41 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void StaticHeaders_SaveValidValuesAndUseLastDuplicateCaseInsensitiveHeader()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.StaticHeaders =
+            "Authorization: Bearer first\r\nauthorization = Bearer second\r\nx-scope: nina\r\nx-url = http://collector:4318";
+
+        settings.GetString("StaticHeaders", string.Empty).Should().Be(
+            "Authorization: Bearer first\r\nauthorization = Bearer second\r\nx-scope: nina\r\nx-url = http://collector:4318");
+        viewModel.Options.Otlp.Headers.Should().HaveCount(3);
+        viewModel.Options.Otlp.Headers.Should().Contain("Authorization", "Bearer second");
+        viewModel.Options.Otlp.Headers.Should().Contain("x-scope", "nina");
+        viewModel.Options.Otlp.Headers.Should().Contain("x-url", "http://collector:4318");
+        viewModel.Status.Should().Be("Settings saved");
+    }
+
+    [Fact]
+    public void StaticHeaders_RejectsMalformedLineWithoutReplacingAppliedOptionsOrSavingSecret()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        viewModel.StaticHeaders = "Authorization: Bearer initial";
+
+        viewModel.StaticHeaders = "Authorization: Bearer edited\r\ninvalid";
+
+        settings.GetString("StaticHeaders", string.Empty).Should().Be("Authorization: Bearer initial");
+        viewModel.StaticHeaders.Should().Be("Authorization: Bearer edited\r\ninvalid");
+        viewModel.Options.Otlp.Headers.Should().Contain("Authorization", "Bearer initial");
+        viewModel.Status.Should().Be("Static header line 2 must use 'Name: value'.");
+        viewModel.Status.Should().NotContain("Bearer edited");
+        viewModel.Status.Should().NotContain("Bearer initial");
+    }
+
+    [Fact]
     public void Reload_LoadsSettingsForCurrentProfile()
     {
         var settings = new InMemoryPluginSettingsStore();
@@ -193,6 +234,7 @@ public sealed class NinaOtelOptionsViewModelTests
         settings.SetString("SpoolPath", "E:\\ProfileTwo\\spool");
         settings.SetString("MaxSpoolSizeGb", "4");
         settings.SetString("MaxSpoolAgeDays", "12");
+        settings.SetString("StaticHeaders", "Authorization: Bearer profile-two");
 
         viewModel.Reload();
 
@@ -205,6 +247,8 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Buffer.SpoolPath.Should().Be("E:\\ProfileTwo\\spool");
         viewModel.Options.Buffer.MaxSpoolBytes.Should().Be(4L * 1024 * 1024 * 1024);
         viewModel.Options.Buffer.MaxSpoolAge.Should().Be(TimeSpan.FromDays(12));
+        viewModel.StaticHeaders.Should().Be("Authorization: Bearer profile-two");
+        viewModel.Options.Otlp.Headers.Should().Contain("Authorization", "Bearer profile-two");
     }
 
     [Fact]

@@ -26,10 +26,11 @@ public sealed class OptionsXamlTests
     }
 
     [Theory]
+    [InlineData("StaticHeaders")]
     [InlineData("SpoolPath")]
     [InlineData("MaxSpoolSizeGb")]
     [InlineData("MaxSpoolAgeDays")]
-    public void OptionsTemplate_SpoolTextBoxesUseTwoWayLostFocusBindings(string propertyName)
+    public void OptionsTemplate_TextBoxesUseTwoWayLostFocusBindings(string propertyName)
     {
         var document = XDocument.Load(FindOptionsXamlPath());
 
