@@ -37,7 +37,7 @@ public sealed class Phd2LogParserTests
     [InlineData("2026-06-18 22:01:35.000 GUIDINGSTOPPED", Phd2LogEventKind.GuidingStopped)]
     [InlineData("2026-06-18 22:01:40.000 settlebegin", Phd2LogEventKind.SettleStarted)]
     [InlineData("2026-06-18 22:01:45.000 SETTLEDONE", Phd2LogEventKind.SettleCompleted)]
-    public void TryParseDebugLine_WhenLineContainsKnownDebugEvent_ReturnsExpectedKind(
+    internal void TryParseDebugLine_WhenLineContainsKnownDebugEvent_ReturnsExpectedKind(
         string line,
         Phd2LogEventKind expectedKind)
     {
@@ -63,7 +63,7 @@ public sealed class Phd2LogParserTests
     [InlineData("22:00:20.000 00.003 1234 evsrv: SettleBegin", Phd2LogEventKind.SettleStarted, 20, 0)]
     [InlineData("22:00:25.000 00.003 1234 evsrv: SettleDone", Phd2LogEventKind.SettleCompleted, 25, 0)]
     [InlineData("22:00:30.000 00.003 1234 Settling complete", Phd2LogEventKind.SettleCompleted, 30, 0)]
-    public void TryParseDebugLine_WhenLineUsesPhd2TimeOfDayPrefix_CombinesTimeWithCurrentUtcDate(
+    internal void TryParseDebugLine_WhenLineUsesPhd2TimeOfDayPrefix_CombinesTimeWithCurrentUtcDate(
         string line,
         Phd2LogEventKind expectedKind,
         int expectedSecond,
@@ -152,7 +152,7 @@ public sealed class Phd2LogParserTests
     [Theory]
     [InlineData("Guiding Begins at 2017-03-10 20:22:52", Phd2LogEventKind.GuidingStarted, "2017-03-10T20:22:52Z")]
     [InlineData("Guiding Ends at 2017-03-10 21:22:52", Phd2LogEventKind.GuidingStopped, "2017-03-10T21:22:52Z")]
-    public void TryParseDebugLine_WhenGuideLogLineContainsTimestamp_UsesGuideLogTimestamp(
+    internal void TryParseDebugLine_WhenGuideLogLineContainsTimestamp_UsesGuideLogTimestamp(
         string line,
         Phd2LogEventKind expectedKind,
         string expectedTimestamp)
