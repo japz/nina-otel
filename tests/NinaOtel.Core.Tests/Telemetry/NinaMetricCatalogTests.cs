@@ -7,6 +7,84 @@ namespace NinaOtel.Core.Tests.Telemetry;
 public sealed class NinaMetricCatalogTests
 {
     [Fact]
+    public void All_IncludesEveryInitialInfluxExporterMeasurementName()
+    {
+        string[] expectedMeasurementNames =
+        [
+            "astro_moon_altitude",
+            "astro_sun_altitude",
+            "camera_battery_level",
+            "camera_cooler_power",
+            "camera_sensor_temperature",
+            "focuser_position",
+            "focuser_temperature",
+            "fwheel_filter",
+            "guider_dec_distance",
+            "guider_dec_duration",
+            "guider_ra_distance",
+            "guider_ra_duration",
+            "guider_rms_arcsec",
+            "guider_rms_dec_arcsec",
+            "guider_rms_dec_pixel",
+            "guider_rms_peak_arcsec",
+            "guider_rms_peak_dec_arcsec",
+            "guider_rms_peak_dec_pixel",
+            "guider_rms_peak_pixel",
+            "guider_rms_peak_ra_arcsec",
+            "guider_rms_peak_ra_pixel",
+            "guider_rms_pixel",
+            "guider_rms_ra_arcsec",
+            "guider_rms_ra_pixel",
+            "image_eccentricity",
+            "image_fwhm",
+            "image_hfr",
+            "image_hfr_std_deviation",
+            "image_mad",
+            "image_max_adu",
+            "image_max_adu_count",
+            "image_mean",
+            "image_median",
+            "image_min_adu",
+            "image_min_adu_count",
+            "image_rms_avg_arcsec",
+            "image_rms_avg_dec_arcsec",
+            "image_rms_avg_ra_arcsec",
+            "image_rms_peak_arcsec",
+            "image_rms_peak_dec_arcsec",
+            "image_rms_peak_ra_arcsec",
+            "image_star_count",
+            "image_std_deviation",
+            "mount_altitude",
+            "mount_azimuth",
+            "qhy_sensor_air_pressure",
+            "qhy_sensor_humidity",
+            "rotator_angle",
+            "rotator_mechanical_angle",
+            "wx_cloud_cover",
+            "wx_dewpoint",
+            "wx_humidity",
+            "wx_pressure",
+            "wx_rain_rate",
+            "wx_sky_brightness",
+            "wx_sky_quality",
+            "wx_sky_temperature",
+            "wx_star_fwhm",
+            "wx_temperature",
+            "wx_wind_direction",
+            "wx_wind_gust",
+            "wx_wind_speed",
+        ];
+        var catalogNames = NinaMetricCatalog.All.Select(static metric => metric.Name).ToHashSet(StringComparer.Ordinal);
+
+        var missingMeasurementNames = expectedMeasurementNames
+            .Except(catalogNames, StringComparer.Ordinal)
+            .ToArray();
+
+        missingMeasurementNames.Should().BeEmpty(
+            "NinaOtel's metric catalog should preserve every initial nina-influxdb-exporter measurement name");
+    }
+
+    [Fact]
     public void All_IncludesInitialInfluxExporterEquipmentMetrics()
     {
         var names = NinaMetricCatalog.All.Select(static metric => metric.Name).ToHashSet(StringComparer.Ordinal);
