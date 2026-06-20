@@ -223,7 +223,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
 
         if (HasTlsConfiguration(options))
         {
-            exporterOptions.HttpClientFactory = () => OtlpHttpClientFactory.Create(options);
+            exporterOptions.HttpClientFactory = () => OtlpHttpClientFactory.CreateForSdkExporter(options);
         }
 
         return exporterOptions;

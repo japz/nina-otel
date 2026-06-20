@@ -1,6 +1,7 @@
 using NinaOtel.Core.Options;
 using System.Net.Http;
 using System.Net.Security;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography.X509Certificates;
 
 namespace NinaOtel.Core.Pipeline;
@@ -17,6 +18,20 @@ internal static class OtlpHttpClientFactory
             Timeout = NormalizeTimeout(options.Timeout),
         };
         return client;
+    }
+
+    public static HttpClient CreateForSdkExporter(OtlpOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        try
+        {
+            return Create(options);
+        }
+        catch (Exception ex)
+        {
+            return CreateFailingClient(options, ex);
+        }
     }
 
     internal static HttpClientHandler CreateHandler(OtlpOptions options)
@@ -114,6 +129,39 @@ internal static class OtlpHttpClientFactory
 
     private static TimeSpan NormalizeTimeout(TimeSpan timeout) =>
         timeout <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : timeout;
+
+    private static HttpClient CreateFailingClient(OtlpOptions options, Exception exception) =>
+        new(new FailingHttpMessageHandler(exception), disposeHandler: true)
+        {
+            Timeout = NormalizeTimeout(options.Timeout),
+        };
+
+    private sealed class FailingHttpMessageHandler(Exception exception) : HttpMessageHandler
+    {
+        private readonly ExceptionDispatchInfo failure = ExceptionDispatchInfo.Capture(exception);
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled<HttpResponseMessage>(cancellationToken);
+            }
+
+            try
+            {
+                failure.Throw();
+            }
+            catch (Exception ex)
+            {
+                return Task.FromException<HttpResponseMessage>(ex);
+            }
+
+            return Task.FromException<HttpResponseMessage>(
+                new InvalidOperationException("Unreachable failing OTLP HTTP client state."));
+        }
+    }
 
     private sealed class CertificateDisposingHttpClientHandler : HttpClientHandler
     {

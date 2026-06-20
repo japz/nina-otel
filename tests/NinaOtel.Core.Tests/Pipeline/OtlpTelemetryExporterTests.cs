@@ -29,6 +29,25 @@ public sealed class OtlpTelemetryExporterTests
     }
 
     [Fact]
+    public async Task CreateExporterOptions_WhenTlsClientFactoryCannotCreateClient_ReturnsFailingClient()
+    {
+        var options = new OtlpOptions
+        {
+            Protocol = OtlpProtocol.HttpProtobuf,
+            Auth = new OtlpAuthOptions
+            {
+                CaCertificatePemPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".pem"),
+            },
+        };
+        var exporterOptions = OtlpTelemetryExporter.CreateExporterOptions(options, "v1/logs");
+
+        using var client = exporterOptions.HttpClientFactory!();
+        var send = () => client.GetAsync(new Uri("http://collector.local/"), CancellationToken.None);
+
+        await send.Should().ThrowAsync<FileNotFoundException>();
+    }
+
+    [Fact]
     public void CreateExporterOptions_WhenTlsPathsAreConfiguredWithGrpc_ThrowsNotSupportedException()
     {
         var options = new OtlpOptions
