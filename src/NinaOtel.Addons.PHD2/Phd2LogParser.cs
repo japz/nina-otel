@@ -199,12 +199,7 @@ internal static class Phd2LogParser
     {
         var trimmed = line.TrimStart();
 
-        if (trimmed.Length > FullTimestampPrefixLength &&
-            TryParseLocalTimestamp(
-                trimmed[..FullTimestampPrefixLength],
-                TimestampFormats,
-                TimeZoneInfo.Utc,
-                out _))
+        if (HasFullTimestampPrefixShape(trimmed))
         {
             return trimmed[FullTimestampPrefixLength..].TrimStart();
         }
@@ -228,6 +223,42 @@ internal static class Phd2LogParser
 
     private static bool StartsWith(string line, string value) =>
         line.StartsWith(value, StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasFullTimestampPrefixShape(string line)
+    {
+        if (line.Length <= FullTimestampPrefixLength ||
+            !char.IsWhiteSpace(line[FullTimestampPrefixLength]))
+        {
+            return false;
+        }
+
+        return IsDigitRange(line, start: 0, length: 4) &&
+            line[4] == '-' &&
+            IsDigitRange(line, start: 5, length: 2) &&
+            line[7] == '-' &&
+            IsDigitRange(line, start: 8, length: 2) &&
+            (line[10] == ' ' || line[10] == 'T') &&
+            IsDigitRange(line, start: 11, length: 2) &&
+            line[13] == ':' &&
+            IsDigitRange(line, start: 14, length: 2) &&
+            line[16] == ':' &&
+            IsDigitRange(line, start: 17, length: 2) &&
+            line[19] == '.' &&
+            IsDigitRange(line, start: 20, length: 3);
+    }
+
+    private static bool IsDigitRange(string value, int start, int length)
+    {
+        for (var index = start; index < start + length; index++)
+        {
+            if (!char.IsAsciiDigit(value[index]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static Regex CreateEventTokenPattern(string eventName) =>
         new($@"(?<![\w]){Regex.Escape(eventName)}(?![\w])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
