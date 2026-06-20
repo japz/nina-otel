@@ -105,6 +105,21 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void UpdateAddonHealth_DoesNotOverwriteWaitingShellStatusWithGenericStartedStatus()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var phd2 = viewModel.Addons.Single(addon => addon.Id == "phd2");
+        const string shellMessage = "Add-on shell loaded; source collection is not implemented yet.";
+
+        viewModel.UpdateAddonHealth("phd2", "waiting", shellMessage);
+        viewModel.UpdateAddonHealth("phd2", "started", "Add-on started.");
+
+        phd2.Status.Should().Be("waiting");
+        phd2.Message.Should().Be(shellMessage);
+    }
+
+    [Fact]
     public void Constructor_LoadsPersistedSettingsFromStore()
     {
         var settings = new InMemoryPluginSettingsStore();
