@@ -95,8 +95,9 @@ public sealed class OtlpHttpClientFactoryTests
 
         using var handler = OtlpHttpClientFactory.CreateHandler(options);
 
-        handler.ClientCertificates.Should().ContainSingle();
-        handler.ClientCertificates[0].HasPrivateKey.Should().BeTrue();
+        handler.ClientCertificates.Count.Should().Be(1);
+        var loadedCertificate = Assert.IsType<X509Certificate2>(handler.ClientCertificates[0]);
+        loadedCertificate.HasPrivateKey.Should().BeTrue();
         directory.Delete(recursive: true);
     }
 }

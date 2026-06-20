@@ -78,12 +78,11 @@ public sealed class OtlpTelemetryExporterTests
             });
         var records = CreateCompletedSpanRecords();
 
-        await exporter.ExportAsync(records, CancellationToken.None)
-            .Should()
-            .ThrowAsync<FileNotFoundException>();
-        await exporter.ExportAsync(records, CancellationToken.None)
-            .Should()
-            .ThrowAsync<FileNotFoundException>();
+        var firstExport = () => exporter.ExportAsync(records, CancellationToken.None);
+        var secondExport = () => exporter.ExportAsync(records, CancellationToken.None);
+
+        await firstExport.Should().ThrowAsync<FileNotFoundException>();
+        await secondExport.Should().ThrowAsync<FileNotFoundException>();
 
         attempts.Should().Be(1);
     }
