@@ -28,6 +28,23 @@ public sealed class OtlpTelemetryExporterTests
     }
 
     [Fact]
+    public void Constructor_WhenTlsCertificatePathDoesNotExist_DoesNotThrow()
+    {
+        var options = new NinaOtelOptions
+        {
+            Otlp = new OtlpOptions
+            {
+                Auth = new OtlpAuthOptions
+                {
+                    CaCertificatePemPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".pem"),
+                },
+            },
+        };
+
+        using var exporter = new OtlpTelemetryExporter(options);
+    }
+
+    [Fact]
     public void CreateSignalEndpoint_WhenHttpEndpointHasDifferentSignalPath_ReplacesSignalPath()
     {
         var options = new OtlpOptions

@@ -11,30 +11,29 @@ internal sealed class OtlpTraceExporter : IDisposable
 
     private readonly OtlpOptions options;
     private readonly OtlpTraceStateStore stateStore = new();
-    private readonly HttpClient httpClient;
+    private readonly object httpClientSyncRoot = new();
+    private readonly Func<HttpClient> httpClientFactory;
     private readonly bool ownsHttpClient;
+    private HttpClient? httpClient;
 
     public OtlpTraceExporter(OtlpOptions options)
-        : this(options, OtlpHttpClientFactory.Create(options), ownsHttpClient: true)
+        : this(options, () => OtlpHttpClientFactory.Create(options), ownsHttpClient: true)
     {
     }
 
     internal OtlpTraceExporter(OtlpOptions options, HttpMessageHandler handler)
-        : this(options, new HttpClient(handler), ownsHttpClient: true)
+        : this(options, () => new HttpClient(handler), ownsHttpClient: true)
     {
     }
 
     private OtlpTraceExporter(
         OtlpOptions options,
-        HttpClient httpClient,
+        Func<HttpClient> httpClientFactory,
         bool ownsHttpClient)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
-        this.httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+        this.httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
         this.ownsHttpClient = ownsHttpClient;
-        this.httpClient.Timeout = options.Timeout <= TimeSpan.Zero
-            ? TimeSpan.FromMilliseconds(1)
-            : options.Timeout;
     }
 
     public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
@@ -51,7 +50,7 @@ internal sealed class OtlpTraceExporter : IDisposable
         using var request = options.Protocol == OtlpProtocol.HttpProtobuf
             ? CreateHttpProtobufRequest(payload)
             : CreateGrpcRequest(payload);
-        using var response = await httpClient
+        using var response = await GetHttpClient()
             .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
 
@@ -73,8 +72,31 @@ internal sealed class OtlpTraceExporter : IDisposable
     {
         if (ownsHttpClient)
         {
-            httpClient.Dispose();
+            httpClient?.Dispose();
         }
+    }
+
+    private HttpClient GetHttpClient()
+    {
+        if (httpClient is not null)
+        {
+            return httpClient;
+        }
+
+        lock (httpClientSyncRoot)
+        {
+            httpClient ??= CreateConfiguredHttpClient();
+            return httpClient;
+        }
+    }
+
+    private HttpClient CreateConfiguredHttpClient()
+    {
+        var client = httpClientFactory();
+        client.Timeout = options.Timeout <= TimeSpan.Zero
+            ? TimeSpan.FromMilliseconds(1)
+            : options.Timeout;
+        return client;
     }
 
     private HttpRequestMessage CreateHttpProtobufRequest(byte[] payload)
