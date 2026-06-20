@@ -83,12 +83,14 @@ public sealed class OptionsXamlTests
             .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
         checkboxes.Single(element => element.Attribute("IsChecked")?.Value.Contains("RawForwardingEnabled", StringComparison.Ordinal) == true)
             .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
-        itemsControl.Descendants(PresentationNamespace + "TextBlock")
-            .Should()
-            .Contain(element => element.Attribute("Text")?.Value.Contains("Status", StringComparison.Ordinal) == true);
-        itemsControl.Descendants(PresentationNamespace + "TextBlock")
-            .Should()
-            .Contain(element => element.Attribute("Text")?.Value.Contains("Message", StringComparison.Ordinal) == true);
+        var textBindings = itemsControl
+            .Descendants(PresentationNamespace + "TextBlock")
+            .Select(element => element.Attribute("Text")?.Value)
+            .OfType<string>()
+            .ToArray();
+
+        textBindings.Should().Contain(binding => binding.Contains("Status", StringComparison.Ordinal));
+        textBindings.Should().Contain(binding => binding.Contains("Message", StringComparison.Ordinal));
     }
 
     [Theory]
