@@ -12,6 +12,22 @@ namespace NinaOtel.Core.Tests.Pipeline;
 public sealed class OtlpTelemetryExporterTests
 {
     [Fact]
+    public void CreateExporterOptions_WhenTlsPathsAreConfigured_UsesHttpClientFactory()
+    {
+        var options = new OtlpOptions
+        {
+            Auth = new OtlpAuthOptions
+            {
+                CaCertificatePemPath = "ca.pem",
+            },
+        };
+
+        var exporterOptions = OtlpTelemetryExporter.CreateExporterOptions(options, "v1/logs");
+
+        exporterOptions.HttpClientFactory.Should().NotBeNull();
+    }
+
+    [Fact]
     public void CreateSignalEndpoint_WhenHttpEndpointHasDifferentSignalPath_ReplacesSignalPath()
     {
         var options = new OtlpOptions

@@ -15,7 +15,7 @@ internal sealed class OtlpTraceExporter : IDisposable
     private readonly bool ownsHttpClient;
 
     public OtlpTraceExporter(OtlpOptions options)
-        : this(options, new HttpClient(), ownsHttpClient: true)
+        : this(options, OtlpHttpClientFactory.Create(options), ownsHttpClient: true)
     {
     }
 

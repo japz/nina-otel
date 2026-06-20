@@ -14,7 +14,7 @@ internal sealed class OtlpPointInTimeMetricExporter : IDisposable
     private readonly bool ownsHttpClient;
 
     public OtlpPointInTimeMetricExporter(OtlpOptions options)
-        : this(options, new HttpClient(), ownsHttpClient: true)
+        : this(options, OtlpHttpClientFactory.Create(options), ownsHttpClient: true)
     {
     }
 

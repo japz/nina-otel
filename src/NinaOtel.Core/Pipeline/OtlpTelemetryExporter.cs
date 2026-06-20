@@ -196,7 +196,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
         return "NinaOtel telemetry record";
     }
 
-    private static OtlpExporterOptions CreateExporterOptions(OtlpOptions options, string httpSignalPath)
+    internal static OtlpExporterOptions CreateExporterOptions(OtlpOptions options, string httpSignalPath)
     {
         var exporterOptions = new OtlpExporterOptions
         {
@@ -215,8 +215,18 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
                 static header => $"{header.Key}={header.Value}"));
         }
 
+        if (HasTlsConfiguration(options))
+        {
+            exporterOptions.HttpClientFactory = () => OtlpHttpClientFactory.Create(options);
+        }
+
         return exporterOptions;
     }
+
+    private static bool HasTlsConfiguration(OtlpOptions options) =>
+        !string.IsNullOrWhiteSpace(options.Auth.CaCertificatePemPath) ||
+        !string.IsNullOrWhiteSpace(options.Auth.ClientCertificatePemPath) ||
+        !string.IsNullOrWhiteSpace(options.Auth.ClientPrivateKeyPemPath);
 
     internal static Uri CreateSignalEndpoint(OtlpOptions options, string httpSignalPath)
     {
