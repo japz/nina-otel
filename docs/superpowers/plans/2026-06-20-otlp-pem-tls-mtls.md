@@ -41,6 +41,10 @@
 - No signal-specific certificate settings.
 - No automatic cert file browsing button.
 
+## Implementation Constraint
+
+OpenTelemetry .NET 1.16 only invokes `OtlpExporterOptions.HttpClientFactory` for `HttpProtobuf`. The SDK-backed log and live-metric exporters do not use that hook for gRPC, so NinaOtel cannot apply per-plugin PEM CA/client certificates to those SDK gRPC exporters without replacing that path with custom exporters or waiting for upstream support. This slice therefore applies PEM TLS/mTLS through HTTP/protobuf and the options UI switches/refuses gRPC while PEM paths are configured.
+
 ## Task 1: Core TLS HTTP Client Factory
 
 **Files:**
