@@ -39,6 +39,29 @@ public sealed class NinaOtelOptionsTests
     }
 
     [Fact]
+    public void AuthOptions_ToString_RedactsModeAndSecretPresence()
+    {
+        var options = new OtlpAuthOptions
+        {
+            Mode = OtlpAuthenticationMode.Basic,
+            BearerToken = "bearer-secret",
+            BasicUsername = "jasper",
+            BasicPasswordProtected = "basic-ciphertext",
+            ClientCertificatePfxPasswordProtected = "pfx-ciphertext",
+        };
+
+        var text = options.ToString();
+
+        text.Should().Contain("Mode = Basic");
+        text.Should().Contain("BearerTokenConfigured = True");
+        text.Should().Contain("BasicUsernameConfigured = True");
+        text.Should().Contain("BasicPasswordConfigured = True");
+        text.Should().NotContain("bearer-secret");
+        text.Should().NotContain("basic-ciphertext");
+        text.Should().NotContain("pfx-ciphertext");
+    }
+
+    [Fact]
     public void OtlpOptions_Headers_SnapshotsSourceDictionary()
     {
         var headers = new Dictionary<string, string>

@@ -8,6 +8,13 @@ public enum OtlpProtocol
     HttpProtobuf,
 }
 
+public enum OtlpAuthenticationMode
+{
+    None,
+    BearerToken,
+    Basic,
+}
+
 public sealed record NinaOtelOptions
 {
     private IReadOnlyDictionary<string, AddonOptions> _addons =
@@ -43,6 +50,7 @@ public sealed record OtlpOptions
 
 public sealed class OtlpAuthOptions
 {
+    public OtlpAuthenticationMode Mode { get; init; } = OtlpAuthenticationMode.None;
     public string? BearerToken { get; init; }
     public string? BearerTokenFile { get; init; }
     public string? BasicUsername { get; init; }
@@ -56,6 +64,7 @@ public sealed class OtlpAuthOptions
 
     public override string ToString() =>
         $"{nameof(OtlpAuthOptions)} {{ " +
+        $"{nameof(Mode)} = {Mode}, " +
         $"{FormatConfigured(nameof(BearerToken), BearerToken)}, " +
         $"{nameof(BearerTokenFile)} = {FormatPath(BearerTokenFile)}, " +
         $"{FormatConfigured(nameof(BasicUsername), BasicUsername)}, " +
