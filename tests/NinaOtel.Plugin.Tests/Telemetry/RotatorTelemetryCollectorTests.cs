@@ -258,7 +258,7 @@ public sealed class RotatorTelemetryCollectorTests
     }
 
     [Fact]
-    public async Task Moved_WhenRaised_PublishesRotatorMovedSpan()
+    public async Task Moved_WhenRaised_PublishesRotatorMovedSpanAndLog()
     {
         var mediator = new FakeRotatorMediator
         {
@@ -280,7 +280,9 @@ public sealed class RotatorTelemetryCollectorTests
 
         await mediator.RaiseMovedAsync(17.25f, 88.5f);
 
-        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+        sink.Records.Should().HaveCount(2);
+        sink.Records.Should().ContainSingle(record => record.Name == "nina.rotator_moved")
+            .Which.Should().Match<TelemetryRecord>(record =>
             record.Signal == TelemetrySignal.Span &&
             record.Source == "nina.rotator" &&
             record.Name == "nina.rotator_moved" &&
@@ -288,6 +290,19 @@ public sealed class RotatorTelemetryCollectorTests
             record.Priority == TelemetryPriority.Normal &&
             !string.IsNullOrWhiteSpace(record.SpanId) &&
             Equals(record.Attributes["rotator_name"], "Pegasus Falcon") &&
+            Equals(record.Attributes["rotator_moved_from"], 17.25f) &&
+            Equals(record.Attributes["rotator_moved_to"], 88.5f));
+        sink.Records.Should().ContainSingle(record => record.Name == "rotator_moved")
+            .Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Source == "nina.rotator" &&
+            record.Name == "rotator_moved" &&
+            record.Body == "Rotator moved to 88.50\u00B0" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["rotator_name"], "Pegasus Falcon") &&
+            Equals(record.Attributes["title"], "Rotator moved") &&
+            Equals(record.Attributes["text"], "Rotator moved to 88.50\u00B0") &&
             Equals(record.Attributes["rotator_moved_from"], 17.25f) &&
             Equals(record.Attributes["rotator_moved_to"], 88.5f));
     }
@@ -322,10 +337,14 @@ public sealed class RotatorTelemetryCollectorTests
             var spanId = sink.Records.Should()
                 .ContainSingle(record => record.Name == "nina.rotator_moved")
                 .Which.SpanId;
+            var body = sink.Records.Should()
+                .ContainSingle(record => record.Name == "rotator_moved")
+                .Which.Body;
             spanId.Should().Contain("17.25");
             spanId.Should().Contain("88.5");
             spanId.Should().NotContain("17,25");
             spanId.Should().NotContain("88,5");
+            body.Should().Be("Rotator moved to 88.50\u00B0");
         }
         finally
         {
@@ -360,6 +379,23 @@ public sealed class RotatorTelemetryCollectorTests
         var act = () => mediator.RaiseMovedAsync(1.25f, 2.5f);
 
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task Moved_WhenFirstPublishThrows_StillAttemptsCompanionRecord()
+    {
+        var mediator = new FakeRotatorMediator();
+        var sink = new ThrowingOnceTelemetrySink();
+        using var collector = new RotatorTelemetryCollector(
+            mediator,
+            sink,
+            TimeProvider.System);
+        collector.Start();
+
+        await mediator.RaiseMovedAsync(1.25f, 2.5f);
+
+        sink.AttemptedNames.Should().Equal("nina.rotator_moved", "rotator_moved");
+        sink.Records.Should().ContainSingle().Which.Name.Should().Be("rotator_moved");
     }
 
     [Fact]
@@ -1010,6 +1046,28 @@ public sealed class RotatorTelemetryCollectorTests
     {
         public bool TryPublish(TelemetryRecord record) =>
             throw new InvalidOperationException("Sink unavailable.");
+    }
+
+    private sealed class ThrowingOnceTelemetrySink : ITelemetrySink
+    {
+        private bool shouldThrow = true;
+
+        public List<string> AttemptedNames { get; } = [];
+
+        public List<TelemetryRecord> Records { get; } = [];
+
+        public bool TryPublish(TelemetryRecord record)
+        {
+            AttemptedNames.Add(record.Name);
+            if (shouldThrow)
+            {
+                shouldThrow = false;
+                throw new InvalidOperationException("Sink unavailable.");
+            }
+
+            Records.Add(record);
+            return true;
+        }
     }
 
     private sealed class FakeRotatorMediator : IRotatorMediator

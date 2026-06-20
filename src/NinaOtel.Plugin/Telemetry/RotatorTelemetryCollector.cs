@@ -255,10 +255,11 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
                 return Task.CompletedTask;
             }
 
-            var record = CreateRotatorMovedRecord(args);
-            if (record is not null)
+            var records = CreateRotatorMovedRecords(args);
+            if (records is not null)
             {
-                TryPublishSafely(record);
+                TryPublishSafely(records.Value.Span);
+                TryPublishSafely(records.Value.Log);
             }
         }
         catch
@@ -365,7 +366,7 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             }));
     }
 
-    private TelemetryRecord? CreateRotatorMovedRecord(RotatorEventArgs args)
+    private (TelemetryRecord Span, TelemetryRecord Log)? CreateRotatorMovedRecords(RotatorEventArgs args)
     {
         lock (syncRoot)
         {
@@ -380,8 +381,9 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
                 ResolveCurrentRotatorName(),
                 args.From,
                 args.To);
+            var text = CreateRotatorMovedText(args.To);
 
-            return TelemetryRecord.Span(
+            var span = TelemetryRecord.Span(
                 timestamp,
                 SourceName,
                 "nina.rotator_moved",
@@ -389,6 +391,17 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
                 CreateRotatorMovedSpanId(timestamp, sequence, attributes),
                 TelemetryPriority.Normal,
                 attributes);
+            var log = new TelemetryRecord(
+                TelemetrySignal.Log,
+                timestamp,
+                SourceName,
+                "rotator_moved",
+                TelemetryPriority.Normal,
+                CreateRotatorMovedLogAttributes(attributes, text),
+                Body: text,
+                Severity: TelemetrySeverity.Information);
+
+            return (span, log);
         }
     }
 
@@ -561,6 +574,21 @@ public sealed class RotatorTelemetryCollector : IRotatorConsumer, IDisposable
             ["rotator_moved_from"] = from,
             ["rotator_moved_to"] = to,
         };
+
+    private static Dictionary<string, object?> CreateRotatorMovedLogAttributes(
+        IReadOnlyDictionary<string, object?> movementAttributes,
+        string text) =>
+        new()
+        {
+            ["rotator_name"] = movementAttributes["rotator_name"],
+            ["title"] = "Rotator moved",
+            ["text"] = text,
+            ["rotator_moved_from"] = movementAttributes["rotator_moved_from"],
+            ["rotator_moved_to"] = movementAttributes["rotator_moved_to"],
+        };
+
+    private static string CreateRotatorMovedText(float to) =>
+        string.Format(CultureInfo.InvariantCulture, "Rotator moved to {0:F2}\u00B0", to);
 
     private static string CreateRotatorMovedSpanId(
         DateTimeOffset timestamp,
