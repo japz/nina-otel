@@ -7,6 +7,7 @@ using NINA.Plugin.Interfaces;
 using NINA.Profile.Interfaces;
 using NINA.WPF.Base.Interfaces.Mediator;
 using NinaOtel.Abstractions.Addons;
+using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Addons;
 using NinaOtel.Core.Options;
 using NinaOtel.Core.Pipeline;
@@ -24,6 +25,7 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly TimeProvider timeProvider = TimeProvider.System;
     private readonly ReloadableTelemetryExporter exporter;
     private readonly TelemetryPipeline pipeline;
+    private readonly ITelemetrySink telemetrySink;
     private readonly AddonHost addonHost;
     private readonly CoreLifecycleTelemetryProducer lifecycleTelemetry;
     private readonly CameraTelemetryCollector cameraTelemetry;
@@ -76,22 +78,23 @@ public sealed class NinaOtelPlugin : PluginBase
         var options = NinaOtelOptionsViewModel.Options;
         exporter = new ReloadableTelemetryExporter(CreateCollectorExporter(options));
         pipeline = new TelemetryPipeline(exporter, options.Buffer.MemoryQueueCapacity);
-        cameraTelemetry = new CameraTelemetryCollector(cameraMediator, pipeline, timeProvider);
-        focuserTelemetry = new FocuserTelemetryCollector(focuserMediator, pipeline, timeProvider);
-        rotatorTelemetry = new RotatorTelemetryCollector(rotatorMediator, pipeline, timeProvider);
-        filterWheelTelemetry = new FilterWheelTelemetryCollector(filterWheelMediator, pipeline, timeProvider);
-        mountTelemetry = new MountTelemetryCollector(telescopeMediator, pipeline, timeProvider);
-        weatherTelemetry = new WeatherTelemetryCollector(weatherDataMediator, pipeline, timeProvider);
-        astrometricTelemetry = new AstrometricTelemetryCollector(profileService, pipeline, timeProvider);
-        switchTelemetry = new SwitchTelemetryCollector(switchMediator, pipeline, timeProvider);
-        guiderTelemetry = new GuiderTelemetryCollector(guiderMediator, pipeline, timeProvider);
-        safetyMonitorTelemetry = new SafetyMonitorTelemetryCollector(safetyMonitorMediator, pipeline, timeProvider);
-        flatDeviceTelemetry = new FlatDeviceTelemetryCollector(flatDeviceMediator, pipeline, timeProvider);
-        domeTelemetry = new DomeTelemetryCollector(domeMediator, pipeline, timeProvider);
-        imageTelemetry = new ImageTelemetryCollector(imageSaveMediator, pipeline, timeProvider);
-        lifecycleTelemetry = new CoreLifecycleTelemetryProducer(pipeline, timeProvider, options);
+        telemetrySink = new ProfileHostTelemetrySink(pipeline, profileService);
+        cameraTelemetry = new CameraTelemetryCollector(cameraMediator, telemetrySink, timeProvider);
+        focuserTelemetry = new FocuserTelemetryCollector(focuserMediator, telemetrySink, timeProvider);
+        rotatorTelemetry = new RotatorTelemetryCollector(rotatorMediator, telemetrySink, timeProvider);
+        filterWheelTelemetry = new FilterWheelTelemetryCollector(filterWheelMediator, telemetrySink, timeProvider);
+        mountTelemetry = new MountTelemetryCollector(telescopeMediator, telemetrySink, timeProvider);
+        weatherTelemetry = new WeatherTelemetryCollector(weatherDataMediator, telemetrySink, timeProvider);
+        astrometricTelemetry = new AstrometricTelemetryCollector(profileService, telemetrySink, timeProvider);
+        switchTelemetry = new SwitchTelemetryCollector(switchMediator, telemetrySink, timeProvider);
+        guiderTelemetry = new GuiderTelemetryCollector(guiderMediator, telemetrySink, timeProvider);
+        safetyMonitorTelemetry = new SafetyMonitorTelemetryCollector(safetyMonitorMediator, telemetrySink, timeProvider);
+        flatDeviceTelemetry = new FlatDeviceTelemetryCollector(flatDeviceMediator, telemetrySink, timeProvider);
+        domeTelemetry = new DomeTelemetryCollector(domeMediator, telemetrySink, timeProvider);
+        imageTelemetry = new ImageTelemetryCollector(imageSaveMediator, telemetrySink, timeProvider);
+        lifecycleTelemetry = new CoreLifecycleTelemetryProducer(telemetrySink, timeProvider, options);
         addonHost = new AddonHost(
-            pipeline,
+            telemetrySink,
             timeProvider,
             TimeSpan.FromSeconds(1),
             TimeSpan.FromSeconds(1));
