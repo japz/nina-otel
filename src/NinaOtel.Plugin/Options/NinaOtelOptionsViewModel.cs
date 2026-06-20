@@ -2,6 +2,7 @@ using NinaOtel.Core.Health;
 using NinaOtel.Core.Options;
 using System.ComponentModel;
 using System.Globalization;
+using System.IO;
 using System.Runtime.CompilerServices;
 
 namespace NinaOtel.Plugin.Options;
