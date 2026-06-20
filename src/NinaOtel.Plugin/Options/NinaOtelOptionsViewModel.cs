@@ -569,7 +569,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
                 RaisePropertyChanged(nameof(Options));
             }
 
-            Status = changedProtocol ? PemTlsProtocolSavedStatus : "Settings saved";
+            Status = string.IsNullOrEmpty(normalized) ? "Settings saved" : PemTlsProtocolSavedStatus;
         }
     }
 
