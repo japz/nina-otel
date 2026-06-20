@@ -16,6 +16,7 @@ public sealed class OtlpTelemetryExporterTests
     {
         var options = new OtlpOptions
         {
+            Protocol = OtlpProtocol.HttpProtobuf,
             Auth = new OtlpAuthOptions
             {
                 CaCertificatePemPath = "ca.pem",
@@ -28,12 +29,32 @@ public sealed class OtlpTelemetryExporterTests
     }
 
     [Fact]
+    public void CreateExporterOptions_WhenTlsPathsAreConfiguredWithGrpc_ThrowsNotSupportedException()
+    {
+        var options = new OtlpOptions
+        {
+            Protocol = OtlpProtocol.Grpc,
+            Auth = new OtlpAuthOptions
+            {
+                CaCertificatePemPath = "ca.pem",
+            },
+        };
+
+        Action create = () => OtlpTelemetryExporter.CreateExporterOptions(options, "v1/logs");
+
+        create.Should()
+            .Throw<NotSupportedException>()
+            .WithMessage("*PEM TLS requires HTTP/protobuf*");
+    }
+
+    [Fact]
     public void Constructor_WhenTlsCertificatePathDoesNotExist_DoesNotThrow()
     {
         var options = new NinaOtelOptions
         {
             Otlp = new OtlpOptions
             {
+                Protocol = OtlpProtocol.HttpProtobuf,
                 Auth = new OtlpAuthOptions
                 {
                     CaCertificatePemPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".pem"),
@@ -42,6 +63,29 @@ public sealed class OtlpTelemetryExporterTests
         };
 
         using var exporter = new OtlpTelemetryExporter(options);
+    }
+
+    [Fact]
+    public async Task ExportAsync_WhenLazyHttpClientFactoryThrows_CachesCreationFailure()
+    {
+        var attempts = 0;
+        using var exporter = new OtlpTraceExporter(
+            new OtlpOptions { Protocol = OtlpProtocol.HttpProtobuf },
+            () =>
+            {
+                attempts++;
+                throw new FileNotFoundException("missing cert", "ca.pem");
+            });
+        var records = CreateCompletedSpanRecords();
+
+        await exporter.ExportAsync(records, CancellationToken.None)
+            .Should()
+            .ThrowAsync<FileNotFoundException>();
+        await exporter.ExportAsync(records, CancellationToken.None)
+            .Should()
+            .ThrowAsync<FileNotFoundException>();
+
+        attempts.Should().Be(1);
     }
 
     [Fact]
@@ -120,6 +164,28 @@ public sealed class OtlpTelemetryExporterTests
         Array.IndexOf(paths.ToArray(), "/v1/logs")
             .Should()
             .BeLessThan(Array.IndexOf(paths.ToArray(), "/v1/traces"));
+    }
+
+    private static TelemetryRecord[] CreateCompletedSpanRecords()
+    {
+        var started = DateTimeOffset.UnixEpoch.AddSeconds(10);
+        return
+        [
+            TelemetryRecord.Span(
+                started,
+                "nina.capture",
+                "nina.exposure",
+                SpanEventKind.Start,
+                "exp-1",
+                TelemetryPriority.Normal),
+            TelemetryRecord.Span(
+                started.AddSeconds(5),
+                "nina.capture",
+                "nina.exposure",
+                SpanEventKind.Stop,
+                "exp-1",
+                TelemetryPriority.Normal),
+        ];
     }
 
     private sealed class LoopbackOtlpHttpServer : IAsyncDisposable

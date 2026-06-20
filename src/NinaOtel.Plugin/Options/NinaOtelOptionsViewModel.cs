@@ -24,6 +24,10 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string CaCertificatePemPathKey = nameof(CaCertificatePemPath);
     private const string ClientCertificatePemPathKey = nameof(ClientCertificatePemPath);
     private const string ClientPrivateKeyPemPathKey = nameof(ClientPrivateKeyPemPath);
+    private const string PemTlsProtocolChangedStatus = "PEM TLS uses HTTP/protobuf; protocol changed.";
+    private const string PemTlsProtocolSavedStatus = "PEM TLS uses HTTP/protobuf; settings saved.";
+    private const string PemTlsGrpcRejectedStatus =
+        "PEM TLS requires HTTP/protobuf; clear certificate paths before using gRPC.";
     private const decimal BytesPerGb = 1024m * 1024m * 1024m;
     private const decimal TicksPerDay = TimeSpan.TicksPerDay;
     private const decimal MaxSpoolSizeGbValue = long.MaxValue / BytesPerGb;
@@ -139,6 +143,12 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         get => collectorProtocol;
         set
         {
+            if (value == OtlpProtocol.Grpc && HasPemTlsConfigured())
+            {
+                Status = PemTlsGrpcRejectedStatus;
+                return;
+            }
+
             if (SetField(ref collectorProtocol, value))
             {
                 settingsStore.SetString(CollectorProtocolKey, value.ToString());
@@ -385,6 +395,11 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         caCertificatePemPath = settingsStore.GetString(CaCertificatePemPathKey, string.Empty);
         clientCertificatePemPath = settingsStore.GetString(ClientCertificatePemPathKey, string.Empty);
         clientPrivateKeyPemPath = settingsStore.GetString(ClientPrivateKeyPemPathKey, string.Empty);
+        if (HasPemTlsConfigured() && EnsureHttpProtobufForPemTls())
+        {
+            warningStatus ??= PemTlsProtocolChangedStatus;
+        }
+
         IncrementSecretRevision();
 
         RaisePropertyChanged(nameof(CollectorEndpoint));
@@ -545,12 +560,37 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         [CallerMemberName] string propertyName = "")
     {
         var normalized = value?.Trim() ?? string.Empty;
-        if (SetField(ref field, normalized, propertyName: propertyName))
+        if (SetField(ref field, normalized, saveOptions: false, propertyName: propertyName))
         {
             settingsStore.SetString(settingsKey, normalized);
-            Status = "Settings saved";
+            var changedProtocol = !string.IsNullOrEmpty(normalized) && EnsureHttpProtobufForPemTls();
+            if (!changedProtocol)
+            {
+                RaisePropertyChanged(nameof(Options));
+            }
+
+            Status = changedProtocol ? PemTlsProtocolSavedStatus : "Settings saved";
         }
     }
+
+    private bool EnsureHttpProtobufForPemTls()
+    {
+        if (collectorProtocol == OtlpProtocol.HttpProtobuf)
+        {
+            return false;
+        }
+
+        collectorProtocol = OtlpProtocol.HttpProtobuf;
+        settingsStore.SetString(CollectorProtocolKey, collectorProtocol.ToString());
+        RaisePropertyChanged(nameof(CollectorProtocol));
+        RaisePropertyChanged(nameof(Options));
+        return true;
+    }
+
+    private bool HasPemTlsConfigured() =>
+        !string.IsNullOrWhiteSpace(caCertificatePemPath) ||
+        !string.IsNullOrWhiteSpace(clientCertificatePemPath) ||
+        !string.IsNullOrWhiteSpace(clientPrivateKeyPemPath);
 
     private void IncrementSecretRevision()
     {

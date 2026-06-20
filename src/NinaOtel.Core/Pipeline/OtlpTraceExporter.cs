@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.ExceptionServices;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Options;
 
@@ -15,6 +16,7 @@ internal sealed class OtlpTraceExporter : IDisposable
     private readonly Func<HttpClient> httpClientFactory;
     private readonly bool ownsHttpClient;
     private HttpClient? httpClient;
+    private ExceptionDispatchInfo? httpClientCreationFailure;
 
     public OtlpTraceExporter(OtlpOptions options)
         : this(options, () => OtlpHttpClientFactory.Create(options), ownsHttpClient: true)
@@ -23,6 +25,11 @@ internal sealed class OtlpTraceExporter : IDisposable
 
     internal OtlpTraceExporter(OtlpOptions options, HttpMessageHandler handler)
         : this(options, () => new HttpClient(handler), ownsHttpClient: true)
+    {
+    }
+
+    internal OtlpTraceExporter(OtlpOptions options, Func<HttpClient> httpClientFactory)
+        : this(options, httpClientFactory, ownsHttpClient: true)
     {
     }
 
@@ -83,8 +90,11 @@ internal sealed class OtlpTraceExporter : IDisposable
             return httpClient;
         }
 
+        httpClientCreationFailure?.Throw();
+
         lock (httpClientSyncRoot)
         {
+            httpClientCreationFailure?.Throw();
             httpClient ??= CreateConfiguredHttpClient();
             return httpClient;
         }
@@ -92,11 +102,19 @@ internal sealed class OtlpTraceExporter : IDisposable
 
     private HttpClient CreateConfiguredHttpClient()
     {
-        var client = httpClientFactory();
-        client.Timeout = options.Timeout <= TimeSpan.Zero
-            ? TimeSpan.FromMilliseconds(1)
-            : options.Timeout;
-        return client;
+        try
+        {
+            var client = httpClientFactory();
+            client.Timeout = options.Timeout <= TimeSpan.Zero
+                ? TimeSpan.FromMilliseconds(1)
+                : options.Timeout;
+            return client;
+        }
+        catch (Exception ex)
+        {
+            httpClientCreationFailure = ExceptionDispatchInfo.Capture(ex);
+            throw;
+        }
     }
 
     private HttpRequestMessage CreateHttpProtobufRequest(byte[] payload)

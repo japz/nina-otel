@@ -254,7 +254,60 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Otlp.Auth.CaCertificatePemPath.Should().Be("C:\\certs\\ca.pem");
         viewModel.Options.Otlp.Auth.ClientCertificatePemPath.Should().Be("C:\\certs\\client.pem");
         viewModel.Options.Otlp.Auth.ClientPrivateKeyPemPath.Should().Be("C:\\certs\\client-key.pem");
-        viewModel.Status.Should().Be("Settings saved");
+        viewModel.CollectorProtocol.Should().Be(OtlpProtocol.HttpProtobuf);
+        viewModel.Options.Otlp.Protocol.Should().Be(OtlpProtocol.HttpProtobuf);
+        settings.GetString("CollectorProtocol", string.Empty).Should().Be("HttpProtobuf");
+        viewModel.Status.Should().Be("PEM TLS uses HTTP/protobuf; settings saved.");
+    }
+
+    [Fact]
+    public void TlsCertificatePaths_WhenPersistedProtocolIsGrpc_ForceHttpProtobufOnLoad()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("CollectorProtocol", OtlpProtocol.Grpc.ToString());
+        settings.SetString("CaCertificatePemPath", "C:\\certs\\ca.pem");
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.CollectorProtocol.Should().Be(OtlpProtocol.HttpProtobuf);
+        viewModel.Options.Otlp.Protocol.Should().Be(OtlpProtocol.HttpProtobuf);
+        settings.GetString("CollectorProtocol", string.Empty).Should().Be("HttpProtobuf");
+        viewModel.Status.Should().Be("PEM TLS uses HTTP/protobuf; protocol changed.");
+    }
+
+    [Fact]
+    public void CollectorProtocol_WhenTlsPathConfigured_RejectsGrpc()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        viewModel.CaCertificatePemPath = "C:\\certs\\ca.pem";
+
+        viewModel.CollectorProtocol = OtlpProtocol.Grpc;
+
+        viewModel.CollectorProtocol.Should().Be(OtlpProtocol.HttpProtobuf);
+        viewModel.Options.Otlp.Protocol.Should().Be(OtlpProtocol.HttpProtobuf);
+        settings.GetString("CollectorProtocol", string.Empty).Should().Be("HttpProtobuf");
+        viewModel.Status.Should().Be("PEM TLS requires HTTP/protobuf; clear certificate paths before using gRPC.");
+    }
+
+    [Fact]
+    public void TlsCertificatePaths_RaiseOptionsChangedOnlyAfterProtocolIsHttpProtobuf()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var protocolSnapshots = new List<OtlpProtocol>();
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(NinaOtelOptionsViewModel.Options))
+            {
+                protocolSnapshots.Add(viewModel.Options.Otlp.Protocol);
+            }
+        };
+
+        viewModel.CaCertificatePemPath = "C:\\certs\\ca.pem";
+
+        protocolSnapshots.Should().NotBeEmpty();
+        protocolSnapshots.Should().OnlyContain(protocol => protocol == OtlpProtocol.HttpProtobuf);
     }
 
     [Fact]

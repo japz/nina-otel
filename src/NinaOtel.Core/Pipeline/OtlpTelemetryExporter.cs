@@ -198,6 +198,12 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
 
     internal static OtlpExporterOptions CreateExporterOptions(OtlpOptions options, string httpSignalPath)
     {
+        if (HasTlsConfiguration(options) && options.Protocol == OtlpProtocol.Grpc)
+        {
+            throw new NotSupportedException(
+                "PEM TLS requires HTTP/protobuf because the OpenTelemetry .NET gRPC exporter does not use HttpClientFactory.");
+        }
+
         var exporterOptions = new OtlpExporterOptions
         {
             Endpoint = CreateSignalEndpoint(options, httpSignalPath),

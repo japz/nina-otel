@@ -50,6 +50,24 @@ public sealed class OtlpHttpClientFactoryTests
     }
 
     [Fact]
+    public void Create_WhenClientPrivateKeyIsConfiguredWithoutClientCertificate_ThrowsInvalidOperationException()
+    {
+        var options = new OtlpOptions
+        {
+            Auth = new OtlpAuthOptions
+            {
+                ClientPrivateKeyPemPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".pem"),
+            },
+        };
+
+        Action create = () => OtlpHttpClientFactory.Create(options).Dispose();
+
+        create.Should()
+            .Throw<InvalidOperationException>()
+            .WithMessage("*Client certificate PEM path is required*");
+    }
+
+    [Fact]
     public void CreateHandler_WhenClientCertificateAndPrivateKeyPathsAreConfigured_LoadsClientCertificate()
     {
         using var rsa = RSA.Create(2048);
