@@ -27,6 +27,9 @@ public sealed class OptionsXamlTests
 
     [Theory]
     [InlineData("StaticHeaders")]
+    [InlineData("CaCertificatePemPath")]
+    [InlineData("ClientCertificatePemPath")]
+    [InlineData("ClientPrivateKeyPemPath")]
     [InlineData("SpoolPath")]
     [InlineData("MaxSpoolSizeGb")]
     [InlineData("MaxSpoolAgeDays")]

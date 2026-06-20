@@ -21,6 +21,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string BearerTokenProtectedKey = "BearerTokenProtected";
     private const string BasicUsernameKey = nameof(BasicUsername);
     private const string BasicPasswordProtectedKey = "BasicPasswordProtected";
+    private const string CaCertificatePemPathKey = nameof(CaCertificatePemPath);
+    private const string ClientCertificatePemPathKey = nameof(ClientCertificatePemPath);
+    private const string ClientPrivateKeyPemPathKey = nameof(ClientPrivateKeyPemPath);
     private const decimal BytesPerGb = 1024m * 1024m * 1024m;
     private const decimal TicksPerDay = TimeSpan.TicksPerDay;
     private const decimal MaxSpoolSizeGbValue = long.MaxValue / BytesPerGb;
@@ -48,6 +51,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private string basicUsername = string.Empty;
     private string basicPassword = string.Empty;
     private string basicPasswordProtected = string.Empty;
+    private string caCertificatePemPath = string.Empty;
+    private string clientCertificatePemPath = string.Empty;
+    private string clientPrivateKeyPemPath = string.Empty;
     private int secretRevision;
     private string status = "NinaOtel foundation loaded";
     private CollectorHealthState collectorHealthState = CollectorHealthState.Unknown;
@@ -268,6 +274,24 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
     }
 
+    public string CaCertificatePemPath
+    {
+        get => caCertificatePemPath;
+        set => SetPathSetting(ref caCertificatePemPath, value, CaCertificatePemPathKey);
+    }
+
+    public string ClientCertificatePemPath
+    {
+        get => clientCertificatePemPath;
+        set => SetPathSetting(ref clientCertificatePemPath, value, ClientCertificatePemPathKey);
+    }
+
+    public string ClientPrivateKeyPemPath
+    {
+        get => clientPrivateKeyPemPath;
+        set => SetPathSetting(ref clientPrivateKeyPemPath, value, ClientPrivateKeyPemPathKey);
+    }
+
     public string GetBearerToken() => bearerToken;
 
     public void SetBearerToken(string? token)
@@ -358,6 +382,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         basicPasswordProtected = settingsStore.GetString(BasicPasswordProtectedKey, string.Empty);
         bearerToken = UnprotectOrWarn(bearerTokenProtected, "Bearer token", ref warningStatus);
         basicPassword = UnprotectOrWarn(basicPasswordProtected, "Basic password", ref warningStatus);
+        caCertificatePemPath = settingsStore.GetString(CaCertificatePemPathKey, string.Empty);
+        clientCertificatePemPath = settingsStore.GetString(ClientCertificatePemPathKey, string.Empty);
+        clientPrivateKeyPemPath = settingsStore.GetString(ClientPrivateKeyPemPathKey, string.Empty);
         IncrementSecretRevision();
 
         RaisePropertyChanged(nameof(CollectorEndpoint));
@@ -369,6 +396,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(StaticHeaders));
         RaisePropertyChanged(nameof(AuthenticationMode));
         RaisePropertyChanged(nameof(BasicUsername));
+        RaisePropertyChanged(nameof(CaCertificatePemPath));
+        RaisePropertyChanged(nameof(ClientCertificatePemPath));
+        RaisePropertyChanged(nameof(ClientPrivateKeyPemPath));
         RaisePropertyChanged(nameof(AvailableAuthenticationModes));
         RaisePropertyChanged(nameof(Options));
         return warningStatus;
@@ -429,6 +459,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
                         !string.IsNullOrEmpty(basicPasswordProtected)
                             ? basicPasswordProtected
                             : null,
+                    CaCertificatePemPath = ToConfiguredPath(caCertificatePemPath),
+                    ClientCertificatePemPath = ToConfiguredPath(clientCertificatePemPath),
+                    ClientPrivateKeyPemPath = ToConfiguredPath(clientPrivateKeyPemPath),
                 },
             },
             Buffer = defaults.Buffer with
@@ -505,6 +538,20 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         Status = "Settings saved";
     }
 
+    private void SetPathSetting(
+        ref string field,
+        string? value,
+        string settingsKey,
+        [CallerMemberName] string propertyName = "")
+    {
+        var normalized = value?.Trim() ?? string.Empty;
+        if (SetField(ref field, normalized, propertyName: propertyName))
+        {
+            settingsStore.SetString(settingsKey, normalized);
+            Status = "Settings saved";
+        }
+    }
+
     private void IncrementSecretRevision()
     {
         unchecked
@@ -569,6 +616,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
         return null;
     }
+
+    private static string? ToConfiguredPath(string value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static bool TryParseHeaders(
         string? value,

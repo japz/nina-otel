@@ -29,6 +29,12 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Buffer.MaxSpoolAge.Should().Be(TimeSpan.FromDays(7));
         viewModel.StaticHeaders.Should().BeEmpty();
         viewModel.Options.Otlp.Headers.Should().BeEmpty();
+        viewModel.CaCertificatePemPath.Should().BeEmpty();
+        viewModel.ClientCertificatePemPath.Should().BeEmpty();
+        viewModel.ClientPrivateKeyPemPath.Should().BeEmpty();
+        viewModel.Options.Otlp.Auth.CaCertificatePemPath.Should().BeNull();
+        viewModel.Options.Otlp.Auth.ClientCertificatePemPath.Should().BeNull();
+        viewModel.Options.Otlp.Auth.ClientPrivateKeyPemPath.Should().BeNull();
         viewModel.CollectorHealthState.Should().Be(CollectorHealthState.Unknown);
         viewModel.CollectorHealthBrush.Should().Be("#808080");
         viewModel.CollectorHealthSummary.Should().Be("Collector not checked yet");
@@ -45,6 +51,9 @@ public sealed class NinaOtelOptionsViewModelTests
         settings.SetString("MaxSpoolSizeGb", "2.5");
         settings.SetString("MaxSpoolAgeDays", "14");
         settings.SetString("StaticHeaders", "Authorization: Bearer abc\r\nx-scope = nina");
+        settings.SetString("CaCertificatePemPath", "C:\\certs\\ca.pem");
+        settings.SetString("ClientCertificatePemPath", "C:\\certs\\client.pem");
+        settings.SetString("ClientPrivateKeyPemPath", "C:\\certs\\client-key.pem");
 
         var viewModel = new NinaOtelOptionsViewModel(settings);
 
@@ -63,6 +72,12 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.StaticHeaders.Should().Be("Authorization: Bearer abc\r\nx-scope = nina");
         viewModel.Options.Otlp.Headers.Should().Contain("Authorization", "Bearer abc");
         viewModel.Options.Otlp.Headers.Should().Contain("x-scope", "nina");
+        viewModel.CaCertificatePemPath.Should().Be("C:\\certs\\ca.pem");
+        viewModel.ClientCertificatePemPath.Should().Be("C:\\certs\\client.pem");
+        viewModel.ClientPrivateKeyPemPath.Should().Be("C:\\certs\\client-key.pem");
+        viewModel.Options.Otlp.Auth.CaCertificatePemPath.Should().Be("C:\\certs\\ca.pem");
+        viewModel.Options.Otlp.Auth.ClientCertificatePemPath.Should().Be("C:\\certs\\client.pem");
+        viewModel.Options.Otlp.Auth.ClientPrivateKeyPemPath.Should().Be("C:\\certs\\client-key.pem");
     }
 
     [Fact]
@@ -221,6 +236,25 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Status.Should().Be("Static header line 2 must use 'Name: value'.");
         viewModel.Status.Should().NotContain("Bearer edited");
         viewModel.Status.Should().NotContain("Bearer initial");
+    }
+
+    [Fact]
+    public void TlsCertificatePaths_SaveImmediately()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.CaCertificatePemPath = "C:\\certs\\ca.pem";
+        viewModel.ClientCertificatePemPath = "C:\\certs\\client.pem";
+        viewModel.ClientPrivateKeyPemPath = "C:\\certs\\client-key.pem";
+
+        settings.GetString("CaCertificatePemPath", string.Empty).Should().Be("C:\\certs\\ca.pem");
+        settings.GetString("ClientCertificatePemPath", string.Empty).Should().Be("C:\\certs\\client.pem");
+        settings.GetString("ClientPrivateKeyPemPath", string.Empty).Should().Be("C:\\certs\\client-key.pem");
+        viewModel.Options.Otlp.Auth.CaCertificatePemPath.Should().Be("C:\\certs\\ca.pem");
+        viewModel.Options.Otlp.Auth.ClientCertificatePemPath.Should().Be("C:\\certs\\client.pem");
+        viewModel.Options.Otlp.Auth.ClientPrivateKeyPemPath.Should().Be("C:\\certs\\client-key.pem");
+        viewModel.Status.Should().Be("Settings saved");
     }
 
     [Fact]

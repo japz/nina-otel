@@ -44,6 +44,12 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="8" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="8" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Collector:" FontWeight="SemiBold" VerticalAlignment="Center" />
@@ -108,6 +114,27 @@
                     LostFocus="BasicPasswordBox_LostFocus"
                     PasswordChanged="BasicPasswordBox_PasswordChanged"
                     Unloaded="SecretPasswordBox_Unloaded" />
+
+                <TextBlock Grid.Row="14" Grid.Column="0" Text="CA PEM:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="14"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Text="{Binding NinaOtelOptionsViewModel.CaCertificatePemPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+
+                <TextBlock Grid.Row="16" Grid.Column="0" Text="Client cert PEM:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="16"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Text="{Binding NinaOtelOptionsViewModel.ClientCertificatePemPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+
+                <TextBlock Grid.Row="18" Grid.Column="0" Text="Client key PEM:" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="18"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Text="{Binding NinaOtelOptionsViewModel.ClientPrivateKeyPemPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
             </Grid>
             <CheckBox
                 Content="Disk spool on collector failure"
