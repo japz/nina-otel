@@ -270,7 +270,7 @@ public sealed class Phd2TelemetryAddonTests
     }
 
     private static AddonContext CreateContext(
-        RecordingSink sink,
+        ITelemetrySink sink,
         CancellationToken shutdownToken,
         string? debugLogPath = null,
         string? guideLogPath = null,
