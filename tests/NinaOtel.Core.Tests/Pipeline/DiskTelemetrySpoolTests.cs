@@ -29,6 +29,42 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
+    public void Constructor_WithLimits_DoesNotCreateSpoolDirectory()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+
+        _ = new DiskTelemetrySpool(spoolPath, maxBytes: 1024, maxAge: TimeSpan.FromDays(1));
+
+        Directory.Exists(spoolPath).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_WhenMaxBytesIsNotPositive_ThrowsArgumentOutOfRangeException(long maxBytes)
+    {
+        var spoolPath = Path.Combine(root, "spool");
+
+        Action create = () => _ = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(1));
+
+        create.Should().Throw<ArgumentOutOfRangeException>()
+            .WithParameterName("maxBytes");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_WhenMaxAgeIsNotPositive_ThrowsArgumentOutOfRangeException(long maxAgeTicks)
+    {
+        var spoolPath = Path.Combine(root, "spool");
+
+        Action create = () => _ = new DiskTelemetrySpool(spoolPath, 1024, TimeSpan.FromTicks(maxAgeTicks));
+
+        create.Should().Throw<ArgumentOutOfRangeException>()
+            .WithParameterName("maxAge");
+    }
+
+    [Fact]
     public async Task AppendBatchAsync_CreatesSpoolDirectoryAndPersistsRecords()
     {
         var spoolPath = Path.Combine(root, "spool");
@@ -92,6 +128,66 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         var remaining = await spool.ReadBatchesAsync(CancellationToken.None);
         remaining.Should().ContainSingle();
         remaining[0].Records.Should().ContainSingle().Which.Name.Should().Be("second");
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_PrunesFilesOlderThanMaxAge()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        Directory.CreateDirectory(spoolPath);
+        var expiredReady = Path.Combine(spoolPath, "0000000000000000001-old.ready");
+        var expiredInvalid = Path.Combine(spoolPath, "0000000000000000002-old.invalid");
+        var expiredSent = Path.Combine(spoolPath, "0000000000000000003-old.sent");
+        var recentReady = Path.Combine(spoolPath, "0000000000000000004-recent.ready");
+        await File.WriteAllTextAsync(expiredReady, "{}");
+        await File.WriteAllTextAsync(expiredInvalid, "{}");
+        await File.WriteAllTextAsync(expiredSent, "{}");
+        await File.WriteAllTextAsync(recentReady, "{}");
+        File.SetLastWriteTimeUtc(expiredReady, DateTime.UtcNow.AddDays(-8));
+        File.SetLastWriteTimeUtc(expiredInvalid, DateTime.UtcNow.AddDays(-8));
+        File.SetLastWriteTimeUtc(expiredSent, DateTime.UtcNow.AddDays(-8));
+        File.SetLastWriteTimeUtc(recentReady, DateTime.UtcNow);
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes: 1024 * 1024, maxAge: TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(new[] { CreateHealthRecord("new") }, CancellationToken.None);
+
+        File.Exists(expiredReady).Should().BeFalse();
+        File.Exists(expiredInvalid).Should().BeFalse();
+        File.Exists(expiredSent).Should().BeFalse();
+        File.Exists(recentReady).Should().BeTrue();
+        Directory.GetFiles(spoolPath, "*.ready").Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenSpoolExceedsMaxBytes_DeletesOldestFilesFirst()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var maxBytes = 9_000;
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("first") }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("second") }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("third") }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("second", "third");
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(maxBytes);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenNewBatchAloneExceedsMaxBytes_DeletesItAndThrowsIOException()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes: 32, maxAge: TimeSpan.FromDays(7));
+
+        Func<Task> append = async () => await spool.AppendBatchAsync(
+            new[] { CreateLargeRecord("oversized") },
+            CancellationToken.None);
+
+        await append.Should().ThrowAsync<IOException>();
+        Directory.GetFiles(spoolPath, "*.ready").Should().BeEmpty();
     }
 
     [Fact]
@@ -183,4 +279,23 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         Directory.GetFiles(spoolPath, "*.ready").Should().BeEmpty();
         Directory.GetFiles(spoolPath, "*.sent").Should().ContainSingle();
     }
+
+    private static TelemetryRecord CreateHealthRecord(string name) =>
+        TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", name, TelemetryPriority.Routine);
+
+    private static TelemetryRecord CreateLargeRecord(string name) =>
+        TelemetryRecord.Health(
+            DateTimeOffset.UtcNow,
+            "test",
+            name,
+            TelemetryPriority.Routine,
+            new Dictionary<string, object?> { ["payload"] = new string('x', 3_000) });
+
+    private static long TotalSpoolBytes(string spoolPath) =>
+        Directory.EnumerateFiles(spoolPath, "*.*")
+            .Where(path =>
+                path.EndsWith(".ready", StringComparison.Ordinal) ||
+                path.EndsWith(".invalid", StringComparison.Ordinal) ||
+                path.EndsWith(".sent", StringComparison.Ordinal))
+            .Sum(path => new FileInfo(path).Length);
 }

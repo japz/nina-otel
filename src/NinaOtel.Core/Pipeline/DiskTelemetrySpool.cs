@@ -7,14 +7,36 @@ namespace NinaOtel.Core.Pipeline;
 
 internal sealed class DiskTelemetrySpool
 {
+    private const long DefaultMaxBytes = 1L * 1024 * 1024 * 1024;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.General);
+    private static readonly TimeSpan DefaultMaxAge = TimeSpan.FromDays(7);
 
     private readonly string spoolPath;
+    private readonly long maxBytes;
+    private readonly TimeSpan maxAge;
 
     public DiskTelemetrySpool(string spoolPath)
+        : this(spoolPath, DefaultMaxBytes, DefaultMaxAge)
+    {
+    }
+
+    public DiskTelemetrySpool(string spoolPath, long maxBytes, TimeSpan maxAge)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(spoolPath);
+        if (maxBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxBytes), "Max bytes must be positive.");
+        }
+
+        if (maxAge <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxAge), "Max age must be positive.");
+        }
+
         this.spoolPath = ExpandLocalAppData(spoolPath);
+        this.maxBytes = maxBytes;
+        this.maxAge = maxAge;
     }
 
     public async Task AppendBatchAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
@@ -23,6 +45,7 @@ internal sealed class DiskTelemetrySpool
         cancellationToken.ThrowIfCancellationRequested();
 
         Directory.CreateDirectory(spoolPath);
+        PruneExpiredFiles(DateTime.UtcNow);
 
         var baseName = CreateSpoolFileBaseName();
         var temporaryPath = Path.Combine(spoolPath, baseName + ".tmp");
@@ -43,6 +66,7 @@ internal sealed class DiskTelemetrySpool
             }
 
             File.Move(temporaryPath, readyPath);
+            EnforceMaxBytes(readyPath);
         }
         catch
         {
@@ -106,6 +130,69 @@ internal sealed class DiskTelemetrySpool
         }
 
         File.Move(exception.Path, CreateSidecarPath(exception.Path, "invalid"));
+    }
+
+    private void PruneExpiredFiles(DateTime utcNow)
+    {
+        var cutoff = utcNow - maxAge;
+        foreach (var path in EnumerateSpoolFiles())
+        {
+            if (File.GetLastWriteTimeUtc(path) < cutoff)
+            {
+                TryDelete(path);
+            }
+        }
+    }
+
+    private void EnforceMaxBytes(string newestReadyPath)
+    {
+        var newestFullPath = Path.GetFullPath(newestReadyPath);
+        var files = EnumerateSpoolFiles()
+            .Select(path => new FileInfo(path))
+            .Where(file => file.Exists)
+            .OrderBy(file => file.FullName, StringComparer.Ordinal)
+            .ToList();
+        var totalBytes = files.Sum(file => file.Length);
+
+        foreach (var file in files)
+        {
+            if (totalBytes <= maxBytes)
+            {
+                return;
+            }
+
+            if (string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var length = file.Length;
+            TryDelete(file.FullName);
+            if (!File.Exists(file.FullName))
+            {
+                totalBytes -= length;
+            }
+        }
+
+        if (totalBytes <= maxBytes)
+        {
+            return;
+        }
+
+        TryDelete(newestReadyPath);
+        throw new IOException($"Telemetry spool batch '{newestReadyPath}' exceeds max spool bytes '{maxBytes}'.");
+    }
+
+    private IEnumerable<string> EnumerateSpoolFiles()
+    {
+        if (!Directory.Exists(spoolPath))
+        {
+            return Array.Empty<string>();
+        }
+
+        return Directory.EnumerateFiles(spoolPath, "*.ready")
+            .Concat(Directory.EnumerateFiles(spoolPath, "*.invalid"))
+            .Concat(Directory.EnumerateFiles(spoolPath, "*.sent"));
     }
 
     private static string ExpandLocalAppData(string path)

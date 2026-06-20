@@ -183,6 +183,9 @@ public sealed class NinaOtelPlugin : PluginBase
 
         return new DurableTelemetryExporter(
             collectorExporter,
-            new DiskTelemetrySpool(options.Buffer.SpoolPath));
+            new DiskTelemetrySpool(
+                options.Buffer.SpoolPath,
+                options.Buffer.MaxSpoolBytes,
+                options.Buffer.MaxSpoolAge));
     }
 }
