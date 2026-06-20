@@ -127,6 +127,22 @@ public sealed class OptionsXamlTests
         textbox.Attribute("Visibility")?.Value.Should().Contain("IsTargetScheduler");
     }
 
+    [Fact]
+    public void OptionsTemplate_NightSummaryLogPathTextBoxUsesTwoWayLostFocusBinding()
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+        var itemsControl = document
+            .Descendants(PresentationNamespace + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value.Contains("NinaOtelOptionsViewModel.Addons", StringComparison.Ordinal) == true);
+
+        var textbox = SingleTextBoxBoundTo(itemsControl, "NightSummaryLogPath");
+        var binding = textbox.Attribute("Text")?.Value;
+
+        binding.Should().Contain("Mode=TwoWay");
+        binding.Should().Contain("UpdateSourceTrigger=LostFocus");
+        textbox.Attribute("Visibility")?.Value.Should().Contain("IsNightSummary");
+    }
+
     [Theory]
     [InlineData(
         "BearerTokenPasswordBox_Loaded",

@@ -11,6 +11,8 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     private const string Phd2GuideLogPathSettingName = "GuideLogPath";
     internal const string TargetSchedulerAddonId = "target-scheduler";
     internal const string TargetSchedulerLogPathSettingName = "LogPath";
+    internal const string NightSummaryAddonId = "night-summary";
+    internal const string NightSummaryLogPathSettingName = "LogPath";
 
     private readonly Action<AddonOptionViewModel, string, object> settingChanged;
     private bool isEnabled;
@@ -19,6 +21,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     private string phd2DebugLogPath = string.Empty;
     private string phd2GuideLogPath = string.Empty;
     private string targetSchedulerLogPath = string.Empty;
+    private string nightSummaryLogPath = string.Empty;
     private string status = "disabled";
     private string message = "Add-on disabled.";
 
@@ -41,6 +44,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     public string Source { get; }
     public bool IsPhd2 => string.Equals(Id, Phd2AddonId, StringComparison.Ordinal);
     public bool IsTargetScheduler => string.Equals(Id, TargetSchedulerAddonId, StringComparison.Ordinal);
+    public bool IsNightSummary => string.Equals(Id, NightSummaryAddonId, StringComparison.Ordinal);
 
     public bool IsEnabled
     {
@@ -99,6 +103,24 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         }
     }
 
+    public string NightSummaryLogPath
+    {
+        get => nightSummaryLogPath;
+        set
+        {
+            if (!IsNightSummary)
+            {
+                return;
+            }
+
+            var normalized = value?.Trim() ?? string.Empty;
+            if (SetField(ref nightSummaryLogPath, normalized))
+            {
+                settingChanged(this, NightSummaryLogPathSettingName, normalized);
+            }
+        }
+    }
+
     public string Status
     {
         get => status;
@@ -140,6 +162,12 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
                 ? targetSchedulerLogPathSetting
                 : string.Empty,
             nameof(TargetSchedulerLogPath));
+        SetField(
+            ref nightSummaryLogPath,
+            IsNightSummary && settings.TryGetValue(NightSummaryLogPathSettingName, out var nightSummaryLogPathSetting)
+                ? nightSummaryLogPathSetting
+                : string.Empty,
+            nameof(NightSummaryLogPath));
         ApplyConfiguredStatus();
     }
 
@@ -203,6 +231,11 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         if (IsTargetScheduler)
         {
             AddSettingIfConfigured(settings, TargetSchedulerLogPathSettingName, TargetSchedulerLogPath);
+        }
+
+        if (IsNightSummary)
+        {
+            AddSettingIfConfigured(settings, NightSummaryLogPathSettingName, NightSummaryLogPath);
         }
 
         return settings;

@@ -48,6 +48,8 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="4" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding DisplayName}" FontWeight="SemiBold" />
@@ -105,9 +107,23 @@
                                 Text="{Binding TargetSchedulerLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                 Visibility="{Binding IsTargetScheduler, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
 
-                            <TextBlock Grid.Row="10" Grid.Column="0" Text="{Binding Status}" Foreground="#666666" />
                             <TextBlock
                                 Grid.Row="10"
+                                Grid.Column="0"
+                                Text="Night Summary log:"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsNightSummary, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                            <TextBox
+                                Grid.Row="10"
+                                Grid.Column="2"
+                                MinWidth="220"
+                                Text="{Binding NightSummaryLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                Visibility="{Binding IsNightSummary, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+
+                            <TextBlock Grid.Row="12" Grid.Column="0" Text="{Binding Status}" Foreground="#666666" />
+                            <TextBlock
+                                Grid.Row="12"
                                 Grid.Column="2"
                                 Text="{Binding Message}"
                                 Foreground="#666666"

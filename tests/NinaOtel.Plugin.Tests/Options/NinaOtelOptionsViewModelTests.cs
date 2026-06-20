@@ -156,6 +156,38 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void NightSummaryAddonSettings_SaveLogPathAndExposeOptionsSettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var nightSummary = viewModel.Addons.Single(addon => addon.Id == "night-summary");
+
+        nightSummary.NightSummaryLogPath = "C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log";
+
+        settings.GetString("Addon.night-summary.LogPath", string.Empty)
+            .Should()
+            .Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
+        viewModel.Options.Addons["night-summary"].Settings
+            .Should()
+            .Contain("LogPath", "C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
+    }
+
+    [Fact]
+    public void Constructor_LoadsPersistedNightSummaryLogPathSetting()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("Addon.night-summary.LogPath", "D:\\NINA\\nina-night.log");
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var nightSummary = viewModel.Addons.Single(addon => addon.Id == "night-summary");
+
+        nightSummary.NightSummaryLogPath.Should().Be("D:\\NINA\\nina-night.log");
+        viewModel.Options.Addons["night-summary"].Settings
+            .Should()
+            .Contain("LogPath", "D:\\NINA\\nina-night.log");
+    }
+
+    [Fact]
     public void UpdateAddonHealth_UpdatesMatchingAddonStatusAndMessage()
     {
         var settings = new InMemoryPluginSettingsStore();
