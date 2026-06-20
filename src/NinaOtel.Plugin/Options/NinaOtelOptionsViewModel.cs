@@ -31,6 +31,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
         {
             ["phd2"] = ["DebugLogPath", "GuideLogPath"],
+            [AddonOptionViewModel.TargetSchedulerAddonId] = [AddonOptionViewModel.TargetSchedulerLogPathSettingName],
         };
     private const string PemTlsProtocolChangedStatus = "PEM TLS uses HTTP/protobuf; protocol changed.";
     private const string PemTlsProtocolSavedStatus = "PEM TLS uses HTTP/protobuf; settings saved.";

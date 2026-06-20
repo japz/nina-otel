@@ -124,6 +124,38 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void TargetSchedulerAddonSettings_SaveLogPathAndExposeOptionsSettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var scheduler = viewModel.Addons.Single(addon => addon.Id == "target-scheduler");
+
+        scheduler.TargetSchedulerLogPath = "C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\target-scheduler.log";
+
+        settings.GetString("Addon.target-scheduler.LogPath", string.Empty)
+            .Should()
+            .Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\target-scheduler.log");
+        viewModel.Options.Addons["target-scheduler"].Settings
+            .Should()
+            .Contain("LogPath", "C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\target-scheduler.log");
+    }
+
+    [Fact]
+    public void Constructor_LoadsPersistedTargetSchedulerLogPathSetting()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("Addon.target-scheduler.LogPath", "D:\\NINA\\TargetScheduler.log");
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var scheduler = viewModel.Addons.Single(addon => addon.Id == "target-scheduler");
+
+        scheduler.TargetSchedulerLogPath.Should().Be("D:\\NINA\\TargetScheduler.log");
+        viewModel.Options.Addons["target-scheduler"].Settings
+            .Should()
+            .Contain("LogPath", "D:\\NINA\\TargetScheduler.log");
+    }
+
+    [Fact]
     public void UpdateAddonHealth_UpdatesMatchingAddonStatusAndMessage()
     {
         var settings = new InMemoryPluginSettingsStore();

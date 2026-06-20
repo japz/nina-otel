@@ -9,6 +9,8 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     private const string Phd2AddonId = "phd2";
     private const string Phd2DebugLogPathSettingName = "DebugLogPath";
     private const string Phd2GuideLogPathSettingName = "GuideLogPath";
+    internal const string TargetSchedulerAddonId = "target-scheduler";
+    internal const string TargetSchedulerLogPathSettingName = "LogPath";
 
     private readonly Action<AddonOptionViewModel, string, object> settingChanged;
     private bool isEnabled;
@@ -16,6 +18,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     private bool hasSourceSpecificHealth;
     private string phd2DebugLogPath = string.Empty;
     private string phd2GuideLogPath = string.Empty;
+    private string targetSchedulerLogPath = string.Empty;
     private string status = "disabled";
     private string message = "Add-on disabled.";
 
@@ -37,6 +40,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     public string DisplayName { get; }
     public string Source { get; }
     public bool IsPhd2 => string.Equals(Id, Phd2AddonId, StringComparison.Ordinal);
+    public bool IsTargetScheduler => string.Equals(Id, TargetSchedulerAddonId, StringComparison.Ordinal);
 
     public bool IsEnabled
     {
@@ -77,6 +81,24 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         set => SetPhd2Path(ref phd2GuideLogPath, value, Phd2GuideLogPathSettingName);
     }
 
+    public string TargetSchedulerLogPath
+    {
+        get => targetSchedulerLogPath;
+        set
+        {
+            if (!IsTargetScheduler)
+            {
+                return;
+            }
+
+            var normalized = value?.Trim() ?? string.Empty;
+            if (SetField(ref targetSchedulerLogPath, normalized))
+            {
+                settingChanged(this, TargetSchedulerLogPathSettingName, normalized);
+            }
+        }
+    }
+
     public string Status
     {
         get => status;
@@ -112,6 +134,12 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
                 ? guideLogPath
                 : string.Empty,
             nameof(Phd2GuideLogPath));
+        SetField(
+            ref targetSchedulerLogPath,
+            IsTargetScheduler && settings.TryGetValue(TargetSchedulerLogPathSettingName, out var targetSchedulerLogPathSetting)
+                ? targetSchedulerLogPathSetting
+                : string.Empty,
+            nameof(TargetSchedulerLogPath));
         ApplyConfiguredStatus();
     }
 
@@ -165,14 +193,18 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
 
     private IReadOnlyDictionary<string, string> CreateSettings()
     {
-        if (!IsPhd2)
+        var settings = new Dictionary<string, string>();
+        if (IsPhd2)
         {
-            return new Dictionary<string, string>();
+            AddSettingIfConfigured(settings, Phd2DebugLogPathSettingName, Phd2DebugLogPath);
+            AddSettingIfConfigured(settings, Phd2GuideLogPathSettingName, Phd2GuideLogPath);
         }
 
-        var settings = new Dictionary<string, string>();
-        AddSettingIfConfigured(settings, Phd2DebugLogPathSettingName, Phd2DebugLogPath);
-        AddSettingIfConfigured(settings, Phd2GuideLogPathSettingName, Phd2GuideLogPath);
+        if (IsTargetScheduler)
+        {
+            AddSettingIfConfigured(settings, TargetSchedulerLogPathSettingName, TargetSchedulerLogPath);
+        }
+
         return settings;
     }
 
