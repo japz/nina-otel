@@ -74,7 +74,7 @@ public sealed class FilterWheelTelemetryCollectorTests
     }
 
     [Fact]
-    public async Task FilterChanged_WhenRaised_PublishesFilterChangeSpan()
+    public async Task FilterChanged_WhenRaised_PublishesFilterChangeSpanAndLog()
     {
         var mediator = new FakeFilterWheelMediator
         {
@@ -89,7 +89,9 @@ public sealed class FilterWheelTelemetryCollectorTests
             new FilterInfo { Name = "Ha", Position = 2 },
             new FilterInfo { Name = "OIII", Position = 3 });
 
-        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+        sink.Records.Should().HaveCount(2);
+        sink.Records.Should().ContainSingle(record => record.Signal == TelemetrySignal.Span)
+            .Which.Should().Match<TelemetryRecord>(record =>
             record.Signal == TelemetrySignal.Span &&
             record.Source == "nina.filter_wheel" &&
             record.Name == "nina.filter_change" &&
@@ -101,6 +103,18 @@ public sealed class FilterWheelTelemetryCollectorTests
             Equals(record.Attributes["filter_to"], "OIII") &&
             Equals(record.Attributes["filter_from_position"], 2) &&
             Equals(record.Attributes["filter_to_position"], 3));
+        sink.Records.Should().ContainSingle(record => record.Signal == TelemetrySignal.Log)
+            .Which.Should().Match<TelemetryRecord>(record =>
+            record.Source == "nina.filter_wheel" &&
+            record.Name == "filter_change" &&
+            record.Body == "Filter changed from Ha to OIII" &&
+            record.Severity == TelemetrySeverity.Information &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["title"], "Filter changed") &&
+            Equals(record.Attributes["text"], "Filter changed from Ha to OIII") &&
+            Equals(record.Attributes["filter_from"], "Ha") &&
+            Equals(record.Attributes["filter_to"], "OIII") &&
+            Equals(record.Attributes["filter_wheel_name"], "EFW"));
     }
 
     [Fact]
@@ -276,6 +290,26 @@ public sealed class FilterWheelTelemetryCollectorTests
 
         sink.Records.Should().ContainSingle(record => record.Name == "nina.filter_change")
             .Which.Attributes["filter_wheel_name"].Should().Be("Unknown");
+    }
+
+    [Fact]
+    public async Task FilterChanged_WhenFilterNamesAreMissing_UsesUnknownFilterNamesInLog()
+    {
+        var mediator = new FakeFilterWheelMediator();
+        var sink = new RecordingTelemetrySink();
+        using var collector = new FilterWheelTelemetryCollector(mediator, sink, TimeProvider.System);
+        collector.Start();
+
+        await mediator.RaiseFilterChangedAsync(
+            new FilterInfo { Name = " ", Position = 1 },
+            new FilterInfo { Name = null!, Position = 4 });
+
+        sink.Records.Should().ContainSingle(record => record.Name == "filter_change")
+            .Which.Should().Match<TelemetryRecord>(record =>
+            record.Body == "Filter changed from Unknown to Unknown" &&
+            Equals(record.Attributes["text"], "Filter changed from Unknown to Unknown") &&
+            Equals(record.Attributes["filter_from"], "Unknown") &&
+            Equals(record.Attributes["filter_to"], "Unknown"));
     }
 
     [Fact]

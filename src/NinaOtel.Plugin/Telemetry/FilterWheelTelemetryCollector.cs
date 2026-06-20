@@ -241,6 +241,7 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
             if (record is not null)
             {
                 TryPublishSafely(record);
+                TryPublishSafely(CreateFilterChangeLogRecord(record));
             }
         }
         catch
@@ -349,6 +350,28 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
                 TelemetryPriority.Normal,
                 attributes);
         }
+    }
+
+    private static TelemetryRecord CreateFilterChangeLogRecord(TelemetryRecord spanRecord)
+    {
+        var filterFrom = AttributeString(spanRecord.Attributes, "filter_from");
+        var filterTo = AttributeString(spanRecord.Attributes, "filter_to");
+        var text = $"Filter changed from {filterFrom} to {filterTo}";
+        var attributes = new Dictionary<string, object?>(spanRecord.Attributes)
+        {
+            ["title"] = "Filter changed",
+            ["text"] = text,
+        };
+
+        return new TelemetryRecord(
+            TelemetrySignal.Log,
+            spanRecord.Timestamp,
+            SourceName,
+            "filter_change",
+            TelemetryPriority.Normal,
+            attributes,
+            Body: text,
+            Severity: TelemetrySeverity.Information);
     }
 
     private void CleanupSubscriptions()
@@ -544,6 +567,13 @@ public sealed class FilterWheelTelemetryCollector : IFilterWheelConsumer, IDispo
         string.IsNullOrWhiteSpace(filterName)
             ? "Unknown"
             : filterName;
+
+    private static string AttributeString(
+        IReadOnlyDictionary<string, object?> attributes,
+        string key) =>
+        attributes.TryGetValue(key, out var value)
+            ? NormalizeFilterName(value?.ToString())
+            : NormalizeFilterName(null);
 
     private static int? NormalizeFilterPosition(FilterInfo? filter) =>
         filter is null ? null : filter.Position;
