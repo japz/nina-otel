@@ -18,12 +18,30 @@ internal static class ProtobufFieldScanner
         return values;
     }
 
+    public static IReadOnlyList<byte[]> FindMessages(byte[] payload, string path) =>
+        FindBytes(payload, path);
+
     public static IReadOnlyList<ulong> FindFixed64(byte[] payload, string path)
     {
         var values = new List<ulong>();
         Scan(payload, string.Empty, path, null, values, null, depth: 0);
         return values;
     }
+
+    public static IReadOnlyList<bool> FindBooleans(byte[] payload, string path) =>
+        FindVarints(payload, path)
+            .Select(static value => value != 0)
+            .ToArray();
+
+    public static IReadOnlyList<double> FindDoubles(byte[] payload, string path) =>
+        FindFixed64(payload, path)
+            .Select(static bits => BitConverter.UInt64BitsToDouble(bits))
+            .ToArray();
+
+    public static IReadOnlyList<long> FindInt64s(byte[] payload, string path) =>
+        FindVarints(payload, path)
+            .Select(static value => unchecked((long)value))
+            .ToArray();
 
     public static IReadOnlyList<string> FindStrings(byte[] payload, string path) =>
         FindBytes(payload, path)

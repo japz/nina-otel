@@ -102,8 +102,13 @@ public sealed class OtlpMetricStateStoreTests
             TelemetryPriority.Normal,
             new Dictionary<string, object?>
             {
+                ["profile_name"] = "imaging-profile",
+                ["host_name"] = true,
                 ["image_file_name"] = "M42_L_001.fit",
                 ["camera_name"] = "ASI2600MM",
+                ["readout_mode"] = 2,
+                ["exposure_duration_seconds"] = 180.25,
+                ["error_message"] = "dropped high-cardinality text",
             });
 
         var accepted = store.Apply([imageMetric]);
@@ -115,7 +120,12 @@ public sealed class OtlpMetricStateStoreTests
         var tags = measurement.Tags.ToArray().ToDictionary(static tag => tag.Key, static tag => tag.Value);
         tags.Should().Contain(new KeyValuePair<string, object?>("image_file_name", "M42_L_001.fit"));
         tags.Should().Contain(new KeyValuePair<string, object?>("camera_name", "ASI2600MM"));
+        tags.Should().Contain(new KeyValuePair<string, object?>("profile_name", "imaging-profile"));
+        tags.Should().Contain(new KeyValuePair<string, object?>("host_name", true));
+        tags.Should().Contain(new KeyValuePair<string, object?>("readout_mode", 2));
+        tags.Should().Contain(new KeyValuePair<string, object?>("exposure_duration_seconds", 180.25));
         tags.Should().Contain(new KeyValuePair<string, object?>("ninaotel.source", "nina.image"));
+        tags.Should().NotContainKey("error_message");
         store.CollectMeasurements("image_mean").Should().BeEmpty();
     }
 
@@ -248,15 +258,38 @@ public sealed class OtlpMetricStateStoreTests
         store.CollectMeasurements("switch_ro_sw3").Should().ContainSingle().Which.Value.Should().Be(12.3);
     }
 
-    private static TelemetryRecord CreateMetricRecord(NinaMetricDefinition metric, double value) =>
-        TelemetryRecord.Metric(
+    private static TelemetryRecord CreateMetricRecord(NinaMetricDefinition metric, double value)
+    {
+        var attributes = CreateAllowedAttributes(metric.AttributeNames);
+        attributes["error_message"] = "dropped high-cardinality text";
+
+        return TelemetryRecord.Metric(
             DateTimeOffset.UnixEpoch,
             $"nina.{metric.Category}",
             metric.Name,
             value,
             TelemetryPriority.Normal,
-            metric.AttributeNames.ToDictionary(
-                static attributeName => attributeName,
-                static attributeName => (object?)$"{attributeName}-value",
-                StringComparer.Ordinal));
+            attributes);
+    }
+
+    private static Dictionary<string, object?> CreateAllowedAttributes(IEnumerable<string> attributeNames)
+    {
+        var attributes = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var attributeName in attributeNames)
+        {
+            attributes[attributeName] = CreateAttributeValue(attributeName);
+        }
+
+        return attributes;
+    }
+
+    private static object CreateAttributeValue(string attributeName) =>
+        attributeName switch
+        {
+            "host_name" => true,
+            "profile_name" => "imaging-profile",
+            "readout_mode" => 2,
+            "exposure_duration_seconds" => 180.25,
+            _ => $"{attributeName}-value",
+        };
 }

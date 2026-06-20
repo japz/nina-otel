@@ -18,6 +18,14 @@ public sealed class OtlpHttpClientFactoryTests
     }
 
     [Fact]
+    public void CreateHandler_DisablesCookies()
+    {
+        using var handler = OtlpHttpClientFactory.CreateHandler(new OtlpOptions());
+
+        handler.UseCookies.Should().BeFalse();
+    }
+
+    [Fact]
     public void Create_WhenCaCertificatePathDoesNotExist_ThrowsFileNotFoundException()
     {
         var options = new OtlpOptions

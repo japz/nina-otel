@@ -12,6 +12,19 @@ namespace NinaOtel.Core.Tests.Pipeline;
 public sealed class OtlpTelemetryExporterTests
 {
     [Fact]
+    public void CreateExporterOptions_WhenProtocolIsHttpProtobuf_UsesHttpClientFactory()
+    {
+        var options = new OtlpOptions
+        {
+            Protocol = OtlpProtocol.HttpProtobuf,
+        };
+
+        var exporterOptions = OtlpTelemetryExporter.CreateExporterOptions(options, "v1/logs");
+
+        exporterOptions.HttpClientFactory.Should().NotBeNull();
+    }
+
+    [Fact]
     public void CreateExporterOptions_WhenTlsPathsAreConfigured_UsesHttpClientFactory()
     {
         var options = new OtlpOptions
@@ -184,6 +197,64 @@ public sealed class OtlpTelemetryExporterTests
             .BeLessThan(Array.IndexOf(paths.ToArray(), "/v1/traces"));
     }
 
+    [Fact]
+    public async Task ExportAsync_WhenLiveAndDeferredMetricsAreMixed_PostsSeparatePointInTimeMetricPayload()
+    {
+        await using var server = new LoopbackOtlpHttpServer(static _ => HttpStatusCode.OK);
+        using var exporter = new OtlpTelemetryExporter(new NinaOtelOptions
+        {
+            Otlp = new OtlpOptions
+            {
+                Endpoint = server.Endpoint,
+                Protocol = OtlpProtocol.HttpProtobuf,
+                Timeout = TimeSpan.FromSeconds(5),
+            },
+        });
+
+        await exporter.ExportAsync(
+            [
+                TelemetryRecord.Metric(
+                    DateTimeOffset.UnixEpoch.AddSeconds(20),
+                    "nina.image",
+                    "image_mean",
+                    1842.5,
+                    TelemetryPriority.Normal,
+                    new Dictionary<string, object?>
+                    {
+                        ["image_file_name"] = "M42_L_001.fit",
+                        ["camera_name"] = "ASI2600MM",
+                    }),
+                TelemetryRecord.Metric(
+                    DateTimeOffset.UnixEpoch.AddSeconds(21),
+                    "nina.camera",
+                    "camera_sensor_temperature",
+                    -7.25,
+                    TelemetryPriority.Normal,
+                    new Dictionary<string, object?>
+                    {
+                        ["camera_name"] = "ASI2600MM",
+                    }),
+            ],
+            CancellationToken.None);
+
+        var requests = await server.WaitForRequestsAsync(2, TimeSpan.FromSeconds(5));
+        var metricRequests = requests
+            .Where(static request => request.Path == "/v1/metrics")
+            .ToArray();
+
+        metricRequests.Should().HaveCountGreaterThanOrEqualTo(2);
+        var pointInTimeRequest = metricRequests
+            .Should()
+            .ContainSingle(static request => ContainsMetricName(request.Body, "image_mean"))
+            .Which;
+        MetricNames(pointInTimeRequest.Body).Should()
+            .Contain("image_mean")
+            .And
+            .NotContain("camera_sensor_temperature");
+        metricRequests.Should()
+            .Contain(static request => ContainsMetricName(request.Body, "camera_sensor_temperature"));
+    }
+
     private static TelemetryRecord[] CreateCompletedSpanRecords()
     {
         var started = DateTimeOffset.UnixEpoch.AddSeconds(10);
@@ -206,13 +277,19 @@ public sealed class OtlpTelemetryExporterTests
         ];
     }
 
+    private static bool ContainsMetricName(byte[] payload, string metricName) =>
+        MetricNames(payload).Contains(metricName, StringComparer.Ordinal);
+
+    private static IReadOnlyList<string> MetricNames(byte[] payload) =>
+        ProtobufFieldScanner.FindStrings(payload, "1.2.2.1");
+
     private sealed class LoopbackOtlpHttpServer : IAsyncDisposable
     {
         private readonly Func<string, HttpStatusCode> statusForPath;
         private readonly TcpListener listener;
         private readonly CancellationTokenSource shutdownCts = new();
         private readonly object syncRoot = new();
-        private readonly List<string> requestPaths = [];
+        private readonly List<RecordedRequest> requests = [];
         private readonly Task acceptLoop;
 
         public LoopbackOtlpHttpServer(Func<string, HttpStatusCode> statusForPath)
@@ -252,9 +329,9 @@ public sealed class OtlpTelemetryExporterTests
             {
                 lock (syncRoot)
                 {
-                    if (requestPaths.Count >= expectedCount)
+                    if (requests.Count >= expectedCount)
                     {
-                        return requestPaths.ToArray();
+                        return requests.Select(static request => request.Path).ToArray();
                     }
                 }
 
@@ -271,7 +348,39 @@ public sealed class OtlpTelemetryExporterTests
 
             lock (syncRoot)
             {
-                return requestPaths.ToArray();
+                return requests.Select(static request => request.Path).ToArray();
+            }
+        }
+
+        public async Task<IReadOnlyList<RecordedRequest>> WaitForRequestsAsync(
+            int expectedCount,
+            TimeSpan timeout)
+        {
+            using var timeoutCts = new CancellationTokenSource(timeout);
+            while (!timeoutCts.IsCancellationRequested)
+            {
+                lock (syncRoot)
+                {
+                    if (requests.Count >= expectedCount)
+                    {
+                        return requests.ToArray();
+                    }
+                }
+
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(25), timeoutCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+
+            lock (syncRoot)
+            {
+                return requests.ToArray();
             }
         }
 
@@ -312,15 +421,14 @@ public sealed class OtlpTelemetryExporterTests
             }
 
             var path = ParsePath(headers);
+            var contentLength = ParseContentLength(headers);
+            var body = contentLength > 0
+                ? await ReadBodyAsync(stream, contentLength, shutdownCts.Token).ConfigureAwait(false)
+                : [];
+
             lock (syncRoot)
             {
-                requestPaths.Add(path);
-            }
-
-            var contentLength = ParseContentLength(headers);
-            if (contentLength > 0)
-            {
-                await ReadBodyAsync(stream, contentLength, shutdownCts.Token).ConfigureAwait(false);
+                requests.Add(new RecordedRequest(path, body));
             }
 
             await WriteResponseAsync(stream, statusForPath(path), shutdownCts.Token).ConfigureAwait(false);
@@ -377,25 +485,27 @@ public sealed class OtlpTelemetryExporterTests
             return 0;
         }
 
-        private static async Task ReadBodyAsync(
+        private static async Task<byte[]> ReadBodyAsync(
             NetworkStream stream,
             int length,
             CancellationToken cancellationToken)
         {
-            var buffer = new byte[Math.Min(length, 8192)];
-            var remaining = length;
-            while (remaining > 0)
+            var body = new byte[length];
+            var offset = 0;
+            while (offset < body.Length)
             {
                 var read = await stream
-                    .ReadAsync(buffer.AsMemory(0, Math.Min(remaining, buffer.Length)), cancellationToken)
+                    .ReadAsync(body.AsMemory(offset, body.Length - offset), cancellationToken)
                     .ConfigureAwait(false);
                 if (read == 0)
                 {
-                    return;
+                    break;
                 }
 
-                remaining -= read;
+                offset += read;
             }
+
+            return offset == body.Length ? body : body[..offset];
         }
 
         private static async Task WriteResponseAsync(
@@ -413,5 +523,7 @@ public sealed class OtlpTelemetryExporterTests
             await stream.WriteAsync(payload.AsMemory(), cancellationToken)
                 .ConfigureAwait(false);
         }
+
+        public sealed record RecordedRequest(string Path, byte[] Body);
     }
 }

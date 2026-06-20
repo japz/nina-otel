@@ -221,7 +221,7 @@ public sealed class OtlpTelemetryExporter : ITelemetryExporter, IDisposable
                 static header => $"{header.Key}={header.Value}"));
         }
 
-        if (HasTlsConfiguration(options))
+        if (options.Protocol == OtlpProtocol.HttpProtobuf || HasTlsConfiguration(options))
         {
             exporterOptions.HttpClientFactory = () => OtlpHttpClientFactory.CreateForSdkExporter(options);
         }

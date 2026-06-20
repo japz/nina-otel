@@ -38,7 +38,10 @@ internal static class OtlpHttpClientFactory
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var handler = new CertificateDisposingHttpClientHandler();
+        var handler = new CertificateDisposingHttpClientHandler
+        {
+            UseCookies = false,
+        };
         try
         {
             var auth = options.Auth;

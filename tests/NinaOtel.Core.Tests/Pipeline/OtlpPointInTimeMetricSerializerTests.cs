@@ -8,8 +8,11 @@ namespace NinaOtel.Core.Tests.Pipeline;
 
 public sealed class OtlpPointInTimeMetricSerializerTests
 {
+    private static readonly DateTimeOffset CatalogMetricTimestamp =
+        DateTimeOffset.UnixEpoch.AddSeconds(123).AddTicks(4567);
+
     [Fact]
-    public void Serialize_WritesNonEmptyPayloadForEveryCatalogDeferredPointInTimeMetric()
+    public void Serialize_WritesExpectedPayloadForEveryCatalogDeferredPointInTimeMetric()
     {
         var deferredMetrics = NinaMetricCatalog.All
             .Where(static metric => metric.ExportKind == NinaMetricExportKind.DeferredPointInTime)
@@ -17,9 +20,44 @@ public sealed class OtlpPointInTimeMetricSerializerTests
 
         foreach (var metric in deferredMetrics)
         {
-            var payload = OtlpPointInTimeMetricSerializer.Serialize([CreateMetricRecord(metric)]);
+            var record = CreateMetricRecord(metric);
+            var payload = OtlpPointInTimeMetricSerializer.Serialize([record]);
 
             payload.Should().NotBeEmpty(metric.Name);
+            var metricPayload = ProtobufFieldScanner.FindMessages(payload, "1.2.2")
+                .Should()
+                .ContainSingle(
+                    candidate => ProtobufFieldScanner.FindStrings(candidate, "1").Contains(metric.Name),
+                    metric.Name)
+                .Which;
+            var dataPoint = ProtobufFieldScanner.FindMessages(metricPayload, "5.1")
+                .Should()
+                .ContainSingle(metric.Name)
+                .Which;
+
+            ProtobufFieldScanner.FindDoubles(dataPoint, "4")
+                .Should()
+                .ContainSingle(metric.Name)
+                .Which
+                .Should()
+                .Be(record.NumericValue!.Value);
+            ProtobufFieldScanner.FindVarints(dataPoint, "3")
+                .Should()
+                .ContainSingle(metric.Name)
+                .Which
+                .Should()
+                .Be(ToUnixNanoseconds(record.Timestamp));
+
+            var attributes = ReadDataPointAttributes(dataPoint);
+            foreach (var expectedAttribute in CreateAllowedAttributes(metric.AttributeNames))
+            {
+                attributes.Should().ContainKey(expectedAttribute.Key);
+                attributes[expectedAttribute.Key].Should()
+                    .Be(NormalizeOtlpAnyValue(expectedAttribute.Value), expectedAttribute.Key);
+            }
+
+            attributes["ninaotel.source"].Should().Be(record.Source);
+            attributes.Should().NotContainKey("error_message");
         }
     }
 
@@ -86,107 +124,102 @@ public sealed class OtlpPointInTimeMetricSerializerTests
     private static ulong ToUnixNanoseconds(DateTimeOffset timestamp) =>
         (ulong)((timestamp.ToUniversalTime().Ticks - DateTimeOffset.UnixEpoch.Ticks) * 100);
 
-    private static TelemetryRecord CreateMetricRecord(NinaMetricDefinition metric) =>
-        TelemetryRecord.Metric(
-            DateTimeOffset.UnixEpoch,
+    private static TelemetryRecord CreateMetricRecord(NinaMetricDefinition metric)
+    {
+        var attributes = CreateAllowedAttributes(metric.AttributeNames);
+        attributes["error_message"] = "dropped high-cardinality text";
+
+        return TelemetryRecord.Metric(
+            CatalogMetricTimestamp,
             $"nina.{metric.Category}",
             metric.Name,
-            42.5,
+            metric.ValueKind == "integer" ? 42.0 : 42.5,
             TelemetryPriority.Normal,
-            metric.AttributeNames.ToDictionary(
-                static attributeName => attributeName,
-                static attributeName => (object?)$"{attributeName}-value",
-                StringComparer.Ordinal));
-
-    private static class ProtobufFieldScanner
-    {
-        public static IReadOnlyList<ulong> FindVarints(byte[] payload, string path)
-        {
-            var values = new List<ulong>();
-            Scan(payload, string.Empty, path, values, depth: 0);
-            return values;
-        }
-
-        private static void Scan(
-            ReadOnlySpan<byte> payload,
-            string currentPath,
-            string targetPath,
-            List<ulong> values,
-            int depth)
-        {
-            if (depth > 16)
-            {
-                return;
-            }
-
-            var offset = 0;
-            while (offset < payload.Length)
-            {
-                var key = ReadVarint(payload, ref offset);
-                var fieldNumber = key >> 3;
-                var wireType = key & 0x7;
-                var fieldPath = string.IsNullOrEmpty(currentPath)
-                    ? fieldNumber.ToString()
-                    : $"{currentPath}.{fieldNumber}";
-
-                switch (wireType)
-                {
-                    case 0:
-                        var value = ReadVarint(payload, ref offset);
-                        if (fieldPath == targetPath)
-                        {
-                            values.Add(value);
-                        }
-                        break;
-                    case 1:
-                        if (offset + sizeof(ulong) > payload.Length)
-                        {
-                            return;
-                        }
-
-                        offset += sizeof(ulong);
-                        break;
-                    case 2:
-                        var length = checked((int)ReadVarint(payload, ref offset));
-                        if (length < 0 || offset + length > payload.Length)
-                        {
-                            return;
-                        }
-
-                        var child = payload.Slice(offset, length);
-                        try
-                        {
-                            Scan(child, fieldPath, targetPath, values, depth + 1);
-                        }
-                        catch (InvalidOperationException)
-                        {
-                        }
-
-                        offset += length;
-                        break;
-                    default:
-                        return;
-                }
-            }
-        }
-
-        private static ulong ReadVarint(ReadOnlySpan<byte> payload, ref int offset)
-        {
-            ulong result = 0;
-            var shift = 0;
-            while (offset < payload.Length)
-            {
-                var value = payload[offset++];
-                result |= (ulong)(value & 0x7F) << shift;
-                if ((value & 0x80) == 0)
-                {
-                    return result;
-                }
-
-                shift += 7;
-            }
-
-            throw new InvalidOperationException("Truncated protobuf varint.");
-        }
+            attributes);
     }
+
+    private static Dictionary<string, object?> CreateAllowedAttributes(IEnumerable<string> attributeNames)
+    {
+        var attributes = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var attributeName in attributeNames)
+        {
+            attributes[attributeName] = CreateAttributeValue(attributeName);
+        }
+
+        return attributes;
+    }
+
+    private static object CreateAttributeValue(string attributeName) =>
+        attributeName switch
+        {
+            "host_name" => true,
+            "profile_name" => "imaging-profile",
+            "readout_mode" => 2,
+            "exposure_duration_seconds" => 180.25,
+            _ => $"{attributeName}-value",
+        };
+
+    private static IReadOnlyDictionary<string, object?> ReadDataPointAttributes(byte[] dataPoint)
+    {
+        var attributes = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var attributePayload in ProtobufFieldScanner.FindMessages(dataPoint, "7"))
+        {
+            var key = ProtobufFieldScanner.FindStrings(attributePayload, "1")
+                .Should()
+                .ContainSingle()
+                .Which;
+            var valuePayload = ProtobufFieldScanner.FindMessages(attributePayload, "2")
+                .Should()
+                .ContainSingle()
+                .Which;
+            attributes.Add(key, ReadAnyValue(valuePayload));
+        }
+
+        return attributes;
+    }
+
+    private static object ReadAnyValue(byte[] anyValue)
+    {
+        var strings = ProtobufFieldScanner.FindStrings(anyValue, "1");
+        if (strings.Count > 0)
+        {
+            return strings.Should().ContainSingle().Which;
+        }
+
+        var booleans = ProtobufFieldScanner.FindBooleans(anyValue, "2");
+        if (booleans.Count > 0)
+        {
+            return booleans.Should().ContainSingle().Which;
+        }
+
+        var integers = ProtobufFieldScanner.FindInt64s(anyValue, "3");
+        if (integers.Count > 0)
+        {
+            return integers.Should().ContainSingle().Which;
+        }
+
+        var doubles = ProtobufFieldScanner.FindDoubles(anyValue, "4");
+        if (doubles.Count > 0)
+        {
+            return doubles.Should().ContainSingle().Which;
+        }
+
+        throw new InvalidOperationException("Unsupported OTLP AnyValue payload.");
+    }
+
+    private static object? NormalizeOtlpAnyValue(object? value) =>
+        value switch
+        {
+            byte number => (long)number,
+            sbyte number => (long)number,
+            short number => (long)number,
+            ushort number => (long)number,
+            int number => (long)number,
+            uint number => (long)number,
+            long number => number,
+            ulong number when number <= long.MaxValue => (long)number,
+            float number => (double)number,
+            decimal number => (double)number,
+            _ => value,
+        };
 }
