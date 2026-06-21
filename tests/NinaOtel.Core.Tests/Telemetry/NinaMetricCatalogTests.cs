@@ -293,6 +293,52 @@ public sealed class NinaMetricCatalogTests
     }
 
     [Fact]
+    public void All_IncludesDeferredNightSummaryCountMetricsWithStableAttributes()
+    {
+        string[] metricNames =
+        [
+            "night_summary_session_started_count",
+            "night_summary_session_ended_count",
+            "night_summary_report_started_count",
+            "night_summary_report_delivered_count",
+            "night_summary_report_failed_count",
+            "night_summary_autofocus_completed_count",
+            "night_summary_meridian_flip_count",
+        ];
+
+        foreach (var metricName in metricNames)
+        {
+            var metric = NinaMetricCatalog.All.Should()
+                .ContainSingle(candidate => candidate.Name == metricName)
+                .Subject;
+
+            metric.Category.Should().Be("night_summary");
+            metric.ExportKind.Should().Be(NinaMetricExportKind.DeferredPointInTime);
+            metric.AttributeNames.Should().Contain(
+                "profile_name",
+                "host_name",
+                "addon.id",
+                "source",
+                "source.file",
+                "event.kind",
+                "session.id");
+            metric.AttributeNames.Should().NotContain(
+                "message",
+                "raw.line");
+            NinaMetricCatalog.GetMetricAttributeNames(metricName, NinaMetricExportKind.DeferredPointInTime)
+                .Should()
+                .NotBeNull()
+                .And.Contain(
+                    "addon.id",
+                    "source",
+                    "source.file",
+                    "event.kind",
+                    "session.id");
+            NinaMetricCatalog.IsLiveObservableGauge(metricName).Should().BeFalse();
+        }
+    }
+
+    [Fact]
     public void SwitchReadOnlyGaugeName_UsesInfluxExporterSwitchMetricPattern()
     {
         NinaMetricCatalog.SwitchReadOnlyGaugeName(23).Should().Be("switch_ro_sw23");
