@@ -15,6 +15,7 @@ internal sealed class DiskTelemetrySpool
     private readonly string spoolPath;
     private readonly long maxBytes;
     private readonly TimeSpan maxAge;
+    private readonly Func<string, TelemetryPriority> evictionPriorityResolver;
 
     public DiskTelemetrySpool(string spoolPath)
         : this(spoolPath, DefaultMaxBytes, DefaultMaxAge)
@@ -22,8 +23,18 @@ internal sealed class DiskTelemetrySpool
     }
 
     public DiskTelemetrySpool(string spoolPath, long maxBytes, TimeSpan maxAge)
+        : this(spoolPath, maxBytes, maxAge, GetEvictionPriority)
+    {
+    }
+
+    internal DiskTelemetrySpool(
+        string spoolPath,
+        long maxBytes,
+        TimeSpan maxAge,
+        Func<string, TelemetryPriority> evictionPriorityResolver)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(spoolPath);
+        ArgumentNullException.ThrowIfNull(evictionPriorityResolver);
         if (maxBytes <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(maxBytes), "Max bytes must be positive.");
@@ -37,6 +48,7 @@ internal sealed class DiskTelemetrySpool
         this.spoolPath = ExpandLocalAppData(spoolPath);
         this.maxBytes = maxBytes;
         this.maxAge = maxAge;
+        this.evictionPriorityResolver = evictionPriorityResolver;
     }
 
     public async Task AppendBatchAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
@@ -183,7 +195,7 @@ internal sealed class DiskTelemetrySpool
             .Select(file => new EvictionCandidate(
                 file,
                 string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal),
-                GetEvictionPriority(file.FullName)))
+                evictionPriorityResolver(file.FullName)))
             .OrderBy(candidate => candidate.IsNewestProtected)
             .ThenBy(candidate => candidate.Priority)
             .ThenBy(candidate => candidate.File.FullName, StringComparer.Ordinal)

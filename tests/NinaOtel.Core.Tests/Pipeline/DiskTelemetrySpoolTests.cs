@@ -198,16 +198,22 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     public async Task AppendBatchAsync_WhenSpoolBytesAreWithinLimit_DoesNotReadExistingReadyFilesForEvictionPriority()
     {
         var spoolPath = Path.Combine(root, "spool");
-        var spool = new DiskTelemetrySpool(spoolPath, maxBytes: 1024 * 1024, maxAge: TimeSpan.FromDays(7));
+        var priorityResolverCalls = 0;
+        var spool = new DiskTelemetrySpool(
+            spoolPath,
+            maxBytes: 1024 * 1024,
+            maxAge: TimeSpan.FromDays(7),
+            _ =>
+            {
+                priorityResolverCalls++;
+                throw new InvalidOperationException("Priority resolver should not run when spool bytes are within limit.");
+            });
 
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("existing") }, CancellationToken.None);
-        var existingReadyPath = Directory.GetFiles(spoolPath, "*.ready").Should().ContainSingle().Subject;
-        var oldAccessTime = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        File.SetLastAccessTimeUtc(existingReadyPath, oldAccessTime);
-
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("new") }, CancellationToken.None);
 
-        File.GetLastAccessTimeUtc(existingReadyPath).Should().Be(oldAccessTime);
+        priorityResolverCalls.Should().Be(0);
+        Directory.GetFiles(spoolPath, "*.ready").Should().HaveCount(2);
     }
 
     [Fact]
