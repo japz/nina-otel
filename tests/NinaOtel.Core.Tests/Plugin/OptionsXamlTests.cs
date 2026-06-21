@@ -113,7 +113,7 @@ public sealed class OptionsXamlTests
         labels.Should().Contain("Enabled:");
         labels.Should().Contain("Raw log forwarding:");
         checkboxes.Should().NotContain(
-            element => element.Attribute("Content") is not null,
+            element => element.Attribute("Content") != null,
             "NINA renders these checkboxes as switch controls, so labels must be separate visible text");
     }
 
