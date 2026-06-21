@@ -188,9 +188,12 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
     {
         if (!string.IsNullOrWhiteSpace(logEvent.SessionId))
         {
-            lock (syncRoot)
+            if (logEvent.Kind == NightSummaryLogEventKind.SessionStarted)
             {
-                activeSessionIds[logEvent.SourcePath] = logEvent.SessionId;
+                lock (syncRoot)
+                {
+                    activeSessionIds[logEvent.SourcePath] = logEvent.SessionId;
+                }
             }
 
             return logEvent.SessionId;

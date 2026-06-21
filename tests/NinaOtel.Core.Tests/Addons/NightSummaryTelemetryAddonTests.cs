@@ -17,6 +17,10 @@ public sealed class NightSummaryTelemetryAddonTests
         "2026-06-18T23:01:00.0000|INFO|NightSummary.cs|Log|10|NightSummary: Generating report for session abc-123 ...";
     private const string ReportDeliveredWithoutSessionIdLine =
         "2026-06-18T23:02:00.0000|INFO|NightSummary.cs|Log|10|NightSummary: Report sent and session marked as complete";
+    private const string ReportFailedWithoutSessionIdLine =
+        "2026-06-18T23:02:00.0000|INFO|NightSummary.cs|Log|10|NightSummary: Failed to generate/send report. SMTP failed";
+    private const string AutoFocusCompletedWithoutSessionIdLine =
+        "2026-06-18T23:03:00.0000|INFO|NightSummary.cs|Log|10|NightSummary: Event logged — AutoFocus: AutoFocus completed — Filter: Ha, Temp: -3.2°C, Position: 12456";
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(10);
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(2);
@@ -208,6 +212,79 @@ public sealed class NightSummaryTelemetryAddonTests
         deliveredMetric.Attributes["session.id"].Should().Be("abc-123");
         deliveredMetric.NumericValue.Should().Be(1);
         startedMetric.NumericValue.Should().Be(1);
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Tailer_WhenReportFailureOmitsSessionId_ReusesActiveReportSpanIdAndSessionId()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            ReportGeneratingLine + Environment.NewLine + ReportFailedWithoutSessionIdLine + Environment.NewLine);
+
+        var failedMetric = await WaitForRecordAsync(sink, record => record.Name == "night_summary_report_failed_count");
+        var startSpan = sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Span &&
+            record.Name == "night_summary.report" &&
+            record.SpanKind == SpanEventKind.Start).Subject;
+        var stopSpan = sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Span &&
+            record.Name == "night_summary.report" &&
+            record.SpanKind == SpanEventKind.Stop).Subject;
+        var failedLog = sink.Records.Should().ContainSingle(record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "night_summary.log_event" &&
+            Equals(record.Attributes["event.kind"], "report_failed")).Subject;
+
+        startSpan.SpanId.Should().Be($"night_summary.report|{temp.Path}|abc-123");
+        stopSpan.SpanId.Should().Be(startSpan.SpanId);
+        stopSpan.Attributes["event.kind"].Should().Be("report_failed");
+        stopSpan.Attributes["session.id"].Should().Be("abc-123");
+        failedMetric.NumericValue.Should().Be(1);
+        failedMetric.Attributes["event.kind"].Should().Be("report_failed");
+        failedMetric.Attributes["session.id"].Should().Be("abc-123");
+        failedLog.Severity.Should().Be(TelemetrySeverity.Error);
+        failedLog.Priority.Should().Be(TelemetryPriority.Important);
+        failedLog.Attributes["event.kind"].Should().Be("report_failed");
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Tailer_WhenReportRunsAfterSessionEnded_DoesNotLeakEndedSessionToLaterSessionlessMetrics()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            string.Join(
+                Environment.NewLine,
+                [
+                    SessionEndedLine,
+                    ReportGeneratingLine,
+                    ReportDeliveredWithoutSessionIdLine,
+                    AutoFocusCompletedWithoutSessionIdLine,
+                    string.Empty,
+                ]));
+
+        var autoFocusMetric = await WaitForRecordAsync(
+            sink,
+            record => record.Name == "night_summary_autofocus_completed_count");
+
+        autoFocusMetric.Attributes.Should().NotContainKey("session.id");
 
         await addon.StopAsync(CancellationToken.None);
     }
