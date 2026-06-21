@@ -13,6 +13,11 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     internal const string TargetSchedulerLogPathSettingName = "LogPath";
     internal const string NightSummaryAddonId = "night-summary";
     internal const string NightSummaryLogPathSettingName = "LogPath";
+    internal const string OnStepXAddonId = "onstepx";
+    internal const string OnStepXHostSettingName = "Host";
+    internal const string OnStepXPortSettingName = "Port";
+    internal const string OnStepXPollingIntervalSecondsSettingName = "PollingIntervalSeconds";
+    internal const string OnStepXCommandTimeoutMillisecondsSettingName = "CommandTimeoutMilliseconds";
 
     private readonly Action<AddonOptionViewModel, string, object> settingChanged;
     private bool isEnabled;
@@ -22,6 +27,10 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     private string phd2GuideLogPath = string.Empty;
     private string targetSchedulerLogPath = string.Empty;
     private string nightSummaryLogPath = string.Empty;
+    private string onStepXHost = string.Empty;
+    private string onStepXPort = string.Empty;
+    private string onStepXPollingIntervalSeconds = string.Empty;
+    private string onStepXCommandTimeoutMilliseconds = string.Empty;
     private string status = "disabled";
     private string message = "Add-on disabled.";
 
@@ -45,6 +54,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     public bool IsPhd2 => string.Equals(Id, Phd2AddonId, StringComparison.Ordinal);
     public bool IsTargetScheduler => string.Equals(Id, TargetSchedulerAddonId, StringComparison.Ordinal);
     public bool IsNightSummary => string.Equals(Id, NightSummaryAddonId, StringComparison.Ordinal);
+    public bool IsOnStepX => string.Equals(Id, OnStepXAddonId, StringComparison.Ordinal);
 
     public bool IsEnabled
     {
@@ -121,6 +131,36 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         }
     }
 
+    public string OnStepXHost
+    {
+        get => onStepXHost;
+        set => SetOnStepXSetting(ref onStepXHost, value, OnStepXHostSettingName);
+    }
+
+    public string OnStepXPort
+    {
+        get => onStepXPort;
+        set => SetOnStepXSetting(ref onStepXPort, value, OnStepXPortSettingName);
+    }
+
+    public string OnStepXPollingIntervalSeconds
+    {
+        get => onStepXPollingIntervalSeconds;
+        set => SetOnStepXSetting(
+            ref onStepXPollingIntervalSeconds,
+            value,
+            OnStepXPollingIntervalSecondsSettingName);
+    }
+
+    public string OnStepXCommandTimeoutMilliseconds
+    {
+        get => onStepXCommandTimeoutMilliseconds;
+        set => SetOnStepXSetting(
+            ref onStepXCommandTimeoutMilliseconds,
+            value,
+            OnStepXCommandTimeoutMillisecondsSettingName);
+    }
+
     public string Status
     {
         get => status;
@@ -168,6 +208,36 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
                 ? nightSummaryLogPathSetting
                 : string.Empty,
             nameof(NightSummaryLogPath));
+        SetField(
+            ref onStepXHost,
+            IsOnStepX && settings.TryGetValue(OnStepXHostSettingName, out var onStepXHostSetting)
+                ? onStepXHostSetting
+                : string.Empty,
+            nameof(OnStepXHost));
+        SetField(
+            ref onStepXPort,
+            IsOnStepX && settings.TryGetValue(OnStepXPortSettingName, out var onStepXPortSetting)
+                ? onStepXPortSetting
+                : string.Empty,
+            nameof(OnStepXPort));
+        SetField(
+            ref onStepXPollingIntervalSeconds,
+            IsOnStepX &&
+                settings.TryGetValue(
+                    OnStepXPollingIntervalSecondsSettingName,
+                    out var onStepXPollingIntervalSecondsSetting)
+                    ? onStepXPollingIntervalSecondsSetting
+                    : string.Empty,
+            nameof(OnStepXPollingIntervalSeconds));
+        SetField(
+            ref onStepXCommandTimeoutMilliseconds,
+            IsOnStepX &&
+                settings.TryGetValue(
+                    OnStepXCommandTimeoutMillisecondsSettingName,
+                    out var onStepXCommandTimeoutMillisecondsSetting)
+                    ? onStepXCommandTimeoutMillisecondsSetting
+                    : string.Empty,
+            nameof(OnStepXCommandTimeoutMilliseconds));
         ApplyConfiguredStatus();
     }
 
@@ -238,12 +308,40 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
             AddSettingIfConfigured(settings, NightSummaryLogPathSettingName, NightSummaryLogPath);
         }
 
+        if (IsOnStepX)
+        {
+            AddSettingIfConfigured(settings, OnStepXHostSettingName, OnStepXHost);
+            AddSettingIfConfigured(settings, OnStepXPortSettingName, OnStepXPort);
+            AddSettingIfConfigured(
+                settings,
+                OnStepXPollingIntervalSecondsSettingName,
+                OnStepXPollingIntervalSeconds);
+            AddSettingIfConfigured(
+                settings,
+                OnStepXCommandTimeoutMillisecondsSettingName,
+                OnStepXCommandTimeoutMilliseconds);
+        }
+
         return settings;
     }
 
     private void SetPhd2Path(ref string field, string? value, string settingName)
     {
         if (!IsPhd2)
+        {
+            return;
+        }
+
+        var normalized = value?.Trim() ?? string.Empty;
+        if (SetField(ref field, normalized))
+        {
+            settingChanged(this, settingName, normalized);
+        }
+    }
+
+    private void SetOnStepXSetting(ref string field, string? value, string settingName)
+    {
+        if (!IsOnStepX)
         {
             return;
         }

@@ -69,6 +69,16 @@ public static class NinaMetricCatalog
             Metric("mount_altitude", "mount", "Mount altitude in degrees.", "double", "mount_name"),
             Metric("mount_azimuth", "mount", "Mount azimuth in degrees.", "double", "mount_name"),
 
+            Metric("onstepx_tracking_enabled", "onstepx", "OnStepX tracking state as 1 for tracking and 0 for not tracking.", "double", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_goto_active", "onstepx", "OnStepX go-to state as 1 for active and 0 for inactive.", "double", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_parked", "onstepx", "OnStepX parked state as 1 for parked and 0 for not parked.", "double", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_parking", "onstepx", "OnStepX parking state as 1 for parking and 0 otherwise.", "double", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_park_failed", "onstepx", "OnStepX park failure state as 1 for failed and 0 otherwise.", "double", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_home", "onstepx", "OnStepX home state as 1 for at home and 0 otherwise.", "double", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_homing", "onstepx", "OnStepX homing state as 1 for homing and 0 otherwise.", "double", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_error_code", "onstepx", "OnStepX status error code reported by controller status.", "integer", "mount_name", "onstepx.host", "onstepx.port", "mount.type", "pier.side"),
+            Metric("onstepx_tracking_rate_hz", "onstepx", "OnStepX tracking rate in hertz.", "double", "mount_name", "onstepx.host", "onstepx.port"),
+
             Metric("rotator_mechanical_angle", "rotator", "Rotator mechanical angle in degrees.", "double", "rotator_name"),
             Metric("rotator_angle", "rotator", "Rotator sky angle in degrees.", "double", "rotator_name"),
 

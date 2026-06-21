@@ -188,6 +188,50 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void OnStepXAddonSettings_SaveConnectionAndTimingSettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var onStepX = viewModel.Addons.Single(addon => addon.Id == "onstepx");
+
+        onStepX.OnStepXHost = "  mount.local  ";
+        onStepX.OnStepXPort = "9999";
+        onStepX.OnStepXPollingIntervalSeconds = "15";
+        onStepX.OnStepXCommandTimeoutMilliseconds = "1500";
+
+        settings.GetString("Addon.onstepx.Host", string.Empty).Should().Be("mount.local");
+        settings.GetString("Addon.onstepx.Port", string.Empty).Should().Be("9999");
+        settings.GetString("Addon.onstepx.PollingIntervalSeconds", string.Empty).Should().Be("15");
+        settings.GetString("Addon.onstepx.CommandTimeoutMilliseconds", string.Empty).Should().Be("1500");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("Host", "mount.local");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("Port", "9999");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("PollingIntervalSeconds", "15");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("CommandTimeoutMilliseconds", "1500");
+    }
+
+    [Fact]
+    public void Constructor_LoadsPersistedOnStepXConnectionAndTimingSettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("Addon.onstepx.Host", "10.0.0.42");
+        settings.SetString("Addon.onstepx.Port", "9998");
+        settings.SetString("Addon.onstepx.PollingIntervalSeconds", "30");
+        settings.SetString("Addon.onstepx.CommandTimeoutMilliseconds", "750");
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var onStepX = viewModel.Addons.Single(addon => addon.Id == "onstepx");
+
+        onStepX.OnStepXHost.Should().Be("10.0.0.42");
+        onStepX.OnStepXPort.Should().Be("9998");
+        onStepX.OnStepXPollingIntervalSeconds.Should().Be("30");
+        onStepX.OnStepXCommandTimeoutMilliseconds.Should().Be("750");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("Host", "10.0.0.42");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("Port", "9998");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("PollingIntervalSeconds", "30");
+        viewModel.Options.Addons["onstepx"].Settings.Should().Contain("CommandTimeoutMilliseconds", "750");
+    }
+
+    [Fact]
     public void UpdateAddonHealth_UpdatesMatchingAddonStatusAndMessage()
     {
         var settings = new InMemoryPluginSettingsStore();

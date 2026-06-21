@@ -144,6 +144,26 @@ public sealed class OptionsXamlTests
     }
 
     [Theory]
+    [InlineData("OnStepXHost")]
+    [InlineData("OnStepXPort")]
+    [InlineData("OnStepXPollingIntervalSeconds")]
+    [InlineData("OnStepXCommandTimeoutMilliseconds")]
+    public void OptionsTemplate_OnStepXTextBoxesUseTwoWayLostFocusBindings(string propertyName)
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+        var itemsControl = document
+            .Descendants(PresentationNamespace + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value.Contains("NinaOtelOptionsViewModel.Addons", StringComparison.Ordinal) == true);
+
+        var textbox = SingleTextBoxBoundTo(itemsControl, propertyName);
+        var binding = textbox.Attribute("Text")?.Value;
+
+        binding.Should().Contain("Mode=TwoWay");
+        binding.Should().Contain("UpdateSourceTrigger=LostFocus");
+        textbox.Attribute("Visibility")?.Value.Should().Contain("IsOnStepX");
+    }
+
+    [Theory]
     [InlineData(
         "BearerTokenPasswordBox_Loaded",
         "BearerTokenPasswordBox_LostFocus",

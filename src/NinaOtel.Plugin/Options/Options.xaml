@@ -50,6 +50,14 @@
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="4" />
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="4" />
+                                <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
 
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding DisplayName}" FontWeight="SemiBold" />
@@ -121,9 +129,68 @@
                                 Text="{Binding NightSummaryLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                 Visibility="{Binding IsNightSummary, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
 
-                            <TextBlock Grid.Row="12" Grid.Column="0" Text="{Binding Status}" Foreground="#666666" />
                             <TextBlock
                                 Grid.Row="12"
+                                Grid.Column="0"
+                                Text="OnStepX host:"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                            <TextBox
+                                Grid.Row="12"
+                                Grid.Column="2"
+                                MinWidth="220"
+                                Text="{Binding OnStepXHost, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+
+                            <TextBlock
+                                Grid.Row="14"
+                                Grid.Column="0"
+                                Text="OnStepX port:"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                            <TextBox
+                                Grid.Row="14"
+                                Grid.Column="2"
+                                Width="120"
+                                HorizontalAlignment="Left"
+                                Text="{Binding OnStepXPort, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+
+                            <TextBlock
+                                Grid.Row="16"
+                                Grid.Column="0"
+                                Text="Poll seconds:"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                            <TextBox
+                                Grid.Row="16"
+                                Grid.Column="2"
+                                Width="120"
+                                HorizontalAlignment="Left"
+                                Text="{Binding OnStepXPollingIntervalSeconds, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+
+                            <TextBlock
+                                Grid.Row="18"
+                                Grid.Column="0"
+                                Text="Timeout ms:"
+                                FontWeight="SemiBold"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                            <TextBox
+                                Grid.Row="18"
+                                Grid.Column="2"
+                                Width="120"
+                                HorizontalAlignment="Left"
+                                Text="{Binding OnStepXCommandTimeoutMilliseconds, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                Visibility="{Binding IsOnStepX, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+
+                            <TextBlock Grid.Row="20" Grid.Column="0" Text="{Binding Status}" Foreground="#666666" />
+                            <TextBlock
+                                Grid.Row="20"
                                 Grid.Column="2"
                                 Text="{Binding Message}"
                                 Foreground="#666666"
