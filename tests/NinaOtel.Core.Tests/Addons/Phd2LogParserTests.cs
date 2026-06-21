@@ -175,7 +175,7 @@ public sealed class Phd2LogParserTests
     public void TryParseGuideSampleLine_WhenSampleTimeWouldOverflow_ReturnsFalseWithoutThrowing()
     {
         var act = () => Phd2LogParser.TryParseGuideSampleLine(
-            "1,1e300,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
+            "1,1e300,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,0,0,5000,30,0",
             DateTimeOffset.UnixEpoch,
             SourcePath,
             out _);
@@ -189,7 +189,7 @@ public sealed class Phd2LogParserTests
         var sessionStartedAt = DateTimeOffset.Parse("2026-06-18T22:00:00Z");
 
         var parsed = Phd2LogParser.TryParseGuideSampleLine(
-            "1,1.500,\"Mount,USB\",0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
+            "1,1.500,\"Mount,USB\",0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,0,0,5000,30,0",
             sessionStartedAt,
             SourcePath,
             out var sample);
@@ -198,17 +198,44 @@ public sealed class Phd2LogParserTests
         sample.Should().NotBeNull();
         var guideSample = sample!;
         guideSample.Timestamp.Should().Be(DateTimeOffset.Parse("2026-06-18T22:00:01.500Z"));
-        guideSample.RaDistanceArcsec.Should().Be(3);
-        guideSample.DecDistanceArcsec.Should().Be(4);
+        guideSample.RaDistancePixel.Should().Be(3);
+        guideSample.DecDistancePixel.Should().Be(4);
+        guideSample.Pulse.Should().NotBeNull();
+        guideSample.Pulse!.RaDistancePixel.Should().Be(0.5);
+        guideSample.Pulse.RaDurationMs.Should().Be(100);
+        guideSample.Pulse.RaDirection.Should().Be("W");
+        guideSample.Pulse.DecDistancePixel.Should().Be(-0.6);
+        guideSample.Pulse.DecDurationMs.Should().Be(200);
+        guideSample.Pulse.DecDirection.Should().Be("N");
         guideSample.Source.Should().Be("phd2");
         guideSample.SourcePath.Should().Be(SourcePath);
     }
 
+    [Fact]
+    public void TryParseGuideSampleLine_WhenPulseColumnsAreMissing_ReturnsGuideSampleWithoutPulse()
+    {
+        var sessionStartedAt = DateTimeOffset.Parse("2026-06-18T22:00:00Z");
+
+        var parsed = Phd2LogParser.TryParseGuideSampleLine(
+            "1,1.500,Mount,0.1,-0.2,3,4",
+            sessionStartedAt,
+            SourcePath,
+            out var sample);
+
+        parsed.Should().BeTrue();
+        sample.Should().NotBeNull();
+        var guideSample = sample!;
+        guideSample.Timestamp.Should().Be(DateTimeOffset.Parse("2026-06-18T22:00:01.500Z"));
+        guideSample.RaDistancePixel.Should().Be(3);
+        guideSample.DecDistancePixel.Should().Be(4);
+        guideSample.Pulse.Should().BeNull();
+    }
+
     [Theory]
-    [InlineData("1,1.000,Mount,0.1,-0.2,not-a-number,4,0.5,-0.6,100,W,200,N,30,0,5000")]
-    [InlineData("1,1.000,Mount,0.1,-0.2,3,not-a-number,0.5,-0.6,100,W,200,N,30,0,5000")]
-    [InlineData("1,1.000,Mount,0.1,-0.2,1e308,4,0.5,-0.6,100,W,200,N,30,0,5000")]
-    [InlineData("1,1.000,Mount,0.1,-0.2,3,1e308,0.5,-0.6,100,W,200,N,30,0,5000")]
+    [InlineData("1,1.000,Mount,0.1,-0.2,not-a-number,4,0.5,-0.6,100,W,200,N,0,0,5000,30,0")]
+    [InlineData("1,1.000,Mount,0.1,-0.2,3,not-a-number,0.5,-0.6,100,W,200,N,0,0,5000,30,0")]
+    [InlineData("1,1.000,Mount,0.1,-0.2,1e308,4,0.5,-0.6,100,W,200,N,0,0,5000,30,0")]
+    [InlineData("1,1.000,Mount,0.1,-0.2,3,1e308,0.5,-0.6,100,W,200,N,0,0,5000,30,0")]
     public void TryParseGuideSampleLine_WhenDistancesAreMalformedOrTooLarge_ReturnsFalse(string line)
     {
         var act = () => Phd2LogParser.TryParseGuideSampleLine(

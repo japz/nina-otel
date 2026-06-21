@@ -21,10 +21,20 @@ internal sealed record Phd2LogEvent(
     string SourcePath,
     string OriginalLine);
 
+internal sealed record Phd2GuidePulse(
+    double RaDistancePixel,
+    double RaDurationMs,
+    string RaDirection,
+    double DecDistancePixel,
+    double DecDurationMs,
+    string DecDirection);
+
 internal sealed record Phd2GuideSample(
     DateTimeOffset Timestamp,
-    double RaDistanceArcsec,
-    double DecDistanceArcsec,
+    int? Frame,
+    double RaDistancePixel,
+    double DecDistancePixel,
+    Phd2GuidePulse? Pulse,
     string Source,
     string SourcePath,
     string OriginalLine);

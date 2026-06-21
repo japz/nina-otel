@@ -210,6 +210,7 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             return;
         }
 
+        IReadOnlyList<TelemetryRecord>? pulseMetrics = null;
         lock (syncRoot)
         {
             if (!activeGuideSessions.TryGetValue(sourcePath, out var session))
@@ -224,8 +225,21 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
                     out var sample) &&
                 sample is not null)
             {
-                session.Add(sample);
+                if (session.Add(sample))
+                {
+                    pulseMetrics = CreateGuidePulseMetrics(session, sample).ToArray();
+                }
             }
+        }
+
+        if (pulseMetrics is null)
+        {
+            return;
+        }
+
+        foreach (var metric in pulseMetrics)
+        {
+            context.Sink.TryPublish(metric);
         }
     }
 
@@ -267,10 +281,36 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             ["phd2.session_start"] = summary.StartedAt.ToString("O", CultureInfo.InvariantCulture),
         };
 
-        yield return CreateGuideMetric(summary, "phd2_guide_rms_ra_arcsec", summary.RaRmsArcsec, attributes);
-        yield return CreateGuideMetric(summary, "phd2_guide_rms_dec_arcsec", summary.DecRmsArcsec, attributes);
-        yield return CreateGuideMetric(summary, "phd2_guide_rms_total_arcsec", summary.TotalRmsArcsec, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_ra_pixel", summary.RaRmsPixel, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_dec_pixel", summary.DecRmsPixel, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_pixel", summary.TotalRmsPixel, attributes);
         yield return CreateGuideMetric(summary, "phd2_guide_sample_count", summary.SampleCount, attributes);
+    }
+
+    private static IEnumerable<TelemetryRecord> CreateGuidePulseMetrics(
+        Phd2GuideSession session,
+        Phd2GuideSample sample)
+    {
+        if (sample.Pulse is not { } pulse)
+        {
+            yield break;
+        }
+
+        var attributes = new Dictionary<string, object?>
+        {
+            ["addon.id"] = "phd2",
+            ["source"] = "phd2",
+            ["source.file"] = sample.SourcePath,
+            ["guider_name"] = "PHD2",
+            ["phd2.session_start"] = session.StartedAt.ToString("O", CultureInfo.InvariantCulture),
+            ["phd2.ra_direction"] = pulse.RaDirection,
+            ["phd2.dec_direction"] = pulse.DecDirection,
+        };
+
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_distance_pixel", pulse.RaDistancePixel, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_duration_ms", pulse.RaDurationMs, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_distance_pixel", pulse.DecDistancePixel, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_duration_ms", pulse.DecDurationMs, attributes);
     }
 
     private static TelemetryRecord CreateGuideMetric(
@@ -280,6 +320,19 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         IReadOnlyDictionary<string, object?> attributes) =>
         TelemetryRecord.Metric(
             summary.EndedAt,
+            "phd2",
+            name,
+            value,
+            TelemetryPriority.Normal,
+            attributes);
+
+    private static TelemetryRecord CreateGuidePulseMetric(
+        Phd2GuideSample sample,
+        string name,
+        double value,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TelemetryRecord.Metric(
+            sample.Timestamp,
             "phd2",
             name,
             value,
@@ -477,10 +530,10 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
 
         public int SampleCount { get; private set; }
 
-        public void Add(Phd2GuideSample sample)
+        public bool Add(Phd2GuideSample sample)
         {
-            var raSquare = sample.RaDistanceArcsec * sample.RaDistanceArcsec;
-            var decSquare = sample.DecDistanceArcsec * sample.DecDistanceArcsec;
+            var raSquare = sample.RaDistancePixel * sample.RaDistancePixel;
+            var decSquare = sample.DecDistancePixel * sample.DecDistancePixel;
             var nextRaSquaredSum = raSquaredSum + raSquare;
             var nextDecSquaredSum = decSquaredSum + decSquare;
             var nextTotalSquaredSum = nextRaSquaredSum + nextDecSquaredSum;
@@ -491,12 +544,13 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
                 !double.IsFinite(nextDecSquaredSum) ||
                 !double.IsFinite(nextTotalSquaredSum))
             {
-                return;
+                return false;
             }
 
             raSquaredSum = nextRaSquaredSum;
             decSquaredSum = nextDecSquaredSum;
             SampleCount++;
+            return true;
         }
 
         public Phd2GuideSummary? Complete(DateTimeOffset endedAt)
@@ -522,7 +576,7 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         DateTimeOffset EndedAt,
         string SourcePath,
         int SampleCount,
-        double RaRmsArcsec,
-        double DecRmsArcsec,
-        double TotalRmsArcsec);
+        double RaRmsPixel,
+        double DecRmsPixel,
+        double TotalRmsPixel);
 }

@@ -9,9 +9,16 @@ internal static class Phd2LogParser
     private const string Source = "phd2";
     private const int FullTimestampPrefixLength = 23;
     private const int TimeOfDayTimestampPrefixLength = 12;
+    private const int GuideSampleFrameIndex = 0;
     private const int GuideSampleTimeIndex = 1;
     private const int GuideSampleRaRawDistanceIndex = 5;
     private const int GuideSampleDecRawDistanceIndex = 6;
+    private const int GuideSampleRaGuideDistanceIndex = 7;
+    private const int GuideSampleDecGuideDistanceIndex = 8;
+    private const int GuideSampleRaDurationIndex = 9;
+    private const int GuideSampleRaDirectionIndex = 10;
+    private const int GuideSampleDecDurationIndex = 11;
+    private const int GuideSampleDecDirectionIndex = 12;
     private static readonly TimeSpan TimestampDateWindow = TimeSpan.FromHours(12);
 
     private static readonly string[] TimestampFormats =
@@ -131,15 +138,59 @@ internal static class Phd2LogParser
             return false;
         }
 
+        int? frame = null;
+        if (int.TryParse(
+                fields[GuideSampleFrameIndex],
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var parsedFrame))
+        {
+            frame = parsedFrame;
+        }
+
         parsed = new Phd2GuideSample(
             sampleTimestamp,
+            frame,
             raDistance,
             decDistance,
+            TryParseGuidePulse(fields),
             Source,
             sourcePath ?? string.Empty,
             line);
         return true;
     }
+
+    private static Phd2GuidePulse? TryParseGuidePulse(IReadOnlyList<string> fields)
+    {
+        if (fields.Count <= GuideSampleDecDirectionIndex)
+        {
+            return null;
+        }
+
+        if (!TryParseFiniteDouble(fields[GuideSampleRaGuideDistanceIndex], out var raPulseDistance) ||
+            !TryParseFiniteDouble(fields[GuideSampleRaDurationIndex], out var raPulseDuration) ||
+            !TryParseFiniteDouble(fields[GuideSampleDecGuideDistanceIndex], out var decPulseDistance) ||
+            !TryParseFiniteDouble(fields[GuideSampleDecDurationIndex], out var decPulseDuration))
+        {
+            return null;
+        }
+
+        return new Phd2GuidePulse(
+            raPulseDistance,
+            raPulseDuration,
+            fields[GuideSampleRaDirectionIndex].Trim(),
+            decPulseDistance,
+            decPulseDuration,
+            fields[GuideSampleDecDirectionIndex].Trim());
+    }
+
+    private static bool TryParseFiniteDouble(string value, out double parsed) =>
+        double.TryParse(
+            value,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out parsed) &&
+        double.IsFinite(parsed);
 
     private static bool CanSquare(double value) => double.IsFinite(value * value);
 
