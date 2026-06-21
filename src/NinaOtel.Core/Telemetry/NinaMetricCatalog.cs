@@ -104,6 +104,14 @@ public static class NinaMetricCatalog
             TargetSchedulerMetric("target_scheduler_image_graded_count", "Target Scheduler image grading events.", "integer"),
             TargetSchedulerMetric("target_scheduler_image_grade_score", "Target Scheduler parsed image grade score.", "double"),
 
+            NightSummaryMetric("night_summary_session_started_count", "Night Summary session start breadcrumbs.", "integer"),
+            NightSummaryMetric("night_summary_session_ended_count", "Night Summary session end breadcrumbs.", "integer"),
+            NightSummaryMetric("night_summary_report_started_count", "Night Summary report generation start breadcrumbs.", "integer"),
+            NightSummaryMetric("night_summary_report_delivered_count", "Night Summary report delivery completion breadcrumbs.", "integer"),
+            NightSummaryMetric("night_summary_report_failed_count", "Night Summary report failure breadcrumbs.", "integer"),
+            NightSummaryMetric("night_summary_autofocus_completed_count", "Night Summary autofocus completion breadcrumbs.", "integer"),
+            NightSummaryMetric("night_summary_meridian_flip_count", "Night Summary meridian flip completion breadcrumbs.", "integer"),
+
             Metric("mount_altitude", "mount", "Mount altitude in degrees.", "double", "mount_name"),
             Metric("mount_azimuth", "mount", "Mount azimuth in degrees.", "double", "mount_name"),
 
@@ -289,6 +297,24 @@ public static class NinaMetricCatalog
                 "filter.name",
                 "grade.status",
                 "stop.reason",
+            ],
+            NinaMetricExportKind.DeferredPointInTime);
+
+    private static NinaMetricDefinition NightSummaryMetric(
+        string name,
+        string description,
+        string valueKind) =>
+        Metric(
+            name,
+            "night_summary",
+            description,
+            valueKind,
+            [
+                "addon.id",
+                "source",
+                "source.file",
+                "event.kind",
+                "session.id",
             ],
             NinaMetricExportKind.DeferredPointInTime);
 

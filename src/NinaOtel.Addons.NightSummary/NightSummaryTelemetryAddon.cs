@@ -1,5 +1,8 @@
 using NinaOtel.Abstractions.Addons;
 using NinaOtel.Abstractions.Telemetry;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace NinaOtel.Addons.NightSummary;
 
@@ -11,6 +14,10 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
     private readonly TimeSpan pollInterval;
     private readonly TimeSpan stopTimeout;
     private readonly object syncRoot = new();
+    private readonly Dictionary<string, NightSummarySpanContext> activeReportSpans =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> activeSessionIds =
+        new(StringComparer.OrdinalIgnoreCase);
     private NightSummaryLogTailer? tailer;
 
     public NightSummaryTelemetryAddon()
@@ -97,6 +104,7 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
 
         if (tailerToStop is null)
         {
+            ClearCorrelationState();
             return;
         }
 
@@ -113,6 +121,10 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
         }
+        finally
+        {
+            ClearCorrelationState();
+        }
     }
 
     private static string? GetConfiguredPath(AddonConfiguration configuration)
@@ -126,7 +138,7 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         return null;
     }
 
-    private static void PublishLine(IAddonContext context, string line, string sourcePath)
+    private void PublishLine(IAddonContext context, string line, string sourcePath)
     {
         if (!NightSummaryLogParser.TryParse(line, sourcePath, context.TimeProvider, out var logEvent) ||
             logEvent is null)
@@ -134,8 +146,208 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
             return;
         }
 
-        context.Sink.TryPublish(CreateTelemetryRecord(logEvent, context.Configuration.RawForwardingEnabled));
+        PublishSafely(context, CreateTelemetryRecord(logEvent, context.Configuration.RawForwardingEnabled));
+        foreach (var record in CreateStructuredRecords(logEvent))
+        {
+            PublishSafely(context, record);
+        }
     }
+
+    private IEnumerable<TelemetryRecord> CreateStructuredRecords(NightSummaryLogEvent logEvent)
+    {
+        var eventKind = ToEventKindName(logEvent.Kind);
+        var effectiveSessionId = ResolveSessionId(logEvent);
+
+        if (TryCreateSpan(logEvent, eventKind, effectiveSessionId, out var span) &&
+            span is not null)
+        {
+            yield return span;
+        }
+
+        if (TryGetMetricName(logEvent.Kind, out var metricName))
+        {
+            yield return TelemetryRecord.Metric(
+                logEvent.Timestamp,
+                logEvent.Source,
+                metricName,
+                1,
+                TelemetryPriority.Normal,
+                CreateAttributes(logEvent, rawForwardingEnabled: false, eventKind, effectiveSessionId));
+        }
+
+        if (logEvent.Kind == NightSummaryLogEventKind.SessionEnded)
+        {
+            lock (syncRoot)
+            {
+                activeSessionIds.Remove(logEvent.SourcePath);
+            }
+        }
+    }
+
+    private string? ResolveSessionId(NightSummaryLogEvent logEvent)
+    {
+        if (!string.IsNullOrWhiteSpace(logEvent.SessionId))
+        {
+            lock (syncRoot)
+            {
+                activeSessionIds[logEvent.SourcePath] = logEvent.SessionId;
+            }
+
+            return logEvent.SessionId;
+        }
+
+        lock (syncRoot)
+        {
+            if (activeReportSpans.TryGetValue(logEvent.SourcePath, out var reportContext) &&
+                !string.IsNullOrWhiteSpace(reportContext.SessionId))
+            {
+                return reportContext.SessionId;
+            }
+
+            if (IsReportTerminal(logEvent.Kind))
+            {
+                return null;
+            }
+
+            return activeSessionIds.TryGetValue(logEvent.SourcePath, out var sessionId)
+                ? sessionId
+                : null;
+        }
+    }
+
+    private bool TryCreateSpan(
+        NightSummaryLogEvent logEvent,
+        string eventKind,
+        string? effectiveSessionId,
+        out TelemetryRecord? span)
+    {
+        span = null;
+        return logEvent.Kind switch
+        {
+            NightSummaryLogEventKind.SessionStarted => TryCreateSimpleSpan(
+                logEvent,
+                "night_summary.session",
+                SpanEventKind.Start,
+                CreateSpanId("night_summary.session", logEvent, effectiveSessionId),
+                eventKind,
+                effectiveSessionId,
+                out span),
+            NightSummaryLogEventKind.SessionEnded => TryCreateSimpleSpan(
+                logEvent,
+                "night_summary.session",
+                SpanEventKind.Stop,
+                CreateSpanId("night_summary.session", logEvent, effectiveSessionId),
+                eventKind,
+                effectiveSessionId,
+                out span),
+            NightSummaryLogEventKind.ReportGenerating => TryCreateReportStartSpan(
+                logEvent,
+                eventKind,
+                effectiveSessionId,
+                out span),
+            NightSummaryLogEventKind.ReportDelivered or NightSummaryLogEventKind.ReportFailed => TryCreateReportStopSpan(
+                logEvent,
+                eventKind,
+                effectiveSessionId,
+                out span),
+            _ => false,
+        };
+    }
+
+    private static bool TryCreateSimpleSpan(
+        NightSummaryLogEvent logEvent,
+        string name,
+        SpanEventKind spanKind,
+        string spanId,
+        string eventKind,
+        string? effectiveSessionId,
+        out TelemetryRecord span)
+    {
+        span = TelemetryRecord.Span(
+            logEvent.Timestamp,
+            logEvent.Source,
+            name,
+            spanKind,
+            spanId,
+            TelemetryPriority.Normal,
+            CreateAttributes(logEvent, rawForwardingEnabled: false, eventKind, effectiveSessionId));
+        return true;
+    }
+
+    private bool TryCreateReportStartSpan(
+        NightSummaryLogEvent logEvent,
+        string eventKind,
+        string? effectiveSessionId,
+        out TelemetryRecord span)
+    {
+        var spanId = CreateSpanId("night_summary.report", logEvent, effectiveSessionId);
+        lock (syncRoot)
+        {
+            activeReportSpans[logEvent.SourcePath] = new NightSummarySpanContext(spanId, effectiveSessionId);
+        }
+
+        return TryCreateSimpleSpan(
+            logEvent,
+            "night_summary.report",
+            SpanEventKind.Start,
+            spanId,
+            eventKind,
+            effectiveSessionId,
+            out span);
+    }
+
+    private bool TryCreateReportStopSpan(
+        NightSummaryLogEvent logEvent,
+        string eventKind,
+        string? effectiveSessionId,
+        out TelemetryRecord span)
+    {
+        NightSummarySpanContext? activeReport;
+        lock (syncRoot)
+        {
+            activeReportSpans.Remove(logEvent.SourcePath, out activeReport);
+        }
+
+        var spanId = activeReport?.SpanId ?? CreateSpanId("night_summary.report", logEvent, effectiveSessionId);
+        var sessionId = effectiveSessionId ?? activeReport?.SessionId;
+        return TryCreateSimpleSpan(
+            logEvent,
+            "night_summary.report",
+            SpanEventKind.Stop,
+            spanId,
+            eventKind,
+            sessionId,
+            out span);
+    }
+
+    private static bool TryGetMetricName(NightSummaryLogEventKind kind, out string metricName)
+    {
+        metricName = kind switch
+        {
+            NightSummaryLogEventKind.SessionStarted => "night_summary_session_started_count",
+            NightSummaryLogEventKind.SessionEnded => "night_summary_session_ended_count",
+            NightSummaryLogEventKind.ReportGenerating => "night_summary_report_started_count",
+            NightSummaryLogEventKind.ReportDelivered => "night_summary_report_delivered_count",
+            NightSummaryLogEventKind.ReportFailed => "night_summary_report_failed_count",
+            NightSummaryLogEventKind.AutoFocusCompleted => "night_summary_autofocus_completed_count",
+            NightSummaryLogEventKind.MeridianFlip => "night_summary_meridian_flip_count",
+            _ => string.Empty,
+        };
+
+        return !string.IsNullOrWhiteSpace(metricName);
+    }
+
+    private void ClearCorrelationState()
+    {
+        lock (syncRoot)
+        {
+            activeReportSpans.Clear();
+            activeSessionIds.Clear();
+        }
+    }
+
+    private static bool IsReportTerminal(NightSummaryLogEventKind kind) =>
+        kind is NightSummaryLogEventKind.ReportDelivered or NightSummaryLogEventKind.ReportFailed;
 
     private static TelemetryRecord CreateTelemetryRecord(
         NightSummaryLogEvent logEvent,
@@ -150,6 +362,18 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         {
             Name = "night_summary.log_event",
         };
+
+    private static void PublishSafely(IAddonContext context, TelemetryRecord record)
+    {
+        try
+        {
+            context.Sink.TryPublish(record);
+        }
+        catch
+        {
+            // Night Summary telemetry must never interfere with NINA log handling.
+        }
+    }
 
     private static TelemetrySeverity GetSeverity(NightSummaryLogEvent logEvent) =>
         logEvent.Kind switch
@@ -173,20 +397,27 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
 
     private static Dictionary<string, object?> CreateAttributes(
         NightSummaryLogEvent logEvent,
-        bool rawForwardingEnabled)
+        bool rawForwardingEnabled) =>
+        CreateAttributes(logEvent, rawForwardingEnabled, ToEventKindName(logEvent.Kind), logEvent.SessionId);
+
+    private static Dictionary<string, object?> CreateAttributes(
+        NightSummaryLogEvent logEvent,
+        bool rawForwardingEnabled,
+        string eventKind,
+        string? sessionId)
     {
         var attributes = new Dictionary<string, object?>
         {
             ["addon.id"] = "night-summary",
             ["source"] = logEvent.Source,
             ["source.file"] = logEvent.SourcePath,
-            ["event.kind"] = ToEventKindName(logEvent.Kind),
+            ["event.kind"] = eventKind,
             ["message"] = logEvent.Message,
         };
 
-        if (!string.IsNullOrWhiteSpace(logEvent.SessionId))
+        if (!string.IsNullOrWhiteSpace(sessionId))
         {
-            attributes["session.id"] = logEvent.SessionId;
+            attributes["session.id"] = sessionId;
         }
 
         if (rawForwardingEnabled)
@@ -195,6 +426,29 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         }
 
         return attributes;
+    }
+
+    private static string CreateSpanId(
+        string spanName,
+        NightSummaryLogEvent logEvent,
+        string? sessionId)
+    {
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            return $"{spanName}|{logEvent.SourcePath}|{sessionId}";
+        }
+
+        var input = string.Join(
+            "|",
+            [
+                spanName,
+                logEvent.SourcePath,
+                ToEventKindName(logEvent.Kind),
+                logEvent.Timestamp.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
+                logEvent.Message,
+            ]);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return $"{spanName}|{Convert.ToHexString(hash, 0, 8).ToLowerInvariant()}";
     }
 
     private static string ToEventKindName(NightSummaryLogEventKind kind) =>
@@ -226,4 +480,6 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
             "degraded",
             message,
             TelemetryPriority.Routine);
+
+    private sealed record NightSummarySpanContext(string SpanId, string? SessionId);
 }
