@@ -200,8 +200,35 @@ public sealed class Phd2LogParserTests
         guideSample.Timestamp.Should().Be(DateTimeOffset.Parse("2026-06-18T22:00:01.500Z"));
         guideSample.RaDistanceArcsec.Should().Be(3);
         guideSample.DecDistanceArcsec.Should().Be(4);
+        guideSample.Pulse.Should().NotBeNull();
+        guideSample.Pulse!.RaDistanceArcsec.Should().Be(0.5);
+        guideSample.Pulse.RaDurationMs.Should().Be(100);
+        guideSample.Pulse.RaDirection.Should().Be("W");
+        guideSample.Pulse.DecDistanceArcsec.Should().Be(-0.6);
+        guideSample.Pulse.DecDurationMs.Should().Be(200);
+        guideSample.Pulse.DecDirection.Should().Be("N");
         guideSample.Source.Should().Be("phd2");
         guideSample.SourcePath.Should().Be(SourcePath);
+    }
+
+    [Fact]
+    public void TryParseGuideSampleLine_WhenPulseColumnsAreMissing_ReturnsGuideSampleWithoutPulse()
+    {
+        var sessionStartedAt = DateTimeOffset.Parse("2026-06-18T22:00:00Z");
+
+        var parsed = Phd2LogParser.TryParseGuideSampleLine(
+            "1,1.500,Mount,0.1,-0.2,3,4",
+            sessionStartedAt,
+            SourcePath,
+            out var sample);
+
+        parsed.Should().BeTrue();
+        sample.Should().NotBeNull();
+        var guideSample = sample!;
+        guideSample.Timestamp.Should().Be(DateTimeOffset.Parse("2026-06-18T22:00:01.500Z"));
+        guideSample.RaDistanceArcsec.Should().Be(3);
+        guideSample.DecDistanceArcsec.Should().Be(4);
+        guideSample.Pulse.Should().BeNull();
     }
 
     [Theory]

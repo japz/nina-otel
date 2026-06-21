@@ -86,7 +86,7 @@ internal static class Phd2LogParser
         }
 
         var fields = SplitCsv(line);
-        if (fields.Count <= GuideSampleDecDirectionIndex)
+        if (fields.Count <= GuideSampleDecRawDistanceIndex)
         {
             return false;
         }
@@ -117,46 +117,6 @@ internal static class Phd2LogParser
                 CultureInfo.InvariantCulture,
                 out var decDistance) ||
             !double.IsFinite(decDistance))
-        {
-            return false;
-        }
-
-        if (!double.TryParse(
-                fields[GuideSampleRaGuideDistanceIndex],
-                NumberStyles.Float,
-                CultureInfo.InvariantCulture,
-                out var raPulseDistance) ||
-            !double.IsFinite(raPulseDistance))
-        {
-            return false;
-        }
-
-        if (!double.TryParse(
-                fields[GuideSampleRaDurationIndex],
-                NumberStyles.Float,
-                CultureInfo.InvariantCulture,
-                out var raPulseDuration) ||
-            !double.IsFinite(raPulseDuration))
-        {
-            return false;
-        }
-
-        if (!double.TryParse(
-                fields[GuideSampleDecGuideDistanceIndex],
-                NumberStyles.Float,
-                CultureInfo.InvariantCulture,
-                out var decPulseDistance) ||
-            !double.IsFinite(decPulseDistance))
-        {
-            return false;
-        }
-
-        if (!double.TryParse(
-                fields[GuideSampleDecDurationIndex],
-                NumberStyles.Float,
-                CultureInfo.InvariantCulture,
-                out var decPulseDuration) ||
-            !double.IsFinite(decPulseDuration))
         {
             return false;
         }
@@ -193,17 +153,44 @@ internal static class Phd2LogParser
             frame,
             raDistance,
             decDistance,
-            raPulseDistance,
-            raPulseDuration,
-            fields[GuideSampleRaDirectionIndex],
-            decPulseDistance,
-            decPulseDuration,
-            fields[GuideSampleDecDirectionIndex],
+            TryParseGuidePulse(fields),
             Source,
             sourcePath ?? string.Empty,
             line);
         return true;
     }
+
+    private static Phd2GuidePulse? TryParseGuidePulse(IReadOnlyList<string> fields)
+    {
+        if (fields.Count <= GuideSampleDecDirectionIndex)
+        {
+            return null;
+        }
+
+        if (!TryParseFiniteDouble(fields[GuideSampleRaGuideDistanceIndex], out var raPulseDistance) ||
+            !TryParseFiniteDouble(fields[GuideSampleRaDurationIndex], out var raPulseDuration) ||
+            !TryParseFiniteDouble(fields[GuideSampleDecGuideDistanceIndex], out var decPulseDistance) ||
+            !TryParseFiniteDouble(fields[GuideSampleDecDurationIndex], out var decPulseDuration))
+        {
+            return null;
+        }
+
+        return new Phd2GuidePulse(
+            raPulseDistance,
+            raPulseDuration,
+            fields[GuideSampleRaDirectionIndex].Trim(),
+            decPulseDistance,
+            decPulseDuration,
+            fields[GuideSampleDecDirectionIndex].Trim());
+    }
+
+    private static bool TryParseFiniteDouble(string value, out double parsed) =>
+        double.TryParse(
+            value,
+            NumberStyles.Float,
+            CultureInfo.InvariantCulture,
+            out parsed) &&
+        double.IsFinite(parsed);
 
     private static bool CanSquare(double value) => double.IsFinite(value * value);
 

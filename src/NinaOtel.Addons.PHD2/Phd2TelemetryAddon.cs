@@ -291,6 +291,11 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         Phd2GuideSession session,
         Phd2GuideSample sample)
     {
+        if (sample.Pulse is not { } pulse)
+        {
+            yield break;
+        }
+
         var attributes = new Dictionary<string, object?>
         {
             ["addon.id"] = "phd2",
@@ -298,8 +303,8 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             ["source.file"] = sample.SourcePath,
             ["guider_name"] = "PHD2",
             ["phd2.session_start"] = session.StartedAt.ToString("O", CultureInfo.InvariantCulture),
-            ["phd2.ra_direction"] = sample.RaDirection,
-            ["phd2.dec_direction"] = sample.DecDirection,
+            ["phd2.ra_direction"] = pulse.RaDirection,
+            ["phd2.dec_direction"] = pulse.DecDirection,
         };
 
         if (sample.Frame is { } frame)
@@ -307,10 +312,10 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             attributes["phd2.frame"] = frame;
         }
 
-        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_distance_arcsec", sample.RaPulseDistanceArcsec, attributes);
-        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_duration_ms", sample.RaPulseDurationMs, attributes);
-        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_distance_arcsec", sample.DecPulseDistanceArcsec, attributes);
-        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_duration_ms", sample.DecPulseDurationMs, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_distance_arcsec", pulse.RaDistanceArcsec, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_duration_ms", pulse.RaDurationMs, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_distance_arcsec", pulse.DecDistanceArcsec, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_duration_ms", pulse.DecDurationMs, attributes);
     }
 
     private static TelemetryRecord CreateGuideMetric(

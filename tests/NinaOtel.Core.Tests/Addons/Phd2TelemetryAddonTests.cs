@@ -451,6 +451,51 @@ public sealed class Phd2TelemetryAddonTests
     }
 
     [Fact]
+    public async Task Tailer_WhenGuideLogSampleHasNoPulseColumns_PublishesRmsSummaryWithoutPulseMetrics()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new Phd2TelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(
+            sink,
+            shutdown.Token,
+            guideLogPath: temp.Path,
+            timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero)));
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            string.Join(
+                Environment.NewLine,
+                [
+                    "Guiding Begins at 2026-06-18 22:00:00",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance",
+                    "1,1.000,Mount,0.1,-0.2,3,4",
+                    "Guiding Ends at 2026-06-18 22:00:03",
+                    string.Empty,
+                ]));
+
+        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_total_arcsec");
+
+        sink.Records.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_arcsec")
+            .Which.NumericValue.Should().Be(3);
+        sink.Records.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_arcsec")
+            .Which.NumericValue.Should().Be(4);
+        sink.Records.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_total_arcsec")
+            .Which.NumericValue.Should().Be(5);
+        sink.Records.Should()
+            .NotContain(record =>
+                record.Signal == TelemetrySignal.Metric &&
+                record.Name.Contains("_pulse_", StringComparison.Ordinal));
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Tailer_WhenGuideLogSampleWouldOverflowTotalRms_IgnoresSampleWithoutPublishingSummaryMetrics()
     {
         using var temp = new TempLogFile();
