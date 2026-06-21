@@ -172,6 +172,14 @@ internal sealed class DiskTelemetrySpool
         var files = EnumerateSpoolFiles()
             .Select(path => new FileInfo(path))
             .Where(file => file.Exists)
+            .ToList();
+        var totalBytes = files.Sum(file => file.Length);
+        if (totalBytes <= maxBytes)
+        {
+            return;
+        }
+
+        var candidates = files
             .Select(file => new EvictionCandidate(
                 file,
                 string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal),
@@ -180,9 +188,8 @@ internal sealed class DiskTelemetrySpool
             .ThenBy(candidate => candidate.Priority)
             .ThenBy(candidate => candidate.File.FullName, StringComparer.Ordinal)
             .ToList();
-        var totalBytes = files.Sum(candidate => candidate.File.Length);
 
-        foreach (var candidate in files)
+        foreach (var candidate in candidates)
         {
             if (totalBytes <= maxBytes)
             {

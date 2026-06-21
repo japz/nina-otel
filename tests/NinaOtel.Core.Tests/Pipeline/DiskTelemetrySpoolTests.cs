@@ -195,6 +195,64 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
+    public async Task AppendBatchAsync_WhenSpoolBytesAreWithinLimit_DoesNotReadExistingReadyFilesForEvictionPriority()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes: 1024 * 1024, maxAge: TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("existing") }, CancellationToken.None);
+        var existingReadyPath = Directory.GetFiles(spoolPath, "*.ready").Should().ContainSingle().Subject;
+        var oldAccessTime = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastAccessTimeUtc(existingReadyPath, oldAccessTime);
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("new") }, CancellationToken.None);
+
+        File.GetLastAccessTimeUtc(existingReadyPath).Should().Be(oldAccessTime);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenNewestBatchHasLowerPriority_KeepsNewestBatchProtected()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var maxBytes = 9_000;
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("important-old", TelemetryPriority.Important) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("normal-middle", TelemetryPriority.Normal) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("routine-newest", TelemetryPriority.Routine) }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("important-old", "routine-newest");
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(maxBytes);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenBatchHasMixedPriorities_RanksBatchByHighestPriorityRecord()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var maxBytes = 9_000;
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(
+            new[]
+            {
+                CreateLargeRecord("routine-in-mixed", TelemetryPriority.Routine, payloadSize: 256),
+                CreateLargeRecord("critical-in-mixed", TelemetryPriority.Critical),
+            },
+            CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("important-single", TelemetryPriority.Important) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("normal-newest", TelemetryPriority.Normal) }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("routine-in-mixed", "critical-in-mixed", "normal-newest");
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(maxBytes);
+    }
+
+    [Fact]
     public async Task AppendBatchAsync_WhenNewBatchAloneExceedsMaxBytes_DeletesItAndThrowsIOException()
     {
         var spoolPath = Path.Combine(root, "spool");
@@ -349,13 +407,16 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     private static TelemetryRecord CreateHealthRecord(string name) =>
         TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", name, TelemetryPriority.Routine);
 
-    private static TelemetryRecord CreateLargeRecord(string name, TelemetryPriority priority = TelemetryPriority.Routine) =>
+    private static TelemetryRecord CreateLargeRecord(
+        string name,
+        TelemetryPriority priority = TelemetryPriority.Routine,
+        int payloadSize = 3_000) =>
         TelemetryRecord.Health(
             DateTimeOffset.UtcNow,
             "test",
             name,
             priority,
-            new Dictionary<string, object?> { ["payload"] = new string('x', 3_000) });
+            new Dictionary<string, object?> { ["payload"] = new string('x', payloadSize) });
 
     private static long TotalSpoolBytes(string spoolPath) =>
         Directory.EnumerateFiles(spoolPath, "*.*")
