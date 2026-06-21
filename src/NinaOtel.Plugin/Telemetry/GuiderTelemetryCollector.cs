@@ -1,3 +1,4 @@
+using System.Globalization;
 using NINA.Core.Interfaces;
 using NINA.Equipment.Equipment.MyGuider;
 using NINA.Equipment.Interfaces.Mediator;
@@ -407,8 +408,42 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
         return Task.CompletedTask;
     }
 
-    private Task OnAfterDither(object sender, EventArgs e) =>
-        PublishGuiderLifecycleLog("guider_dither", "Dither", TelemetryPriority.Normal);
+    private Task OnAfterDither(object sender, EventArgs e)
+    {
+        try
+        {
+            lock (syncRoot)
+            {
+                if (disposed || !lifecycleEventsEnabled)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var timestamp = timeProvider.GetUtcNow();
+                var attributes = CreateGuiderAttributes(ResolveCurrentGuiderName());
+                PublishNamedLog(
+                    timestamp,
+                    "guider_dither",
+                    "Dither",
+                    TelemetryPriority.Normal,
+                    attributes);
+                TryPublishSafely(TelemetryRecord.Span(
+                    timestamp,
+                    SourceName,
+                    "nina.dither_settle",
+                    SpanEventKind.Stop,
+                    CreateDitherSettleSpanId(timestamp, attributes),
+                    TelemetryPriority.Normal,
+                    attributes));
+            }
+        }
+        catch
+        {
+            // NINA guider events must never fail because telemetry handling failed.
+        }
+
+        return Task.CompletedTask;
+    }
 
     private Task OnGuidingStarted(object sender, EventArgs e) =>
         PublishGuiderLifecycleLog("guider_guiding_started", "Guiding started", TelemetryPriority.Normal);
@@ -711,6 +746,24 @@ public sealed class GuiderTelemetryCollector : IGuiderConsumer, IDisposable
         {
             ["guider_name"] = guiderName,
         };
+
+    private static string CreateDitherSettleSpanId(
+        DateTimeOffset timestamp,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        string.Join(
+            "|",
+            [
+                "nina.dither_settle",
+                $"timestamp={timestamp.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)}",
+                $"guider={AttributeValue(attributes, "guider_name")}",
+            ]);
+
+    private static string AttributeValue(
+        IReadOnlyDictionary<string, object?> attributes,
+        string key) =>
+        attributes.TryGetValue(key, out var value)
+            ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
+            : string.Empty;
 
     private static string NormalizeGuiderName(string? guiderName) =>
         string.IsNullOrWhiteSpace(guiderName)

@@ -314,7 +314,6 @@ public sealed class GuiderTelemetryCollectorTests
     }
 
     [Theory]
-    [InlineData("dither", "guider_dither", "Dither")]
     [InlineData("started", "guider_guiding_started", "Guiding started")]
     [InlineData("stopped", "guider_guiding_stopped", "Guiding stopped")]
     public async Task GuiderLifecycleEvent_PublishesLog(
@@ -338,6 +337,43 @@ public sealed class GuiderTelemetryCollectorTests
             record.Body == expectedBody &&
             record.Priority == TelemetryPriority.Normal &&
             Equals(record.Attributes["guider_name"], "PHD2"));
+    }
+
+    [Fact]
+    public async Task AfterDither_PublishesGuiderDitherLogAndDitherSettleStopSpanWithMatchingAttributes()
+    {
+        var proxy = CreateMediator(out var mediator);
+        proxy.CurrentInfo = ConnectedInfo("PHD2");
+        var sink = new RecordingTelemetrySink();
+        using var collector = new GuiderTelemetryCollector(
+            mediator,
+            sink,
+            new IncrementingTimeProvider());
+        collector.Start();
+        sink.Records.Clear();
+
+        await proxy.RaiseLifecycleEventAsync("dither");
+
+        sink.Records.Should().HaveCount(2);
+        var log = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Log && record.Name == "guider_dither")
+            .Subject;
+        log.Should().Match<TelemetryRecord>(record =>
+            record.Source == "nina.guider" &&
+            record.Body == "Dither" &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["guider_name"], "PHD2"));
+
+        var span = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.dither_settle")
+            .Subject;
+        span.Source.Should().Be("nina.guider");
+        span.Timestamp.Should().Be(log.Timestamp);
+        span.Priority.Should().Be(TelemetryPriority.Normal);
+        span.SpanKind.Should().Be(SpanEventKind.Stop);
+        span.SpanId.Should()
+            .Be("nina.dither_settle|timestamp=2026-06-18T12:30:00.0000000+00:00|guider=PHD2");
+        span.Attributes.Should().BeEquivalentTo(log.Attributes);
     }
 
     [Fact]
