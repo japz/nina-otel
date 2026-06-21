@@ -192,10 +192,14 @@ internal sealed class DiskTelemetrySpool
         }
 
         var candidates = files
-            .Select(file => new EvictionCandidate(
-                file,
-                string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal),
-                evictionPriorityResolver(file.FullName)))
+            .Select(file =>
+            {
+                var isNewestProtected = string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal);
+                return new EvictionCandidate(
+                    file,
+                    isNewestProtected,
+                    isNewestProtected ? TelemetryPriority.Debug : evictionPriorityResolver(file.FullName));
+            })
             .OrderBy(candidate => candidate.IsNewestProtected)
             .ThenBy(candidate => candidate.Priority)
             .ThenBy(candidate => candidate.File.FullName, StringComparer.Ordinal)

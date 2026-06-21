@@ -217,6 +217,40 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
+    public async Task AppendBatchAsync_WhenSpoolExceedsMaxBytes_DoesNotReadProtectedNewestBatchForEvictionPriority()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var resolvedPaths = new List<string>();
+        var spool = new DiskTelemetrySpool(
+            spoolPath,
+            maxBytes: 6_000,
+            maxAge: TimeSpan.FromDays(7),
+            path =>
+            {
+                var newestReadyPath = Directory.GetFiles(spoolPath, "*.ready")
+                    .OrderBy(readyPath => readyPath, StringComparer.Ordinal)
+                    .Last();
+                if (string.Equals(path, newestReadyPath, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("Priority resolver should not run for the protected newest batch.");
+                }
+
+                resolvedPaths.Add(path);
+                return TelemetryPriority.Debug;
+            });
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("old") }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("newest") }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("newest");
+        resolvedPaths.Should().ContainSingle();
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(6_000);
+    }
+
+    [Fact]
     public async Task AppendBatchAsync_WhenNewestBatchHasLowerPriority_KeepsNewestBatchProtected()
     {
         var spoolPath = Path.Combine(root, "spool");
