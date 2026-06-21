@@ -31,7 +31,7 @@ done < <(
   find "$output_dir" -maxdepth 1 -type f | while IFS= read -r file; do
     name="$(basename "$file")"
     case "$name" in
-      NinaOtel.*|OpenTelemetry*.dll|Microsoft.Extensions*.dll|Microsoft.Bcl*.dll|System.Diagnostics.DiagnosticSource.dll)
+      NinaOtel.*|OpenTelemetry*.dll|Microsoft.Extensions*.dll|Microsoft.Bcl*.dll|System.Diagnostics.DiagnosticSource.dll|System.Security.Cryptography.ProtectedData.dll)
         printf '%s\n' "$file"
         ;;
     esac
@@ -43,7 +43,31 @@ if [[ $file_count -eq 0 ]]; then
   exit 1
 fi
 
-for required_file in NinaOtel.Plugin.dll NinaOtel.Core.dll NinaOtel.Abstractions.dll; do
+required_files=(
+  NinaOtel.Plugin.dll
+  NinaOtel.Core.dll
+  NinaOtel.Abstractions.dll
+  Microsoft.Extensions.Configuration.Abstractions.dll
+  Microsoft.Extensions.Configuration.Binder.dll
+  Microsoft.Extensions.Configuration.dll
+  Microsoft.Extensions.DependencyInjection.Abstractions.dll
+  Microsoft.Extensions.DependencyInjection.dll
+  Microsoft.Extensions.Diagnostics.Abstractions.dll
+  Microsoft.Extensions.Logging.Abstractions.dll
+  Microsoft.Extensions.Logging.Configuration.dll
+  Microsoft.Extensions.Logging.dll
+  Microsoft.Extensions.Options.ConfigurationExtensions.dll
+  Microsoft.Extensions.Options.dll
+  Microsoft.Extensions.Primitives.dll
+  OpenTelemetry.Api.ProviderBuilderExtensions.dll
+  OpenTelemetry.Api.dll
+  OpenTelemetry.Exporter.OpenTelemetryProtocol.dll
+  OpenTelemetry.dll
+  System.Diagnostics.DiagnosticSource.dll
+  System.Security.Cryptography.ProtectedData.dll
+)
+
+for required_file in "${required_files[@]}"; do
   if [[ ! -f "$stage_dir/$required_file" ]]; then
     printf 'Required plugin package file was not found: %s\n' "$output_dir/$required_file" >&2
     exit 1

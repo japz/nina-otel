@@ -68,6 +68,7 @@ touch \
   "$build_output/Microsoft.Extensions.Primitives.dll" \
   "$build_output/Microsoft.Bcl.AsyncInterfaces.dll" \
   "$build_output/System.Diagnostics.DiagnosticSource.dll" \
+  "$build_output/System.Security.Cryptography.ProtectedData.dll" \
   "$build_output/Google.Protobuf.dll" \
   "$build_output/en-US/NINA.Core.resources.dll" \
   "$build_output/runtimes/win-x64/native/SQLite.Interop.dll"
@@ -104,6 +105,7 @@ OpenTelemetry.Api.dll
 OpenTelemetry.Exporter.OpenTelemetryProtocol.dll
 OpenTelemetry.dll
 System.Diagnostics.DiagnosticSource.dll
+System.Security.Cryptography.ProtectedData.dll
 ENTRIES
 )"
 
@@ -111,6 +113,29 @@ if [[ "$archive_entries" != "$expected_entries" ]]; then
   printf 'Unexpected archive contents.\nExpected:\n%s\nActual:\n%s\n' "$expected_entries" "$archive_entries" >&2
   exit 1
 fi
+
+assert_missing_required_file_fails() {
+  local missing_file="$1"
+  local missing_output="$work_dir/missing-${missing_file//[^[:alnum:]]/-}-output"
+  local missing_zip="$work_dir/missing-${missing_file//[^[:alnum:]]/-}.zip"
+  mkdir -p "$missing_output"
+
+  while IFS= read -r entry; do
+    if [[ "$entry" == "$missing_file" ]]; then
+      continue
+    fi
+
+    touch "$missing_output/$entry"
+  done <<< "$expected_entries"
+
+  if "$repo_root/scripts/package-plugin.sh" "$missing_output" "$missing_zip" >/dev/null 2>&1; then
+    printf 'Expected packaging to fail when %s is missing.\n' "$missing_file" >&2
+    exit 1
+  fi
+}
+
+assert_missing_required_file_fails "OpenTelemetry.Exporter.OpenTelemetryProtocol.dll"
+assert_missing_required_file_fails "System.Security.Cryptography.ProtectedData.dll"
 
 missing_dependency_output="$work_dir/missing-dependency-output"
 mkdir -p "$missing_dependency_output"
