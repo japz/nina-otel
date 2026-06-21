@@ -244,6 +244,55 @@ public sealed class NinaMetricCatalogTests
     }
 
     [Fact]
+    public void All_IncludesDeferredTargetSchedulerMetricsWithStableAttributes()
+    {
+        string[] metricNames =
+        [
+            "target_scheduler_planning_run_count",
+            "target_scheduler_planning_run_completed_count",
+            "target_scheduler_target_selected_count",
+            "target_scheduler_current_target",
+            "target_scheduler_plan_started_count",
+            "target_scheduler_plan_stopped_count",
+            "target_scheduler_image_graded_count",
+            "target_scheduler_image_grade_score",
+        ];
+
+        foreach (var metricName in metricNames)
+        {
+            var metric = NinaMetricCatalog.All.Should()
+                .ContainSingle(candidate => candidate.Name == metricName)
+                .Subject;
+
+            metric.Category.Should().Be("target_scheduler");
+            metric.ExportKind.Should().Be(NinaMetricExportKind.DeferredPointInTime);
+            metric.AttributeNames.Should().Contain(
+                "profile_name",
+                "host_name",
+                "addon.id",
+                "source",
+                "source.file",
+                "event.kind",
+                "target.name",
+                "filter.name",
+                "grade.status",
+                "stop.reason");
+            metric.AttributeNames.Should().NotContain(
+                "message",
+                "raw.line");
+            NinaMetricCatalog.GetMetricAttributeNames(metricName, NinaMetricExportKind.DeferredPointInTime)
+                .Should()
+                .NotBeNull()
+                .And.Contain(
+                    "target.name",
+                    "filter.name",
+                    "grade.status",
+                    "stop.reason");
+            NinaMetricCatalog.IsLiveObservableGauge(metricName).Should().BeFalse();
+        }
+    }
+
+    [Fact]
     public void SwitchReadOnlyGaugeName_UsesInfluxExporterSwitchMetricPattern()
     {
         NinaMetricCatalog.SwitchReadOnlyGaugeName(23).Should().Be("switch_ro_sw23");

@@ -23,4 +23,9 @@ internal sealed record TargetSchedulerLogEvent(
     string SourcePath,
     string OriginalLine,
     string Level,
-    string Message);
+    string Message,
+    string? TargetName,
+    string? FilterName,
+    string? GradeStatus,
+    double? GradeScore,
+    string? StopReason);

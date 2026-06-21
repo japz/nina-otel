@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace NinaOtel.Addons.TargetScheduler;
 
 internal sealed class TargetSchedulerLogTailer
@@ -105,24 +107,68 @@ internal sealed class TargetSchedulerLogTailer
         initialPosition = null;
         RefreshFileSnapshot();
 
-        while (!cancellationToken.IsCancellationRequested)
+        var pendingRecord = new StringBuilder();
+        var pendingRecordSawQuietPoll = false;
+
+        try
         {
-            var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-            if (line is not null)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await lineHandler(line, cancellationToken).ConfigureAwait(false);
-                RefreshFileSnapshot();
-                continue;
-            }
+                var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                if (line is not null)
+                {
+                    if (IsLogRecordBoundary(line))
+                    {
+                        await FlushPendingRecordAsync(pendingRecord, cancellationToken).ConfigureAwait(false);
+                        pendingRecord.Append(line);
+                        pendingRecordSawQuietPoll = false;
+                    }
+                    else if (pendingRecord.Length > 0)
+                    {
+                        pendingRecord.AppendLine();
+                        pendingRecord.Append(line);
+                        pendingRecordSawQuietPoll = false;
+                    }
 
-            if (ShouldReopen(stream))
-            {
-                initialPosition = 0;
-                return;
-            }
+                    RefreshFileSnapshot();
+                    continue;
+                }
 
-            await DelayAsync(cancellationToken).ConfigureAwait(false);
+                if (ShouldReopen(stream))
+                {
+                    await FlushPendingRecordAsync(pendingRecord, cancellationToken).ConfigureAwait(false);
+                    initialPosition = 0;
+                    return;
+                }
+
+                if (pendingRecord.Length > 0 && pendingRecordSawQuietPoll)
+                {
+                    await FlushPendingRecordAsync(pendingRecord, cancellationToken).ConfigureAwait(false);
+                }
+                else if (pendingRecord.Length > 0)
+                {
+                    pendingRecordSawQuietPoll = true;
+                }
+
+                await DelayAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
+        finally
+        {
+            await FlushPendingRecordAsync(pendingRecord, CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task FlushPendingRecordAsync(StringBuilder pendingRecord, CancellationToken cancellationToken)
+    {
+        if (pendingRecord.Length == 0)
+        {
+            return;
+        }
+
+        var record = pendingRecord.ToString();
+        pendingRecord.Clear();
+        await lineHandler(record, cancellationToken).ConfigureAwait(false);
     }
 
     private Task DelayAsync(CancellationToken cancellationToken) =>
@@ -182,4 +228,7 @@ internal sealed class TargetSchedulerLogTailer
             lastWriteTimeUtc = default;
         }
     }
+
+    private static bool IsLogRecordBoundary(string line) =>
+        line.Split(['|'], 6).Length == 6;
 }

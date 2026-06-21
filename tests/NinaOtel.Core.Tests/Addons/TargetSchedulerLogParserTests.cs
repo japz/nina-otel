@@ -70,6 +70,146 @@ public sealed class TargetSchedulerLogParserTests
         logEvent!.Kind.Should().Be(expectedKind);
     }
 
+    [Theory]
+    [InlineData(
+        "Target Scheduler: selected target M31 filter L",
+        TargetSchedulerLogEventKind.TargetSelected,
+        "M31",
+        "L",
+        null,
+        null,
+        null)]
+    [InlineData(
+        "Target Scheduler: plan started for M31",
+        TargetSchedulerLogEventKind.PlanStarted,
+        "M31",
+        null,
+        null,
+        null,
+        null)]
+    [InlineData(
+        "Target Scheduler: published target M31",
+        TargetSchedulerLogEventKind.PlanStarted,
+        "M31",
+        null,
+        null,
+        null,
+        null)]
+    [InlineData(
+        "Target Scheduler: hard stop reached for M31",
+        TargetSchedulerLogEventKind.PlanStopped,
+        "M31",
+        null,
+        null,
+        null,
+        "hard_stop")]
+    [InlineData(
+        "Target Scheduler: min-expire reached for M31",
+        TargetSchedulerLogEventKind.PlanStopped,
+        "M31",
+        null,
+        null,
+        null,
+        "min_expire")]
+    [InlineData(
+        "Target Scheduler: plan stopped for M31",
+        TargetSchedulerLogEventKind.PlanStopped,
+        "M31",
+        null,
+        null,
+        null,
+        "plan_stopped")]
+    [InlineData(
+        "Target Scheduler: image grade accepted target=M31 score=0.92",
+        TargetSchedulerLogEventKind.ImageGraded,
+        "M31",
+        null,
+        "accepted",
+        0.92,
+        null)]
+    [InlineData(
+        "Target Scheduler: image grading complete target=M31 filter=L score=0.92",
+        TargetSchedulerLogEventKind.ImageGraded,
+        "M31",
+        "L",
+        "complete",
+        0.92,
+        null)]
+    [InlineData(
+        "Target Scheduler: rejected target M42 below horizon",
+        TargetSchedulerLogEventKind.Warning,
+        "M42",
+        null,
+        "rejected",
+        null,
+        null)]
+    internal void TryParse_WhenStructuredFieldsArePresent_ExtractsNormalizedValues(
+        string message,
+        TargetSchedulerLogEventKind expectedKind,
+        string? expectedTargetName,
+        string? expectedFilterName,
+        string? expectedGradeStatus,
+        double? expectedGradeScore,
+        string? expectedStopReason)
+    {
+        var parsed = TargetSchedulerLogParser.TryParse(
+            $"2026-06-18T22:00:00.0000|INFO|Scheduler.cs|Run|10|{message}",
+            SourcePath,
+            new FixedTimeProvider(DateTimeOffset.UtcNow),
+            out var logEvent);
+
+        parsed.Should().BeTrue();
+        logEvent.Should().NotBeNull();
+        logEvent!.Kind.Should().Be(expectedKind);
+        GetOptionalProperty<string>(logEvent, "TargetName").Should().Be(expectedTargetName);
+        GetOptionalProperty<string>(logEvent, "FilterName").Should().Be(expectedFilterName);
+        GetOptionalProperty<string>(logEvent, "GradeStatus").Should().Be(expectedGradeStatus);
+        GetOptionalProperty<double?>(logEvent, "GradeScore").Should().Be(expectedGradeScore);
+        GetOptionalProperty<string>(logEvent, "StopReason").Should().Be(expectedStopReason);
+    }
+
+    [Theory]
+    [InlineData(
+        "Target Scheduler: plan started for North America Nebula",
+        "North America Nebula",
+        null)]
+    [InlineData(
+        "Target Scheduler: selected target North America Nebula filter Ha",
+        "North America Nebula",
+        "Ha")]
+    internal void TryParse_WhenTargetNameContainsSpaces_CapturesFullName(
+        string message,
+        string expectedTargetName,
+        string? expectedFilterName)
+    {
+        var parsed = TargetSchedulerLogParser.TryParse(
+            $"2026-06-18T22:00:00.0000|INFO|Scheduler.cs|Run|10|{message}",
+            SourcePath,
+            new FixedTimeProvider(DateTimeOffset.UtcNow),
+            out var logEvent);
+
+        parsed.Should().BeTrue();
+        logEvent.Should().NotBeNull();
+        GetOptionalProperty<string>(logEvent!, "TargetName").Should().Be(expectedTargetName);
+        GetOptionalProperty<string>(logEvent!, "FilterName").Should().Be(expectedFilterName);
+    }
+
+    [Fact]
+    public void TryParse_WhenImageGradeHasTargetKeyButNoKnownStatus_DoesNotCaptureTargetAsGradeStatus()
+    {
+        var parsed = TargetSchedulerLogParser.TryParse(
+            "2026-06-18T22:00:00.0000|INFO|ImageGrader.cs|Grade|60|Target Scheduler: image grade target=M31 score=0.92",
+            SourcePath,
+            new FixedTimeProvider(DateTimeOffset.UtcNow),
+            out var logEvent);
+
+        parsed.Should().BeTrue();
+        logEvent.Should().NotBeNull();
+        GetOptionalProperty<string>(logEvent!, "TargetName").Should().Be("M31");
+        GetOptionalProperty<string>(logEvent!, "GradeStatus").Should().BeNull();
+        GetOptionalProperty<double?>(logEvent!, "GradeScore").Should().Be(0.92);
+    }
+
     [Fact]
     public void TryParse_WhenLineIsRecognized_CapturesTimestampSourcePathOriginalLineLevelAndMessage()
     {
@@ -201,5 +341,12 @@ public sealed class TargetSchedulerLogParserTests
     private sealed class FixedTimeProvider(DateTimeOffset currentTime) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => currentTime;
+    }
+
+    private static T? GetOptionalProperty<T>(TargetSchedulerLogEvent logEvent, string propertyName)
+    {
+        var property = typeof(TargetSchedulerLogEvent).GetProperty(propertyName);
+        property.Should().NotBeNull($"Target Scheduler log events should expose {propertyName}");
+        return (T?)property!.GetValue(logEvent);
     }
 }
