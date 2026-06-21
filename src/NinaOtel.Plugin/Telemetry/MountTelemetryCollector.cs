@@ -1,3 +1,4 @@
+using System.Globalization;
 using NINA.Astrometry;
 using NINA.Equipment.Equipment.MyTelescope;
 using NINA.Equipment.Interfaces.Mediator;
@@ -374,12 +375,22 @@ public sealed class MountTelemetryCollector : ITelescopeConsumer, IDisposable
                     return Task.CompletedTask;
                 }
 
+                var timestamp = timeProvider.GetUtcNow();
+                var attributes = CreateSlewedAttributes(ResolveCurrentMountName(), e);
                 PublishNamedLog(
-                    timeProvider.GetUtcNow(),
+                    timestamp,
                     "mount_slewed",
                     CreateSlewedBody(e),
                     TelemetryPriority.Normal,
-                    CreateSlewedAttributes(ResolveCurrentMountName(), e));
+                    attributes);
+                TryPublishSafely(TelemetryRecord.Span(
+                    timestamp,
+                    SourceName,
+                    "nina.slew",
+                    SpanEventKind.Stop,
+                    CreateSlewSpanId(attributes),
+                    TelemetryPriority.Normal,
+                    attributes));
             }
         }
         catch
@@ -719,6 +730,25 @@ public sealed class MountTelemetryCollector : ITelescopeConsumer, IDisposable
 
         return attributes;
     }
+
+    private static string CreateSlewSpanId(IReadOnlyDictionary<string, object?> attributes) =>
+        string.Join(
+            "|",
+            [
+                "nina.slew",
+                $"mount={AttributeValue(attributes, "mount_name")}",
+                $"from_ra={AttributeValue(attributes, "mount_slew_from_ra")}",
+                $"from_dec={AttributeValue(attributes, "mount_slew_from_dec")}",
+                $"to_ra={AttributeValue(attributes, "mount_slew_to_ra")}",
+                $"to_dec={AttributeValue(attributes, "mount_slew_to_dec")}",
+            ]);
+
+    private static string AttributeValue(
+        IReadOnlyDictionary<string, object?> attributes,
+        string key) =>
+        attributes.TryGetValue(key, out var value)
+            ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
+            : string.Empty;
 
     private void TryPublishSafely(TelemetryRecord record)
     {

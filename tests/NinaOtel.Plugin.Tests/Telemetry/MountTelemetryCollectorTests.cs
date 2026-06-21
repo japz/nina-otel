@@ -283,7 +283,7 @@ public sealed class MountTelemetryCollectorTests
     }
 
     [Fact]
-    public async Task Slewed_PublishesMountSlewedLog()
+    public async Task Slewed_PublishesMountSlewedLogAndStopSpanWithMatchingAttributes()
     {
         var proxy = CreateMediator(out var mediator);
         proxy.CurrentInfo = ConnectedInfo("EQ6-R", 52.5, 184.25);
@@ -294,13 +294,36 @@ public sealed class MountTelemetryCollectorTests
 
         await proxy.RaiseSlewedAsync();
 
-        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+        sink.Records.Should().HaveCount(2);
+        var log = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Log && record.Name == "mount_slewed")
+            .Which;
+        log.Should().Match<TelemetryRecord>(record =>
             record.Signal == TelemetrySignal.Log &&
             record.Source == "nina.mount" &&
             record.Name == "mount_slewed" &&
             record.Body == "Mount slewed" &&
             record.Priority == TelemetryPriority.Normal &&
             Equals(record.Attributes["mount_name"], "EQ6-R"));
+
+        var span = sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.slew")
+            .Which;
+        span.Source.Should().Be("nina.mount");
+        span.Name.Should().Be("nina.slew");
+        span.SpanKind.Should().Be(SpanEventKind.Stop);
+        span.Priority.Should().Be(TelemetryPriority.Normal);
+        span.SpanId.Should().NotBeNullOrWhiteSpace();
+        span.Attributes.Should().BeEquivalentTo(log.Attributes);
+
+        var firstSpanId = span.SpanId;
+        sink.Records.Clear();
+
+        await proxy.RaiseSlewedAsync();
+
+        sink.Records.Should()
+            .ContainSingle(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.slew")
+            .Which.SpanId.Should().Be(firstSpanId);
     }
 
     [Fact]
