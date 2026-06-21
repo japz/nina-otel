@@ -274,9 +274,9 @@ public sealed class Phd2TelemetryAddonTests
                 Environment.NewLine,
                 [
                     "Guiding Begins at 2026-06-18 22:00:00",
-                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
-                    "1,1.000,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
-                    "2,2.000,Mount,-0.1,0.3,0,0,0.0,0.0,0,E,0,S,31,0,5100",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,XStep,YStep,StarMass,SNR,ErrorCode",
+                    "1,1.000,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,0,0,5000,30,0",
+                    "2,2.000,Mount,-0.1,0.3,0,0,0.0,0.0,0,E,0,S,0,0,5100,31,0",
                     "Guiding Ends at 2026-06-18 22:00:03",
                     string.Empty,
                 ]));
@@ -343,9 +343,9 @@ public sealed class Phd2TelemetryAddonTests
                 Environment.NewLine,
                 [
                     "Guiding Begins at 2026-06-18 22:00:00",
-                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
-                    "11,1.250,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
-                    "12,2.500,Mount,-0.1,0.3,6,8,-0.7,0.8,125,E,225,S,31,0,5100",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,XStep,YStep,StarMass,SNR,ErrorCode",
+                    "11,1.250,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,0,0,5000,30,0",
+                    "12,2.500,Mount,-0.1,0.3,6,8,-0.7,0.8,125,E,225,S,0,0,5100,31,0",
                     "Guiding Ends at 2026-06-18 22:00:03",
                     string.Empty,
                 ]));
@@ -507,8 +507,8 @@ public sealed class Phd2TelemetryAddonTests
                 Environment.NewLine,
                 [
                     "Guiding Begins at 2026-06-18 22:00:00",
-                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
-                    "1,1.000,Mount,0.1,-0.2,1e154,1e154,0.5,-0.6,100,W,200,N,30,0,5000",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,XStep,YStep,StarMass,SNR,ErrorCode",
+                    "1,1.000,Mount,0.1,-0.2,1e154,1e154,0.5,-0.6,100,W,200,N,0,0,5000,30,0",
                     "Guiding Ends at 2026-06-18 22:00:03",
                     string.Empty,
                 ]));
