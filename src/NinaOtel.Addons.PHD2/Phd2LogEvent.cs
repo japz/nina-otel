@@ -23,8 +23,15 @@ internal sealed record Phd2LogEvent(
 
 internal sealed record Phd2GuideSample(
     DateTimeOffset Timestamp,
+    int? Frame,
     double RaDistanceArcsec,
     double DecDistanceArcsec,
+    double RaPulseDistanceArcsec,
+    double RaPulseDurationMs,
+    string RaDirection,
+    double DecPulseDistanceArcsec,
+    double DecPulseDurationMs,
+    string DecDirection,
     string Source,
     string SourcePath,
     string OriginalLine);

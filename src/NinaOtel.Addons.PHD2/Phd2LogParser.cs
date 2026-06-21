@@ -9,9 +9,16 @@ internal static class Phd2LogParser
     private const string Source = "phd2";
     private const int FullTimestampPrefixLength = 23;
     private const int TimeOfDayTimestampPrefixLength = 12;
+    private const int GuideSampleFrameIndex = 0;
     private const int GuideSampleTimeIndex = 1;
     private const int GuideSampleRaRawDistanceIndex = 5;
     private const int GuideSampleDecRawDistanceIndex = 6;
+    private const int GuideSampleRaGuideDistanceIndex = 7;
+    private const int GuideSampleDecGuideDistanceIndex = 8;
+    private const int GuideSampleRaDurationIndex = 9;
+    private const int GuideSampleRaDirectionIndex = 10;
+    private const int GuideSampleDecDurationIndex = 11;
+    private const int GuideSampleDecDirectionIndex = 12;
     private static readonly TimeSpan TimestampDateWindow = TimeSpan.FromHours(12);
 
     private static readonly string[] TimestampFormats =
@@ -79,7 +86,7 @@ internal static class Phd2LogParser
         }
 
         var fields = SplitCsv(line);
-        if (fields.Count <= GuideSampleDecRawDistanceIndex)
+        if (fields.Count <= GuideSampleDecDirectionIndex)
         {
             return false;
         }
@@ -114,6 +121,46 @@ internal static class Phd2LogParser
             return false;
         }
 
+        if (!double.TryParse(
+                fields[GuideSampleRaGuideDistanceIndex],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var raPulseDistance) ||
+            !double.IsFinite(raPulseDistance))
+        {
+            return false;
+        }
+
+        if (!double.TryParse(
+                fields[GuideSampleRaDurationIndex],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var raPulseDuration) ||
+            !double.IsFinite(raPulseDuration))
+        {
+            return false;
+        }
+
+        if (!double.TryParse(
+                fields[GuideSampleDecGuideDistanceIndex],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var decPulseDistance) ||
+            !double.IsFinite(decPulseDistance))
+        {
+            return false;
+        }
+
+        if (!double.TryParse(
+                fields[GuideSampleDecDurationIndex],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var decPulseDuration) ||
+            !double.IsFinite(decPulseDuration))
+        {
+            return false;
+        }
+
         if (!CanSquare(raDistance) ||
             !CanSquare(decDistance) ||
             !double.IsFinite((raDistance * raDistance) + (decDistance * decDistance)))
@@ -131,10 +178,27 @@ internal static class Phd2LogParser
             return false;
         }
 
+        int? frame = null;
+        if (int.TryParse(
+                fields[GuideSampleFrameIndex],
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var parsedFrame))
+        {
+            frame = parsedFrame;
+        }
+
         parsed = new Phd2GuideSample(
             sampleTimestamp,
+            frame,
             raDistance,
             decDistance,
+            raPulseDistance,
+            raPulseDuration,
+            fields[GuideSampleRaDirectionIndex],
+            decPulseDistance,
+            decPulseDuration,
+            fields[GuideSampleDecDirectionIndex],
             Source,
             sourcePath ?? string.Empty,
             line);

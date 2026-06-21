@@ -70,6 +70,34 @@ public static class NinaMetricCatalog
             Phd2Metric("phd2_guide_rms_dec_arcsec", "PHD2 GuideLog session declination RMS in arcseconds.", "double"),
             Phd2Metric("phd2_guide_rms_total_arcsec", "PHD2 GuideLog session combined RMS in arcseconds.", "double"),
             Phd2Metric("phd2_guide_sample_count", "PHD2 GuideLog guide sample count.", "integer"),
+            Phd2Metric(
+                "phd2_guide_ra_pulse_distance_arcsec",
+                "PHD2 GuideLog RA guide pulse correction distance in arcseconds.",
+                "double",
+                "phd2.ra_direction",
+                "phd2.dec_direction",
+                "phd2.frame"),
+            Phd2Metric(
+                "phd2_guide_ra_pulse_duration_ms",
+                "PHD2 GuideLog RA guide pulse duration in milliseconds.",
+                "double",
+                "phd2.ra_direction",
+                "phd2.dec_direction",
+                "phd2.frame"),
+            Phd2Metric(
+                "phd2_guide_dec_pulse_distance_arcsec",
+                "PHD2 GuideLog declination guide pulse correction distance in arcseconds.",
+                "double",
+                "phd2.ra_direction",
+                "phd2.dec_direction",
+                "phd2.frame"),
+            Phd2Metric(
+                "phd2_guide_dec_pulse_duration_ms",
+                "PHD2 GuideLog declination guide pulse duration in milliseconds.",
+                "double",
+                "phd2.ra_direction",
+                "phd2.dec_direction",
+                "phd2.frame"),
 
             Metric("mount_altitude", "mount", "Mount altitude in degrees.", "double", "mount_name"),
             Metric("mount_azimuth", "mount", "Mount azimuth in degrees.", "double", "mount_name"),
@@ -228,13 +256,14 @@ public static class NinaMetricCatalog
     private static NinaMetricDefinition Phd2Metric(
         string name,
         string description,
-        string valueKind) =>
+        string valueKind,
+        params string[] attributes) =>
         Metric(
             name,
             "phd2",
             description,
             valueKind,
-            ["addon.id", "guider_name", "source.file", "phd2.session_start"],
+            ["addon.id", "source", "guider_name", "source.file", "phd2.session_start", .. attributes],
             NinaMetricExportKind.DeferredPointInTime);
 
     private static bool IsSwitchReadOnlyGaugeName(string metricName)

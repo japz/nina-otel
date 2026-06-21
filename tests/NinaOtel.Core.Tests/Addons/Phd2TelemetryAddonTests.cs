@@ -299,8 +299,15 @@ public sealed class Phd2TelemetryAddonTests
             .ContainSingle(record => record.Name == "phd2_guide_sample_count")
             .Which.NumericValue.Should().Be(2);
 
+        string[] summaryMetricNames =
+        [
+            "phd2_guide_rms_ra_arcsec",
+            "phd2_guide_rms_dec_arcsec",
+            "phd2_guide_rms_total_arcsec",
+            "phd2_guide_sample_count",
+        ];
         var summaryMetrics = metrics
-            .Where(record => record.Name.StartsWith("phd2_guide_", StringComparison.Ordinal))
+            .Where(record => summaryMetricNames.Contains(record.Name, StringComparer.Ordinal))
             .ToArray();
         summaryMetrics.Should().HaveCount(4);
         foreach (var record in summaryMetrics)
@@ -312,6 +319,133 @@ public sealed class Phd2TelemetryAddonTests
             record.Attributes.Should().Contain("source.file", temp.Path);
             record.Attributes.Should().Contain("phd2.session_start", "2026-06-18T22:00:00.0000000+00:00");
         }
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Tailer_WhenGuideLogSamplesAreAppended_PublishesPulseMetricsAtSampleTimestamps()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new Phd2TelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(
+            sink,
+            shutdown.Token,
+            guideLogPath: temp.Path,
+            timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero)));
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            string.Join(
+                Environment.NewLine,
+                [
+                    "Guiding Begins at 2026-06-18 22:00:00",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DEGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
+                    "11,1.250,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
+                    "12,2.500,Mount,-0.1,0.3,6,8,-0.7,0.8,125,E,225,S,31,0,5100",
+                    "Guiding Ends at 2026-06-18 22:00:03",
+                    string.Empty,
+                ]));
+
+        await WaitForRecordAsync(sink, record =>
+            record.Name == "phd2_guide_dec_pulse_duration_ms" &&
+            record.NumericValue == 225);
+        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_total_arcsec");
+
+        var pulseMetrics = sink.Records
+            .Where(record => record.Signal == TelemetrySignal.Metric &&
+                record.Name.Contains("_pulse_", StringComparison.Ordinal))
+            .ToArray();
+
+        pulseMetrics.Should().HaveCount(8);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_ra_pulse_distance_arcsec",
+            0.5,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
+            "W",
+            "N",
+            11,
+            temp.Path);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_ra_pulse_duration_ms",
+            100,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
+            "W",
+            "N",
+            11,
+            temp.Path);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_dec_pulse_distance_arcsec",
+            -0.6,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
+            "W",
+            "N",
+            11,
+            temp.Path);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_dec_pulse_duration_ms",
+            200,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
+            "W",
+            "N",
+            11,
+            temp.Path);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_ra_pulse_distance_arcsec",
+            -0.7,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
+            "E",
+            "S",
+            12,
+            temp.Path);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_ra_pulse_duration_ms",
+            125,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
+            "E",
+            "S",
+            12,
+            temp.Path);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_dec_pulse_distance_arcsec",
+            0.8,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
+            "E",
+            "S",
+            12,
+            temp.Path);
+        AssertPulseMetric(
+            pulseMetrics,
+            "phd2_guide_dec_pulse_duration_ms",
+            225,
+            new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
+            "E",
+            "S",
+            12,
+            temp.Path);
+
+        sink.Records.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_arcsec")
+            .Which.NumericValue.Should().BeApproximately(Math.Sqrt(22.5), 1e-9);
+        sink.Records.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_arcsec")
+            .Which.NumericValue.Should().BeApproximately(Math.Sqrt(40), 1e-9);
+        sink.Records.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_total_arcsec")
+            .Which.NumericValue.Should().BeApproximately(Math.Sqrt(62.5), 1e-9);
+        sink.Records.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_sample_count")
+            .Which.NumericValue.Should().Be(2);
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -365,6 +499,33 @@ public sealed class Phd2TelemetryAddonTests
 
         result.IsValid.Should().BeTrue();
         result.Errors.Should().BeEmpty();
+    }
+
+    private static void AssertPulseMetric(
+        IReadOnlyList<TelemetryRecord> records,
+        string name,
+        double value,
+        DateTimeOffset timestamp,
+        string raDirection,
+        string decDirection,
+        int frame,
+        string sourcePath)
+    {
+        var record = records.Should().ContainSingle(candidate =>
+            candidate.Name == name &&
+            candidate.Timestamp == timestamp &&
+            candidate.NumericValue == value).Subject;
+
+        record.Source.Should().Be("phd2");
+        record.Priority.Should().Be(TelemetryPriority.Normal);
+        record.Attributes.Should().Contain("addon.id", "phd2");
+        record.Attributes.Should().Contain("source", "phd2");
+        record.Attributes.Should().Contain("source.file", sourcePath);
+        record.Attributes.Should().Contain("guider_name", "PHD2");
+        record.Attributes.Should().Contain("phd2.session_start", "2026-06-18T22:00:00.0000000+00:00");
+        record.Attributes.Should().Contain("phd2.ra_direction", raDirection);
+        record.Attributes.Should().Contain("phd2.dec_direction", decDirection);
+        record.Attributes.Should().Contain("phd2.frame", frame);
     }
 
     private static AddonContext CreateContext(

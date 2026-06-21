@@ -195,9 +195,51 @@ public sealed class NinaMetricCatalogTests
                 "profile_name",
                 "host_name",
                 "addon.id",
+                "source",
                 "guider_name",
                 "source.file",
                 "phd2.session_start");
+            NinaMetricCatalog.IsLiveObservableGauge(metricName).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public void All_IncludesDeferredPhd2GuidePulseMetricsWithPulseAttributes()
+    {
+        string[] metricNames =
+        [
+            "phd2_guide_ra_pulse_distance_arcsec",
+            "phd2_guide_ra_pulse_duration_ms",
+            "phd2_guide_dec_pulse_distance_arcsec",
+            "phd2_guide_dec_pulse_duration_ms",
+        ];
+
+        foreach (var metricName in metricNames)
+        {
+            var metric = NinaMetricCatalog.All.Should()
+                .ContainSingle(candidate => candidate.Name == metricName)
+                .Subject;
+
+            metric.Category.Should().Be("phd2");
+            metric.ExportKind.Should().Be(NinaMetricExportKind.DeferredPointInTime);
+            metric.AttributeNames.Should().Contain(
+                "profile_name",
+                "host_name",
+                "addon.id",
+                "source",
+                "guider_name",
+                "source.file",
+                "phd2.session_start",
+                "phd2.ra_direction",
+                "phd2.dec_direction",
+                "phd2.frame");
+            NinaMetricCatalog.GetMetricAttributeNames(metricName, NinaMetricExportKind.DeferredPointInTime)
+                .Should()
+                .NotBeNull()
+                .And.Contain(
+                    "phd2.ra_direction",
+                    "phd2.dec_direction",
+                    "phd2.frame");
             NinaMetricCatalog.IsLiveObservableGauge(metricName).Should().BeFalse();
         }
     }
