@@ -208,6 +208,12 @@ public sealed class NinaOtelPlugin : PluginBase
             new DiskTelemetrySpool(
                 options.Buffer.SpoolPath,
                 options.Buffer.MaxSpoolBytes,
-                options.Buffer.MaxSpoolAge));
+                options.Buffer.MaxSpoolAge),
+            TimeSpan.FromMilliseconds(250),
+            TimeSpan.FromSeconds(5),
+            NinaOtelOptionsViewModel.UpdateCollectorHealth,
+            options.Otlp.Endpoint,
+            options.Otlp.Protocol,
+            timeProvider);
     }
 }

@@ -1,5 +1,7 @@
 using FluentAssertions;
 using NinaOtel.Abstractions.Telemetry;
+using NinaOtel.Core.Health;
+using NinaOtel.Core.Options;
 using NinaOtel.Core.Pipeline;
 using Xunit;
 
@@ -31,6 +33,31 @@ public sealed class DurableTelemetryExporterTests : IDisposable
         await export.Should().NotThrowAsync();
         var batch = (await spool.ReadBatchesAsync(CancellationToken.None)).Should().ContainSingle().Subject;
         batch.Records.Should().ContainSingle().Which.Name.Should().Be("live");
+    }
+
+    [Fact]
+    public async Task ExportAsync_WhenInnerFails_ReportsDegradedHealthWithQueuedSpoolStats()
+    {
+        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
+        var reporter = new RecordingHealthReporter();
+        using var exporter = CreateExporter(
+            new ThrowingExporter(new InvalidOperationException("collector unavailable")),
+            spool,
+            reportHealth: reporter.Report);
+        var timestamp = new DateTimeOffset(2026, 6, 21, 12, 0, 0, TimeSpan.Zero);
+        var record = TelemetryRecord.Health(timestamp, "test", "live", TelemetryPriority.Important);
+
+        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
+
+        reporter.Snapshots.Should().ContainSingle();
+        var snapshot = reporter.Snapshots[0];
+        snapshot.State.Should().Be(CollectorHealthState.Unhealthy);
+        snapshot.BufferMode.Should().Be(CollectorBufferMode.Degraded);
+        snapshot.ErrorType.Should().Be(nameof(InvalidOperationException));
+        snapshot.ErrorMessage.Should().Be("collector unavailable");
+        snapshot.QueuedRecords.Should().Be(1);
+        snapshot.QueuedBytes.Should().BeGreaterThan(0);
+        snapshot.OldestQueuedTimestamp.Should().Be(timestamp);
     }
 
     [Fact]
@@ -134,6 +161,33 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     }
 
     [Fact]
+    public async Task ExportAsync_WhenInnerRecovers_ReportsHealthyAfterBackgroundDrain()
+    {
+        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
+        var reporter = new RecordingHealthReporter();
+        using var inner = new RecoveringExporter(new InvalidOperationException("collector unavailable"));
+        using var exporter = CreateExporter(
+            inner,
+            spool,
+            TimeSpan.FromMilliseconds(10),
+            reporter.Report);
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Important);
+
+        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
+        inner.Recover();
+
+        var healthySnapshot = await WaitForHealthSnapshotAsync(
+            reporter,
+            snapshot => snapshot.State == CollectorHealthState.Healthy &&
+                snapshot.BufferMode == CollectorBufferMode.Healthy &&
+                snapshot.QueuedRecords == 0,
+            TimeSpan.FromSeconds(2));
+
+        reporter.SnapshotCopy.Should().Contain(snapshot => snapshot.BufferMode == CollectorBufferMode.Degraded);
+        healthySnapshot.State.Should().Be(CollectorHealthState.Healthy);
+    }
+
+    [Fact]
     public async Task ExportAsync_WhenCancellationRequested_PropagatesAndDoesNotSpool()
     {
         var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
@@ -188,10 +242,19 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     private static DurableTelemetryExporter CreateExporter(
         ITelemetryExporter inner,
         DiskTelemetrySpool spool,
-        TimeSpan? recoveryInitialDelay = null)
+        TimeSpan? recoveryInitialDelay = null,
+        Action<CollectorHealthSnapshot>? reportHealth = null)
     {
         var delay = recoveryInitialDelay ?? TimeSpan.FromMinutes(1);
-        return new DurableTelemetryExporter(inner, spool, delay, delay);
+        return new DurableTelemetryExporter(
+            inner,
+            spool,
+            delay,
+            delay,
+            reportHealth,
+            new Uri("http://collector.local:4317/"),
+            OtlpProtocol.Grpc,
+            TimeProvider.System);
     }
 
     private static async Task WaitForSpoolToDrainAsync(DiskTelemetrySpool spool, TimeSpan timeout)
@@ -216,6 +279,63 @@ public sealed class DurableTelemetryExporterTests : IDisposable
         }
 
         throw new TimeoutException("Telemetry spool did not drain before the timeout elapsed.");
+    }
+
+    private static async Task<CollectorHealthSnapshot> WaitForHealthSnapshotAsync(
+        RecordingHealthReporter reporter,
+        Predicate<CollectorHealthSnapshot> predicate,
+        TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+
+        while (!cts.IsCancellationRequested)
+        {
+            lock (reporter.Gate)
+            {
+                var matchingSnapshot = reporter.Snapshots.FirstOrDefault(snapshot => predicate(snapshot));
+                if (matchingSnapshot is not null)
+                {
+                    return matchingSnapshot;
+                }
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), cts.Token);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+
+        throw new TimeoutException("Expected collector health snapshot was not reported.");
+    }
+
+    private sealed class RecordingHealthReporter
+    {
+        public object Gate { get; } = new();
+
+        public List<CollectorHealthSnapshot> Snapshots { get; } = [];
+
+        public IReadOnlyList<CollectorHealthSnapshot> SnapshotCopy
+        {
+            get
+            {
+                lock (Gate)
+                {
+                    return Snapshots.ToArray();
+                }
+            }
+        }
+
+        public void Report(CollectorHealthSnapshot snapshot)
+        {
+            lock (Gate)
+            {
+                Snapshots.Add(snapshot);
+            }
+        }
     }
 
     private sealed class RecordingExporter : ITelemetryExporter

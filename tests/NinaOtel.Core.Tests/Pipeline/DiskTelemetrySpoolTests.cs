@@ -247,6 +247,54 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
+    public async Task GetStatsAsync_WhenSpoolHasReadyBatches_ReturnsQueuedRecordCountsBytesAndOldestTimestamp()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var spool = new DiskTelemetrySpool(spoolPath);
+        var oldest = DateTimeOffset.Parse("2026-06-20T10:18:00Z", CultureInfo.InvariantCulture);
+        var newer = oldest.AddMinutes(1);
+
+        await spool.AppendBatchAsync(
+            new[]
+            {
+                TelemetryRecord.Health(oldest, "test", "oldest", TelemetryPriority.Routine),
+                TelemetryRecord.Health(newer, "test", "newer", TelemetryPriority.Routine),
+            },
+            CancellationToken.None);
+        await spool.AppendBatchAsync(
+            new[] { TelemetryRecord.Health(newer.AddMinutes(1), "test", "latest", TelemetryPriority.Routine) },
+            CancellationToken.None);
+
+        var stats = await spool.GetStatsAsync(CancellationToken.None);
+
+        stats.QueuedBatches.Should().Be(2);
+        stats.QueuedRecords.Should().Be(3);
+        stats.QueuedBytes.Should().BeGreaterThan(0);
+        stats.OldestQueuedTimestamp.Should().Be(oldest);
+    }
+
+    [Fact]
+    public async Task GetStatsAsync_WhenReadyFileCannotBeRead_StillReportsReadyFileBacklog()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        Directory.CreateDirectory(spoolPath);
+        var invalidPath = Path.Combine(spoolPath, "0000000000000000001-invalid.ready");
+        await File.WriteAllTextAsync(invalidPath, "null");
+        var spool = new DiskTelemetrySpool(spoolPath);
+        var timestamp = DateTimeOffset.Parse("2026-06-20T10:19:00Z", CultureInfo.InvariantCulture);
+        await spool.AppendBatchAsync(
+            new[] { TelemetryRecord.Health(timestamp, "test", "valid", TelemetryPriority.Routine) },
+            CancellationToken.None);
+
+        var stats = await spool.GetStatsAsync(CancellationToken.None);
+
+        stats.QueuedBatches.Should().Be(2);
+        stats.QueuedRecords.Should().Be(1);
+        stats.QueuedBytes.Should().BeGreaterThan(new FileInfo(invalidPath).Length);
+        stats.OldestQueuedTimestamp.Should().Be(timestamp);
+    }
+
+    [Fact]
     public async Task ReadBatchesAsync_WhenReadyFileDeserializesToNull_ThrowsBatchReadException()
     {
         var spoolPath = Path.Combine(root, "spool");

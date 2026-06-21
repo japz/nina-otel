@@ -1,5 +1,7 @@
 using System.Runtime.ExceptionServices;
 using NinaOtel.Abstractions.Telemetry;
+using NinaOtel.Core.Health;
+using NinaOtel.Core.Options;
 
 namespace NinaOtel.Core.Pipeline;
 
@@ -12,6 +14,10 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
     private readonly DiskTelemetrySpool spool;
     private readonly TimeSpan recoveryInitialDelay;
     private readonly TimeSpan recoveryMaxDelay;
+    private readonly Action<CollectorHealthSnapshot>? reportHealth;
+    private readonly Uri? endpoint;
+    private readonly OtlpProtocol protocol;
+    private readonly TimeProvider? timeProvider;
     private readonly object recoveryWorkerLock = new();
     private readonly SemaphoreSlim spoolReplayLock = new(1, 1);
     private readonly CancellationTokenSource disposeCts = new();
@@ -28,10 +34,20 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
         ITelemetryExporter innerExporter,
         DiskTelemetrySpool spool,
         TimeSpan recoveryInitialDelay,
-        TimeSpan recoveryMaxDelay)
+        TimeSpan recoveryMaxDelay,
+        Action<CollectorHealthSnapshot>? reportHealth = null,
+        Uri? endpoint = null,
+        OtlpProtocol protocol = default,
+        TimeProvider? timeProvider = null)
     {
         this.innerExporter = innerExporter ?? throw new ArgumentNullException(nameof(innerExporter));
         this.spool = spool ?? throw new ArgumentNullException(nameof(spool));
+        if (reportHealth != null)
+        {
+            ArgumentNullException.ThrowIfNull(endpoint);
+            ArgumentNullException.ThrowIfNull(timeProvider);
+        }
+
         if (recoveryInitialDelay <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(recoveryInitialDelay), "Recovery delay must be positive.");
@@ -46,6 +62,10 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
 
         this.recoveryInitialDelay = recoveryInitialDelay;
         this.recoveryMaxDelay = recoveryMaxDelay;
+        this.reportHealth = reportHealth;
+        this.endpoint = endpoint;
+        this.protocol = protocol;
+        this.timeProvider = timeProvider;
     }
 
     public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
@@ -57,6 +77,10 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
         if (replayFailure != null)
         {
             await AppendLiveBatchOrRethrowOriginalAsync(records, replayFailure, cancellationToken).ConfigureAwait(false);
+            await ReportUnhealthyAsync(
+                replayFailure,
+                CollectorBufferMode.Degraded,
+                cancellationToken).ConfigureAwait(false);
             EnsureRecoveryWorkerStarted();
             return;
         }
@@ -72,6 +96,10 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
         catch (Exception ex)
         {
             await AppendLiveBatchOrRethrowOriginalAsync(records, ex, cancellationToken).ConfigureAwait(false);
+            await ReportUnhealthyAsync(
+                ex,
+                CollectorBufferMode.Degraded,
+                cancellationToken).ConfigureAwait(false);
             EnsureRecoveryWorkerStarted();
         }
     }
@@ -154,6 +182,7 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
             {
                 await innerExporter.ExportAsync(batch.Records, cancellationToken).ConfigureAwait(false);
                 batch.Complete();
+                await ReportAfterReplaySuccessAsync(batch.Records.Count, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -231,6 +260,10 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
                     continue;
                 }
 
+                await ReportUnhealthyAsync(
+                    failure,
+                    CollectorBufferMode.Degraded,
+                    disposeCts.Token).ConfigureAwait(false);
                 delay = NextRecoveryDelay(delay);
             }
             catch (OperationCanceledException) when (disposeCts.IsCancellationRequested)
@@ -277,6 +310,90 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
             ? recoveryMaxDelay.Ticks
             : currentDelay.Ticks * 2;
         return TimeSpan.FromTicks(Math.Min(nextTicks, recoveryMaxDelay.Ticks));
+    }
+
+    private async Task ReportAfterReplaySuccessAsync(int exportedRecords, CancellationToken cancellationToken)
+    {
+        if (reportHealth is null)
+        {
+            return;
+        }
+
+        var stats = await GetStatsSafelyAsync(cancellationToken).ConfigureAwait(false);
+        if (stats.QueuedRecords == 0)
+        {
+            ReportSafely(CollectorHealthSnapshot.Healthy(
+                endpoint!,
+                protocol,
+                exportedRecords,
+                timeProvider!.GetUtcNow(),
+                bufferMode: CollectorBufferMode.Healthy));
+            return;
+        }
+
+        ReportSafely(CollectorHealthSnapshot.Unhealthy(
+            endpoint!,
+            protocol,
+            "RecoveryInProgress",
+            "Collector is reachable; draining queued telemetry.",
+            timeProvider!.GetUtcNow(),
+            exportedRecords,
+            CollectorBufferMode.Recovering,
+            stats.QueuedRecords,
+            stats.QueuedBytes,
+            stats.OldestQueuedTimestamp));
+    }
+
+    private async Task ReportUnhealthyAsync(
+        Exception exception,
+        CollectorBufferMode bufferMode,
+        CancellationToken cancellationToken)
+    {
+        if (reportHealth is null)
+        {
+            return;
+        }
+
+        var stats = await GetStatsSafelyAsync(cancellationToken).ConfigureAwait(false);
+        ReportSafely(CollectorHealthSnapshot.Unhealthy(
+            endpoint!,
+            protocol,
+            exception.GetType().Name,
+            exception.Message,
+            timeProvider!.GetUtcNow(),
+            bufferMode: bufferMode,
+            queuedRecords: stats.QueuedRecords,
+            queuedBytes: stats.QueuedBytes,
+            oldestQueuedTimestamp: stats.OldestQueuedTimestamp));
+    }
+
+    private async Task<DiskTelemetrySpool.Stats> GetStatsSafelyAsync(CancellationToken cancellationToken)
+    {
+        if (reportHealth is null)
+        {
+            return DiskTelemetrySpool.Stats.Empty;
+        }
+
+        try
+        {
+            return await spool.GetStatsAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            return DiskTelemetrySpool.Stats.Empty;
+        }
+    }
+
+    private void ReportSafely(CollectorHealthSnapshot snapshot)
+    {
+        try
+        {
+            reportHealth?.Invoke(snapshot);
+        }
+        catch
+        {
+            // Exporter health is diagnostic state; it must never break telemetry delivery.
+        }
     }
 
     private void DisposeOwnedResources()

@@ -756,6 +756,32 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.CollectorHealthDebugInfo.Should().Contain("connection refused");
     }
 
+    [Fact]
+    public void UpdateCollectorHealth_WhenTelemetryIsSpooled_ShowsDegradedQueueStatusAndDebugInfo()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.UpdateCollectorHealth(CollectorHealthSnapshot.Unhealthy(
+            new Uri("http://collector.local:4317/"),
+            OtlpProtocol.Grpc,
+            "SocketException",
+            "connection refused",
+            checkedAt: new DateTimeOffset(2026, 6, 21, 12, 0, 0, TimeSpan.Zero),
+            bufferMode: CollectorBufferMode.Degraded,
+            queuedRecords: 2,
+            queuedBytes: 4096,
+            oldestQueuedTimestamp: new DateTimeOffset(2026, 6, 21, 11, 55, 0, TimeSpan.Zero)));
+
+        viewModel.CollectorHealthState.Should().Be(CollectorHealthState.Unhealthy);
+        viewModel.CollectorHealthBrush.Should().Be("#C62828");
+        viewModel.CollectorHealthSummary.Should().Be("Collector unavailable; telemetry queued");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("Mode: Degraded");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("Queued: 2 record(s), 4096 byte(s)");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("Oldest queued: 2026-06-21T11:55:00.0000000+00:00");
+        viewModel.CollectorHealthDebugInfo.Should().Contain("SocketException");
+    }
+
     private sealed class FakeSecretProtector : ISecretProtector
     {
         public string Protect(string secret) => $"protected:{secret}";

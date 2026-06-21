@@ -89,35 +89,57 @@ internal sealed class DiskTelemetrySpool
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            try
-            {
-                await using var stream = new FileStream(
-                    path,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.Read,
-                    bufferSize: 16 * 1024,
-                    useAsync: true);
-                var dto = await JsonSerializer.DeserializeAsync<BatchDto>(stream, JsonOptions, cancellationToken)
-                    .ConfigureAwait(false);
-                if (dto is null)
-                {
-                    throw new InvalidDataException($"Telemetry spool batch '{path}' is empty or invalid.");
-                }
-
-                batches.Add(new Batch(path, dto.ToRecords()));
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                throw new BatchReadException(path, ex);
-            }
+            batches.Add(await ReadBatchAsync(path, cancellationToken).ConfigureAwait(false));
         }
 
         return batches;
+    }
+
+    public async Task<Stats> GetStatsAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (!Directory.Exists(spoolPath))
+        {
+            return Stats.Empty;
+        }
+
+        var readyFiles = Directory.EnumerateFiles(spoolPath, "*.ready")
+            .Select(path => new FileInfo(path))
+            .Where(file => file.Exists)
+            .OrderBy(file => file.FullName, StringComparer.Ordinal)
+            .ToArray();
+        var queuedBytes = readyFiles.Sum(file => file.Length);
+        var queuedRecords = 0;
+        DateTimeOffset? oldestQueuedTimestamp = null;
+
+        foreach (var file in readyFiles)
+        {
+            Batch batch;
+            try
+            {
+                batch = await ReadBatchAsync(file.FullName, cancellationToken).ConfigureAwait(false);
+            }
+            catch (BatchReadException)
+            {
+                continue;
+            }
+
+            queuedRecords += batch.Records.Count;
+            foreach (var record in batch.Records)
+            {
+                if (oldestQueuedTimestamp is null || record.Timestamp < oldestQueuedTimestamp)
+                {
+                    oldestQueuedTimestamp = record.Timestamp;
+                }
+            }
+        }
+
+        return new Stats(
+            readyFiles.Length,
+            queuedRecords,
+            queuedBytes,
+            oldestQueuedTimestamp);
     }
 
     public void Quarantine(BatchReadException exception)
@@ -204,6 +226,36 @@ internal sealed class DiskTelemetrySpool
     private static string CreateSpoolFileBaseName() =>
         DateTime.UtcNow.Ticks.ToString("D19", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N");
 
+    private static async Task<Batch> ReadBatchAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 16 * 1024,
+                useAsync: true);
+            var dto = await JsonSerializer.DeserializeAsync<BatchDto>(stream, JsonOptions, cancellationToken)
+                .ConfigureAwait(false);
+            if (dto is null)
+            {
+                throw new InvalidDataException($"Telemetry spool batch '{path}' is empty or invalid.");
+            }
+
+            return new Batch(path, dto.ToRecords());
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new BatchReadException(path, ex);
+        }
+    }
+
     private static string CreateSidecarPath(string path, string extension)
     {
         var directory = Path.GetDirectoryName(path) ?? string.Empty;
@@ -273,6 +325,15 @@ internal sealed class DiskTelemetrySpool
         }
 
         public string Path { get; }
+    }
+
+    public sealed record Stats(
+        int QueuedBatches,
+        int QueuedRecords,
+        long QueuedBytes,
+        DateTimeOffset? OldestQueuedTimestamp)
+    {
+        public static Stats Empty { get; } = new(0, 0, 0, null);
     }
 
     private sealed class BatchDto
