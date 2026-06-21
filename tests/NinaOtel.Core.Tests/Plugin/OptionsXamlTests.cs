@@ -93,6 +93,30 @@ public sealed class OptionsXamlTests
         textBindings.Should().Contain(binding => binding.Contains("Message", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void OptionsTemplate_AddonSwitchesUseExplicitVisibleLabels()
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+
+        var itemsControl = document
+            .Descendants(PresentationNamespace + "ItemsControl")
+            .Single(element => element.Attribute("ItemsSource")?.Value.Contains("NinaOtelOptionsViewModel.Addons", StringComparison.Ordinal) == true);
+        var labels = itemsControl
+            .Descendants(PresentationNamespace + "TextBlock")
+            .Select(element => element.Attribute("Text")?.Value)
+            .OfType<string>()
+            .ToArray();
+        var checkboxes = itemsControl
+            .Descendants(PresentationNamespace + "CheckBox")
+            .ToArray();
+
+        labels.Should().Contain("Enabled:");
+        labels.Should().Contain("Raw log forwarding:");
+        checkboxes.Should().NotContain(
+            element => element.Attribute("Content") is not null,
+            "NINA renders these checkboxes as switch controls, so labels must be separate visible text");
+    }
+
     [Theory]
     [InlineData("Phd2DebugLogPath")]
     [InlineData("Phd2GuideLogPath")]

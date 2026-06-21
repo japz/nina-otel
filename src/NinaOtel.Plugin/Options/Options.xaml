@@ -63,15 +63,33 @@
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="{Binding DisplayName}" FontWeight="SemiBold" />
                             <TextBlock Grid.Row="0" Grid.Column="2" Text="{Binding Source}" Foreground="#666666" />
 
-                            <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal">
+                            <Grid Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="24" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock
+                                    Grid.Column="0"
+                                    Text="Enabled:"
+                                    VerticalAlignment="Center"
+                                    Margin="0,0,6,0" />
                                 <CheckBox
-                                    Content="Enabled"
+                                    Grid.Column="1"
                                     IsChecked="{Binding IsEnabled, Mode=TwoWay}"
-                                    Margin="0,0,16,0" />
+                                    ToolTip="Enable this add-on telemetry." />
+                                <TextBlock
+                                    Grid.Column="3"
+                                    Text="Raw log forwarding:"
+                                    VerticalAlignment="Center"
+                                    Margin="0,0,6,0" />
                                 <CheckBox
-                                    Content="Raw forwarding"
-                                    IsChecked="{Binding RawForwardingEnabled, Mode=TwoWay}" />
-                            </StackPanel>
+                                    Grid.Column="4"
+                                    IsChecked="{Binding RawForwardingEnabled, Mode=TwoWay}"
+                                    ToolTip="Forward raw source log lines in addition to parsed telemetry." />
+                            </Grid>
 
                             <TextBlock
                                 Grid.Row="4"
