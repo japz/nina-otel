@@ -9,6 +9,7 @@
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <RootNamespace>NinaOtel.Plugin</RootNamespace>
     <AssemblyName>NinaOtel.Plugin</AssemblyName>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\NinaOtel.Addons.NightSummary\NinaOtel.Addons.NightSummary.csproj" />
