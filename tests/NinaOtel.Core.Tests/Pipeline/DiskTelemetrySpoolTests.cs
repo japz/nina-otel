@@ -177,6 +177,122 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
+    public async Task AppendBatchAsync_WhenSpoolExceedsMaxBytes_DropsRoutineBatchBeforeOlderImportantBatch()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var maxBytes = 9_000;
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("important-old", TelemetryPriority.Important) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("routine-newer", TelemetryPriority.Routine) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("critical-newest", TelemetryPriority.Critical) }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("important-old", "critical-newest");
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(maxBytes);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenSpoolBytesAreWithinLimit_DoesNotReadExistingReadyFilesForEvictionPriority()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var priorityResolverCalls = 0;
+        var spool = new DiskTelemetrySpool(
+            spoolPath,
+            maxBytes: 1024 * 1024,
+            maxAge: TimeSpan.FromDays(7),
+            _ =>
+            {
+                priorityResolverCalls++;
+                throw new InvalidOperationException("Priority resolver should not run when spool bytes are within limit.");
+            });
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("existing") }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("new") }, CancellationToken.None);
+
+        priorityResolverCalls.Should().Be(0);
+        Directory.GetFiles(spoolPath, "*.ready").Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenSpoolExceedsMaxBytes_DoesNotReadProtectedNewestBatchForEvictionPriority()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var resolvedPaths = new List<string>();
+        var spool = new DiskTelemetrySpool(
+            spoolPath,
+            maxBytes: 6_000,
+            maxAge: TimeSpan.FromDays(7),
+            path =>
+            {
+                var newestReadyPath = Directory.GetFiles(spoolPath, "*.ready")
+                    .OrderBy(readyPath => readyPath, StringComparer.Ordinal)
+                    .Last();
+                if (string.Equals(path, newestReadyPath, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("Priority resolver should not run for the protected newest batch.");
+                }
+
+                resolvedPaths.Add(path);
+                return TelemetryPriority.Debug;
+            });
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("old") }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("newest") }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("newest");
+        resolvedPaths.Should().ContainSingle();
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(6_000);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenNewestBatchHasLowerPriority_KeepsNewestBatchProtected()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var maxBytes = 9_000;
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("important-old", TelemetryPriority.Important) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("normal-middle", TelemetryPriority.Normal) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("routine-newest", TelemetryPriority.Routine) }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("important-old", "routine-newest");
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(maxBytes);
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenBatchHasMixedPriorities_RanksBatchByHighestPriorityRecord()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var maxBytes = 9_000;
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(
+            new[]
+            {
+                CreateLargeRecord("routine-in-mixed", TelemetryPriority.Routine, payloadSize: 256),
+                CreateLargeRecord("critical-in-mixed", TelemetryPriority.Critical),
+            },
+            CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("important-single", TelemetryPriority.Important) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("normal-newest", TelemetryPriority.Normal) }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("routine-in-mixed", "critical-in-mixed", "normal-newest");
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(maxBytes);
+    }
+
+    [Fact]
     public async Task AppendBatchAsync_WhenNewBatchAloneExceedsMaxBytes_DeletesItAndThrowsIOException()
     {
         var spoolPath = Path.Combine(root, "spool");
@@ -331,13 +447,16 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     private static TelemetryRecord CreateHealthRecord(string name) =>
         TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", name, TelemetryPriority.Routine);
 
-    private static TelemetryRecord CreateLargeRecord(string name) =>
+    private static TelemetryRecord CreateLargeRecord(
+        string name,
+        TelemetryPriority priority = TelemetryPriority.Routine,
+        int payloadSize = 3_000) =>
         TelemetryRecord.Health(
             DateTimeOffset.UtcNow,
             "test",
             name,
-            TelemetryPriority.Routine,
-            new Dictionary<string, object?> { ["payload"] = new string('x', 3_000) });
+            priority,
+            new Dictionary<string, object?> { ["payload"] = new string('x', payloadSize) });
 
     private static long TotalSpoolBytes(string spoolPath) =>
         Directory.EnumerateFiles(spoolPath, "*.*")
