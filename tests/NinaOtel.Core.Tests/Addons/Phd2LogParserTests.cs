@@ -198,13 +198,13 @@ public sealed class Phd2LogParserTests
         sample.Should().NotBeNull();
         var guideSample = sample!;
         guideSample.Timestamp.Should().Be(DateTimeOffset.Parse("2026-06-18T22:00:01.500Z"));
-        guideSample.RaDistanceArcsec.Should().Be(3);
-        guideSample.DecDistanceArcsec.Should().Be(4);
+        guideSample.RaDistancePixel.Should().Be(3);
+        guideSample.DecDistancePixel.Should().Be(4);
         guideSample.Pulse.Should().NotBeNull();
-        guideSample.Pulse!.RaDistanceArcsec.Should().Be(0.5);
+        guideSample.Pulse!.RaDistancePixel.Should().Be(0.5);
         guideSample.Pulse.RaDurationMs.Should().Be(100);
         guideSample.Pulse.RaDirection.Should().Be("W");
-        guideSample.Pulse.DecDistanceArcsec.Should().Be(-0.6);
+        guideSample.Pulse.DecDistancePixel.Should().Be(-0.6);
         guideSample.Pulse.DecDurationMs.Should().Be(200);
         guideSample.Pulse.DecDirection.Should().Be("N");
         guideSample.Source.Should().Be("phd2");
@@ -226,8 +226,8 @@ public sealed class Phd2LogParserTests
         sample.Should().NotBeNull();
         var guideSample = sample!;
         guideSample.Timestamp.Should().Be(DateTimeOffset.Parse("2026-06-18T22:00:01.500Z"));
-        guideSample.RaDistanceArcsec.Should().Be(3);
-        guideSample.DecDistanceArcsec.Should().Be(4);
+        guideSample.RaDistancePixel.Should().Be(3);
+        guideSample.DecDistancePixel.Should().Be(4);
         guideSample.Pulse.Should().BeNull();
     }
 

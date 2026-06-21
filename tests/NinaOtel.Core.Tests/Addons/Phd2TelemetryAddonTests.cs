@@ -274,26 +274,26 @@ public sealed class Phd2TelemetryAddonTests
                 Environment.NewLine,
                 [
                     "Guiding Begins at 2026-06-18 22:00:00",
-                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DEGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
                     "1,1.000,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
                     "2,2.000,Mount,-0.1,0.3,0,0,0.0,0.0,0,E,0,S,31,0,5100",
                     "Guiding Ends at 2026-06-18 22:00:03",
                     string.Empty,
                 ]));
 
-        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_total_arcsec");
+        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_pixel");
 
         var metrics = sink.Records
             .Where(record => record.Signal == TelemetrySignal.Metric)
             .ToArray();
         metrics.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_pixel")
             .Which.NumericValue.Should().BeApproximately(Math.Sqrt(4.5), 1e-9);
         metrics.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_pixel")
             .Which.NumericValue.Should().BeApproximately(Math.Sqrt(8), 1e-9);
         metrics.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_total_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_pixel")
             .Which.NumericValue.Should().BeApproximately(Math.Sqrt(12.5), 1e-9);
         metrics.Should()
             .ContainSingle(record => record.Name == "phd2_guide_sample_count")
@@ -301,9 +301,9 @@ public sealed class Phd2TelemetryAddonTests
 
         string[] summaryMetricNames =
         [
-            "phd2_guide_rms_ra_arcsec",
-            "phd2_guide_rms_dec_arcsec",
-            "phd2_guide_rms_total_arcsec",
+            "phd2_guide_rms_ra_pixel",
+            "phd2_guide_rms_dec_pixel",
+            "phd2_guide_rms_pixel",
             "phd2_guide_sample_count",
         ];
         var summaryMetrics = metrics
@@ -343,7 +343,7 @@ public sealed class Phd2TelemetryAddonTests
                 Environment.NewLine,
                 [
                     "Guiding Begins at 2026-06-18 22:00:00",
-                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DEGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
                     "11,1.250,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
                     "12,2.500,Mount,-0.1,0.3,6,8,-0.7,0.8,125,E,225,S,31,0,5100",
                     "Guiding Ends at 2026-06-18 22:00:03",
@@ -353,7 +353,7 @@ public sealed class Phd2TelemetryAddonTests
         await WaitForRecordAsync(sink, record =>
             record.Name == "phd2_guide_dec_pulse_duration_ms" &&
             record.NumericValue == 225);
-        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_total_arcsec");
+        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_pixel");
 
         var pulseMetrics = sink.Records
             .Where(record => record.Signal == TelemetrySignal.Metric &&
@@ -363,12 +363,11 @@ public sealed class Phd2TelemetryAddonTests
         pulseMetrics.Should().HaveCount(8);
         AssertPulseMetric(
             pulseMetrics,
-            "phd2_guide_ra_pulse_distance_arcsec",
+            "phd2_guide_ra_pulse_distance_pixel",
             0.5,
             new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
             "W",
             "N",
-            11,
             temp.Path);
         AssertPulseMetric(
             pulseMetrics,
@@ -377,16 +376,14 @@ public sealed class Phd2TelemetryAddonTests
             new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
             "W",
             "N",
-            11,
             temp.Path);
         AssertPulseMetric(
             pulseMetrics,
-            "phd2_guide_dec_pulse_distance_arcsec",
+            "phd2_guide_dec_pulse_distance_pixel",
             -0.6,
             new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
             "W",
             "N",
-            11,
             temp.Path);
         AssertPulseMetric(
             pulseMetrics,
@@ -395,16 +392,14 @@ public sealed class Phd2TelemetryAddonTests
             new DateTimeOffset(2026, 6, 18, 22, 0, 1, 250, TimeSpan.Zero),
             "W",
             "N",
-            11,
             temp.Path);
         AssertPulseMetric(
             pulseMetrics,
-            "phd2_guide_ra_pulse_distance_arcsec",
+            "phd2_guide_ra_pulse_distance_pixel",
             -0.7,
             new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
             "E",
             "S",
-            12,
             temp.Path);
         AssertPulseMetric(
             pulseMetrics,
@@ -413,16 +408,14 @@ public sealed class Phd2TelemetryAddonTests
             new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
             "E",
             "S",
-            12,
             temp.Path);
         AssertPulseMetric(
             pulseMetrics,
-            "phd2_guide_dec_pulse_distance_arcsec",
+            "phd2_guide_dec_pulse_distance_pixel",
             0.8,
             new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
             "E",
             "S",
-            12,
             temp.Path);
         AssertPulseMetric(
             pulseMetrics,
@@ -431,17 +424,16 @@ public sealed class Phd2TelemetryAddonTests
             new DateTimeOffset(2026, 6, 18, 22, 0, 2, 500, TimeSpan.Zero),
             "E",
             "S",
-            12,
             temp.Path);
 
         sink.Records.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_pixel")
             .Which.NumericValue.Should().BeApproximately(Math.Sqrt(22.5), 1e-9);
         sink.Records.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_pixel")
             .Which.NumericValue.Should().BeApproximately(Math.Sqrt(40), 1e-9);
         sink.Records.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_total_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_pixel")
             .Which.NumericValue.Should().BeApproximately(Math.Sqrt(62.5), 1e-9);
         sink.Records.Should()
             .ContainSingle(record => record.Name == "phd2_guide_sample_count")
@@ -476,16 +468,16 @@ public sealed class Phd2TelemetryAddonTests
                     string.Empty,
                 ]));
 
-        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_total_arcsec");
+        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_pixel");
 
         sink.Records.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_pixel")
             .Which.NumericValue.Should().Be(3);
         sink.Records.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_pixel")
             .Which.NumericValue.Should().Be(4);
         sink.Records.Should()
-            .ContainSingle(record => record.Name == "phd2_guide_rms_total_arcsec")
+            .ContainSingle(record => record.Name == "phd2_guide_rms_pixel")
             .Which.NumericValue.Should().Be(5);
         sink.Records.Should()
             .NotContain(record =>
@@ -515,7 +507,7 @@ public sealed class Phd2TelemetryAddonTests
                 Environment.NewLine,
                 [
                     "Guiding Begins at 2026-06-18 22:00:00",
-                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DEGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DECGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
                     "1,1.000,Mount,0.1,-0.2,1e154,1e154,0.5,-0.6,100,W,200,N,30,0,5000",
                     "Guiding Ends at 2026-06-18 22:00:03",
                     string.Empty,
@@ -553,7 +545,6 @@ public sealed class Phd2TelemetryAddonTests
         DateTimeOffset timestamp,
         string raDirection,
         string decDirection,
-        int frame,
         string sourcePath)
     {
         var record = records.Should().ContainSingle(candidate =>
@@ -570,7 +561,7 @@ public sealed class Phd2TelemetryAddonTests
         record.Attributes.Should().Contain("phd2.session_start", "2026-06-18T22:00:00.0000000+00:00");
         record.Attributes.Should().Contain("phd2.ra_direction", raDirection);
         record.Attributes.Should().Contain("phd2.dec_direction", decDirection);
-        record.Attributes.Should().Contain("phd2.frame", frame);
+        record.Attributes.Should().NotContainKey("phd2.frame");
     }
 
     private static AddonContext CreateContext(

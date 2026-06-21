@@ -177,9 +177,9 @@ public sealed class NinaMetricCatalogTests
     {
         string[] metricNames =
         [
-            "phd2_guide_rms_ra_arcsec",
-            "phd2_guide_rms_dec_arcsec",
-            "phd2_guide_rms_total_arcsec",
+            "phd2_guide_rms_ra_pixel",
+            "phd2_guide_rms_dec_pixel",
+            "phd2_guide_rms_pixel",
             "phd2_guide_sample_count",
         ];
 
@@ -208,9 +208,9 @@ public sealed class NinaMetricCatalogTests
     {
         string[] metricNames =
         [
-            "phd2_guide_ra_pulse_distance_arcsec",
+            "phd2_guide_ra_pulse_distance_pixel",
             "phd2_guide_ra_pulse_duration_ms",
-            "phd2_guide_dec_pulse_distance_arcsec",
+            "phd2_guide_dec_pulse_distance_pixel",
             "phd2_guide_dec_pulse_duration_ms",
         ];
 
@@ -231,15 +231,14 @@ public sealed class NinaMetricCatalogTests
                 "source.file",
                 "phd2.session_start",
                 "phd2.ra_direction",
-                "phd2.dec_direction",
-                "phd2.frame");
+                "phd2.dec_direction");
             NinaMetricCatalog.GetMetricAttributeNames(metricName, NinaMetricExportKind.DeferredPointInTime)
                 .Should()
                 .NotBeNull()
                 .And.Contain(
                     "phd2.ra_direction",
-                    "phd2.dec_direction",
-                    "phd2.frame");
+                    "phd2.dec_direction");
+            metric.AttributeNames.Should().NotContain("phd2.frame");
             NinaMetricCatalog.IsLiveObservableGauge(metricName).Should().BeFalse();
         }
     }

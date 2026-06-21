@@ -281,9 +281,9 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             ["phd2.session_start"] = summary.StartedAt.ToString("O", CultureInfo.InvariantCulture),
         };
 
-        yield return CreateGuideMetric(summary, "phd2_guide_rms_ra_arcsec", summary.RaRmsArcsec, attributes);
-        yield return CreateGuideMetric(summary, "phd2_guide_rms_dec_arcsec", summary.DecRmsArcsec, attributes);
-        yield return CreateGuideMetric(summary, "phd2_guide_rms_total_arcsec", summary.TotalRmsArcsec, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_ra_pixel", summary.RaRmsPixel, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_dec_pixel", summary.DecRmsPixel, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_pixel", summary.TotalRmsPixel, attributes);
         yield return CreateGuideMetric(summary, "phd2_guide_sample_count", summary.SampleCount, attributes);
     }
 
@@ -307,14 +307,9 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             ["phd2.dec_direction"] = pulse.DecDirection,
         };
 
-        if (sample.Frame is { } frame)
-        {
-            attributes["phd2.frame"] = frame;
-        }
-
-        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_distance_arcsec", pulse.RaDistanceArcsec, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_distance_pixel", pulse.RaDistancePixel, attributes);
         yield return CreateGuidePulseMetric(sample, "phd2_guide_ra_pulse_duration_ms", pulse.RaDurationMs, attributes);
-        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_distance_arcsec", pulse.DecDistanceArcsec, attributes);
+        yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_distance_pixel", pulse.DecDistancePixel, attributes);
         yield return CreateGuidePulseMetric(sample, "phd2_guide_dec_pulse_duration_ms", pulse.DecDurationMs, attributes);
     }
 
@@ -537,8 +532,8 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
 
         public bool Add(Phd2GuideSample sample)
         {
-            var raSquare = sample.RaDistanceArcsec * sample.RaDistanceArcsec;
-            var decSquare = sample.DecDistanceArcsec * sample.DecDistanceArcsec;
+            var raSquare = sample.RaDistancePixel * sample.RaDistancePixel;
+            var decSquare = sample.DecDistancePixel * sample.DecDistancePixel;
             var nextRaSquaredSum = raSquaredSum + raSquare;
             var nextDecSquaredSum = decSquaredSum + decSquare;
             var nextTotalSquaredSum = nextRaSquaredSum + nextDecSquaredSum;
@@ -581,7 +576,7 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         DateTimeOffset EndedAt,
         string SourcePath,
         int SampleCount,
-        double RaRmsArcsec,
-        double DecRmsArcsec,
-        double TotalRmsArcsec);
+        double RaRmsPixel,
+        double DecRmsPixel,
+        double TotalRmsPixel);
 }
