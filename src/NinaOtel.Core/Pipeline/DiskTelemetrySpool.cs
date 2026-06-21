@@ -172,18 +172,25 @@ internal sealed class DiskTelemetrySpool
         var files = EnumerateSpoolFiles()
             .Select(path => new FileInfo(path))
             .Where(file => file.Exists)
-            .OrderBy(file => file.FullName, StringComparer.Ordinal)
+            .Select(file => new EvictionCandidate(
+                file,
+                string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal),
+                GetEvictionPriority(file.FullName)))
+            .OrderBy(candidate => candidate.IsNewestProtected)
+            .ThenBy(candidate => candidate.Priority)
+            .ThenBy(candidate => candidate.File.FullName, StringComparer.Ordinal)
             .ToList();
-        var totalBytes = files.Sum(file => file.Length);
+        var totalBytes = files.Sum(candidate => candidate.File.Length);
 
-        foreach (var file in files)
+        foreach (var candidate in files)
         {
             if (totalBytes <= maxBytes)
             {
                 return;
             }
 
-            if (string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal))
+            var file = candidate.File;
+            if (candidate.IsNewestProtected)
             {
                 continue;
             }
@@ -203,6 +210,38 @@ internal sealed class DiskTelemetrySpool
 
         TryDelete(newestReadyPath);
         throw new IOException($"Telemetry spool batch '{newestReadyPath}' exceeds max spool bytes '{maxBytes}'.");
+    }
+
+    private static TelemetryPriority GetEvictionPriority(string path)
+    {
+        if (!path.EndsWith(".ready", StringComparison.Ordinal))
+        {
+            return TelemetryPriority.Debug;
+        }
+
+        try
+        {
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 16 * 1024);
+            var dto = JsonSerializer.Deserialize<BatchDto>(stream, JsonOptions);
+            if (dto is null)
+            {
+                return TelemetryPriority.Debug;
+            }
+
+            return dto.ToRecords()
+                .Select(record => record.Priority)
+                .DefaultIfEmpty(TelemetryPriority.Debug)
+                .Max();
+        }
+        catch
+        {
+            return TelemetryPriority.Debug;
+        }
     }
 
     private IEnumerable<string> EnumerateSpoolFiles()
@@ -276,6 +315,8 @@ internal sealed class DiskTelemetrySpool
         {
         }
     }
+
+    private sealed record EvictionCandidate(FileInfo File, bool IsNewestProtected, TelemetryPriority Priority);
 
     internal sealed class Batch
     {

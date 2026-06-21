@@ -177,6 +177,24 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
+    public async Task AppendBatchAsync_WhenSpoolExceedsMaxBytes_DropsRoutineBatchBeforeOlderImportantBatch()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var maxBytes = 9_000;
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes, TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("important-old", TelemetryPriority.Important) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("routine-newer", TelemetryPriority.Routine) }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("critical-newest", TelemetryPriority.Critical) }, CancellationToken.None);
+
+        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+
+        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
+            .Should().Equal("important-old", "critical-newest");
+        TotalSpoolBytes(spoolPath).Should().BeLessThanOrEqualTo(maxBytes);
+    }
+
+    [Fact]
     public async Task AppendBatchAsync_WhenNewBatchAloneExceedsMaxBytes_DeletesItAndThrowsIOException()
     {
         var spoolPath = Path.Combine(root, "spool");
@@ -331,12 +349,12 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     private static TelemetryRecord CreateHealthRecord(string name) =>
         TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", name, TelemetryPriority.Routine);
 
-    private static TelemetryRecord CreateLargeRecord(string name) =>
+    private static TelemetryRecord CreateLargeRecord(string name, TelemetryPriority priority = TelemetryPriority.Routine) =>
         TelemetryRecord.Health(
             DateTimeOffset.UtcNow,
             "test",
             name,
-            TelemetryPriority.Routine,
+            priority,
             new Dictionary<string, object?> { ["payload"] = new string('x', 3_000) });
 
     private static long TotalSpoolBytes(string spoolPath) =>
