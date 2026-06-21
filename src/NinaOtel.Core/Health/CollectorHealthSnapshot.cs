@@ -11,7 +11,12 @@ public sealed record CollectorHealthSnapshot
         DateTimeOffset checkedAt,
         int exportedRecords,
         string? errorType,
-        string? errorMessage)
+        string? errorMessage,
+        CollectorBufferMode bufferMode,
+        int queuedRecords,
+        long queuedBytes,
+        DateTimeOffset? oldestQueuedTimestamp,
+        int droppedRecords)
     {
         State = state;
         Endpoint = endpoint;
@@ -20,6 +25,11 @@ public sealed record CollectorHealthSnapshot
         ExportedRecords = exportedRecords;
         ErrorType = errorType;
         ErrorMessage = errorMessage;
+        BufferMode = bufferMode;
+        QueuedRecords = queuedRecords;
+        QueuedBytes = queuedBytes;
+        OldestQueuedTimestamp = oldestQueuedTimestamp;
+        DroppedRecords = droppedRecords;
     }
 
     public CollectorHealthState State { get; }
@@ -29,12 +39,22 @@ public sealed record CollectorHealthSnapshot
     public int ExportedRecords { get; }
     public string? ErrorType { get; }
     public string? ErrorMessage { get; }
+    public CollectorBufferMode BufferMode { get; }
+    public int QueuedRecords { get; }
+    public long QueuedBytes { get; }
+    public DateTimeOffset? OldestQueuedTimestamp { get; }
+    public int DroppedRecords { get; }
 
     public static CollectorHealthSnapshot Healthy(
         Uri endpoint,
         OtlpProtocol protocol,
         int exportedRecords,
-        DateTimeOffset checkedAt) =>
+        DateTimeOffset checkedAt,
+        CollectorBufferMode bufferMode = CollectorBufferMode.Healthy,
+        int queuedRecords = 0,
+        long queuedBytes = 0,
+        DateTimeOffset? oldestQueuedTimestamp = null,
+        int droppedRecords = 0) =>
         new(
             CollectorHealthState.Healthy,
             endpoint,
@@ -42,7 +62,12 @@ public sealed record CollectorHealthSnapshot
             checkedAt,
             exportedRecords,
             errorType: null,
-            errorMessage: null);
+            errorMessage: null,
+            bufferMode,
+            queuedRecords,
+            queuedBytes,
+            oldestQueuedTimestamp,
+            droppedRecords);
 
     public static CollectorHealthSnapshot Unhealthy(
         Uri endpoint,
@@ -50,7 +75,12 @@ public sealed record CollectorHealthSnapshot
         string errorType,
         string errorMessage,
         DateTimeOffset checkedAt,
-        int exportedRecords = 0) =>
+        int exportedRecords = 0,
+        CollectorBufferMode bufferMode = CollectorBufferMode.Unknown,
+        int queuedRecords = 0,
+        long queuedBytes = 0,
+        DateTimeOffset? oldestQueuedTimestamp = null,
+        int droppedRecords = 0) =>
         new(
             CollectorHealthState.Unhealthy,
             endpoint,
@@ -58,5 +88,10 @@ public sealed record CollectorHealthSnapshot
             checkedAt,
             exportedRecords,
             errorType,
-            errorMessage);
+            errorMessage,
+            bufferMode,
+            queuedRecords,
+            queuedBytes,
+            oldestQueuedTimestamp,
+            droppedRecords);
 }

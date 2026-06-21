@@ -129,6 +129,10 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     public string CollectorHealthSummary => collectorHealthState switch
     {
         CollectorHealthState.Healthy => "Collector connected",
+        CollectorHealthState.Unhealthy when collectorHealthSnapshot?.BufferMode == CollectorBufferMode.Degraded =>
+            "Collector unavailable; telemetry queued",
+        CollectorHealthState.Unhealthy when collectorHealthSnapshot?.BufferMode == CollectorBufferMode.Recovering =>
+            "Collector recovering; draining queue",
         CollectorHealthState.Unhealthy => "Collector export failed",
         _ => "Collector not checked yet",
     };
@@ -946,10 +950,26 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         };
 
     private static string FormatHealthyDebugInfo(CollectorHealthSnapshot snapshot) =>
-        $"Endpoint: {snapshot.Endpoint}; Protocol: {snapshot.Protocol}; Exported: {snapshot.ExportedRecords} record(s); Checked: {snapshot.CheckedAt:O}";
+        $"Endpoint: {snapshot.Endpoint}; Protocol: {snapshot.Protocol}; Mode: {snapshot.BufferMode}; Exported: {snapshot.ExportedRecords} record(s); {FormatQueueDebugInfo(snapshot)}Checked: {snapshot.CheckedAt:O}";
 
     private static string FormatUnhealthyDebugInfo(CollectorHealthSnapshot snapshot) =>
-        $"Endpoint: {snapshot.Endpoint}; Protocol: {snapshot.Protocol}; Failure: {snapshot.ErrorType}: {snapshot.ErrorMessage}; Checked: {snapshot.CheckedAt:O}";
+        $"Endpoint: {snapshot.Endpoint}; Protocol: {snapshot.Protocol}; Mode: {snapshot.BufferMode}; {FormatQueueDebugInfo(snapshot)}Failure: {snapshot.ErrorType}: {snapshot.ErrorMessage}; Checked: {snapshot.CheckedAt:O}";
+
+    private static string FormatQueueDebugInfo(CollectorHealthSnapshot snapshot)
+    {
+        if (snapshot.QueuedRecords <= 0 && snapshot.QueuedBytes <= 0 && snapshot.OldestQueuedTimestamp is null)
+        {
+            return string.Empty;
+        }
+
+        var oldest = snapshot.OldestQueuedTimestamp is null
+            ? string.Empty
+            : $" Oldest queued: {snapshot.OldestQueuedTimestamp:O};";
+        var dropped = snapshot.DroppedRecords <= 0
+            ? string.Empty
+            : $" Dropped: {snapshot.DroppedRecords} record(s);";
+        return $"Queued: {snapshot.QueuedRecords} record(s), {snapshot.QueuedBytes} byte(s);{oldest}{dropped} ";
+    }
 
     private sealed record CollectorHealthUpdate(
         NinaOtelOptionsViewModel ViewModel,
