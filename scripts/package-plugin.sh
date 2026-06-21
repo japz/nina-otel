@@ -64,7 +64,6 @@ required_files=(
   OpenTelemetry.Exporter.OpenTelemetryProtocol.dll
   OpenTelemetry.dll
   System.Diagnostics.DiagnosticSource.dll
-  System.Security.Cryptography.ProtectedData.dll
 )
 
 for required_file in "${required_files[@]}"; do

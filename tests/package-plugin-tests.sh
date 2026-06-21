@@ -135,7 +135,6 @@ assert_missing_required_file_fails() {
 }
 
 assert_missing_required_file_fails "OpenTelemetry.Exporter.OpenTelemetryProtocol.dll"
-assert_missing_required_file_fails "System.Security.Cryptography.ProtectedData.dll"
 
 missing_dependency_output="$work_dir/missing-dependency-output"
 mkdir -p "$missing_dependency_output"
