@@ -89,11 +89,15 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
         {
             tailerToStop = tailer;
             tailer = null;
-            activePlanningSpanId = null;
         }
 
         if (tailerToStop is null)
         {
+            lock (syncRoot)
+            {
+                activePlanningSpanId = null;
+            }
+
             return;
         }
 
@@ -109,6 +113,13 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
         }
         catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
+        }
+        finally
+        {
+            lock (syncRoot)
+            {
+                activePlanningSpanId = null;
+            }
         }
     }
 
@@ -151,10 +162,12 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
                     TelemetryPriority.Normal,
                     rawForwardingEnabled),
                 CreatePlanningSpan(logEvent, SpanEventKind.Start, rawForwardingEnabled),
+                CreateMetric(logEvent, "target_scheduler_planning_run_count", 1),
             ],
             TargetSchedulerLogEventKind.PlanningCompleted =>
             [
                 CreatePlanningSpan(logEvent, SpanEventKind.Stop, rawForwardingEnabled),
+                CreateMetric(logEvent, "target_scheduler_planning_run_completed_count", 1),
             ],
             TargetSchedulerLogEventKind.TargetSelected =>
             [
@@ -164,6 +177,8 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
                     TelemetrySeverity.Information,
                     TelemetryPriority.Normal,
                     rawForwardingEnabled),
+                CreateMetric(logEvent, "target_scheduler_target_selected_count", 1),
+                CreateMetric(logEvent, "target_scheduler_current_target", 1),
             ],
             TargetSchedulerLogEventKind.PlanStarted =>
             [
@@ -173,6 +188,8 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
                     TelemetrySeverity.Information,
                     TelemetryPriority.Normal,
                     rawForwardingEnabled),
+                CreateMetric(logEvent, "target_scheduler_plan_started_count", 1),
+                CreateMetric(logEvent, "target_scheduler_current_target", 1),
             ],
             TargetSchedulerLogEventKind.PlanStopped =>
             [
@@ -182,16 +199,10 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
                     TelemetrySeverity.Information,
                     TelemetryPriority.Routine,
                     rawForwardingEnabled),
+                CreateMetric(logEvent, "target_scheduler_plan_stopped_count", 1),
             ],
             TargetSchedulerLogEventKind.ImageGraded =>
-            [
-                CreateLog(
-                    logEvent,
-                    "target_scheduler.image_graded",
-                    TelemetrySeverity.Information,
-                    TelemetryPriority.Routine,
-                    rawForwardingEnabled),
-            ],
+                CreateImageGradedRecords(logEvent, rawForwardingEnabled),
             TargetSchedulerLogEventKind.Warning =>
             [
                 CreateLog(
@@ -212,6 +223,29 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
             ],
             _ => [],
         };
+
+    private IReadOnlyList<TelemetryRecord> CreateImageGradedRecords(
+        TargetSchedulerLogEvent logEvent,
+        bool rawForwardingEnabled)
+    {
+        var records = new List<TelemetryRecord>
+        {
+            CreateLog(
+                logEvent,
+                "target_scheduler.image_graded",
+                TelemetrySeverity.Information,
+                TelemetryPriority.Routine,
+                rawForwardingEnabled),
+            CreateMetric(logEvent, "target_scheduler_image_graded_count", 1),
+        };
+
+        if (logEvent.GradeScore is { } score)
+        {
+            records.Add(CreateMetric(logEvent, "target_scheduler_image_grade_score", score));
+        }
+
+        return records;
+    }
 
     private TelemetryRecord CreateLog(
         TargetSchedulerLogEvent logEvent,
@@ -264,6 +298,18 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
             CreateAttributes(logEvent, rawForwardingEnabled));
     }
 
+    private static TelemetryRecord CreateMetric(
+        TargetSchedulerLogEvent logEvent,
+        string name,
+        double value) =>
+        TelemetryRecord.Metric(
+            logEvent.Timestamp,
+            logEvent.Source,
+            name,
+            value,
+            TelemetryPriority.Normal,
+            CreateMetricAttributes(logEvent));
+
     private static Dictionary<string, object?> CreateAttributes(
         TargetSchedulerLogEvent logEvent,
         bool rawForwardingEnabled)
@@ -282,7 +328,53 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
             attributes["raw.line"] = logEvent.OriginalLine;
         }
 
+        AddStructuredAttributes(logEvent, attributes, includeGradeScore: true);
         return attributes;
+    }
+
+    private static Dictionary<string, object?> CreateMetricAttributes(TargetSchedulerLogEvent logEvent)
+    {
+        var attributes = new Dictionary<string, object?>
+        {
+            ["addon.id"] = "target-scheduler",
+            ["source"] = logEvent.Source,
+            ["source.file"] = logEvent.SourcePath,
+            ["event.kind"] = ToEventKindName(logEvent.Kind),
+        };
+
+        AddStructuredAttributes(logEvent, attributes, includeGradeScore: false);
+        return attributes;
+    }
+
+    private static void AddStructuredAttributes(
+        TargetSchedulerLogEvent logEvent,
+        Dictionary<string, object?> attributes,
+        bool includeGradeScore)
+    {
+        if (!string.IsNullOrWhiteSpace(logEvent.TargetName))
+        {
+            attributes["target.name"] = logEvent.TargetName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(logEvent.FilterName))
+        {
+            attributes["filter.name"] = logEvent.FilterName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(logEvent.GradeStatus))
+        {
+            attributes["grade.status"] = logEvent.GradeStatus;
+        }
+
+        if (includeGradeScore && logEvent.GradeScore is { } score)
+        {
+            attributes["grade.score"] = score;
+        }
+
+        if (!string.IsNullOrWhiteSpace(logEvent.StopReason))
+        {
+            attributes["stop.reason"] = logEvent.StopReason;
+        }
     }
 
     private static string ToEventKindName(TargetSchedulerLogEventKind kind) =>

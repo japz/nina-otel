@@ -95,6 +95,15 @@ public static class NinaMetricCatalog
                 "phd2.ra_direction",
                 "phd2.dec_direction"),
 
+            TargetSchedulerMetric("target_scheduler_planning_run_count", "Target Scheduler planning runs started.", "integer"),
+            TargetSchedulerMetric("target_scheduler_planning_run_completed_count", "Target Scheduler planning runs completed.", "integer"),
+            TargetSchedulerMetric("target_scheduler_target_selected_count", "Target Scheduler target selections.", "integer"),
+            TargetSchedulerMetric("target_scheduler_current_target", "Current Target Scheduler target state.", "integer"),
+            TargetSchedulerMetric("target_scheduler_plan_started_count", "Target Scheduler plans started.", "integer"),
+            TargetSchedulerMetric("target_scheduler_plan_stopped_count", "Target Scheduler plans stopped.", "integer"),
+            TargetSchedulerMetric("target_scheduler_image_graded_count", "Target Scheduler image grading events.", "integer"),
+            TargetSchedulerMetric("target_scheduler_image_grade_score", "Target Scheduler parsed image grade score.", "double"),
+
             Metric("mount_altitude", "mount", "Mount altitude in degrees.", "double", "mount_name"),
             Metric("mount_azimuth", "mount", "Mount azimuth in degrees.", "double", "mount_name"),
 
@@ -260,6 +269,27 @@ public static class NinaMetricCatalog
             description,
             valueKind,
             ["addon.id", "source", "guider_name", "source.file", "phd2.session_start", .. attributes],
+            NinaMetricExportKind.DeferredPointInTime);
+
+    private static NinaMetricDefinition TargetSchedulerMetric(
+        string name,
+        string description,
+        string valueKind) =>
+        Metric(
+            name,
+            "target_scheduler",
+            description,
+            valueKind,
+            [
+                "addon.id",
+                "source",
+                "source.file",
+                "event.kind",
+                "target.name",
+                "filter.name",
+                "grade.status",
+                "stop.reason",
+            ],
             NinaMetricExportKind.DeferredPointInTime);
 
     private static bool IsSwitchReadOnlyGaugeName(string metricName)

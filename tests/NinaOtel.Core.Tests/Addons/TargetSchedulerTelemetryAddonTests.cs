@@ -91,6 +91,215 @@ public sealed class TargetSchedulerTelemetryAddonTests
     }
 
     [Fact]
+    public async Task Tailer_WhenStructuredFieldsAreParsed_AddsThemToLogsAndSpans()
+    {
+        const string planningStartedLine =
+            "2026-06-18T22:00:00.0000|INFO|Scheduler.cs|Run|10|Target Scheduler: planning run started target=M31 filter=L";
+        const string selectedLine =
+            "2026-06-18T22:00:10.0000|INFO|Scheduler.cs|Select|30|Target Scheduler: selected target M31 filter L";
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(temp.Path, planningStartedLine + Environment.NewLine);
+        await File.AppendAllTextAsync(temp.Path, selectedLine + Environment.NewLine);
+
+        var span = await WaitForRecordAsync(sink, record =>
+            record.Name == "target_scheduler.planning" &&
+            record.SpanKind == SpanEventKind.Start);
+        var selected = await WaitForRecordAsync(sink, record => record.Name == "target_scheduler.target_selected");
+
+        span.Attributes["target.name"].Should().Be("M31");
+        span.Attributes["filter.name"].Should().Be("L");
+        selected.Attributes["target.name"].Should().Be("M31");
+        selected.Attributes["filter.name"].Should().Be("L");
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Tailer_WhenRecognizedEventsAreAppended_PublishesDeferredMetricsWithStableAttributes()
+    {
+        const string selectedLine =
+            "2026-06-18T22:00:10.0000|INFO|Scheduler.cs|Select|30|Target Scheduler: selected target M31 filter L";
+        const string planStartedLine =
+            "2026-06-18T22:00:20.0000|INFO|Scheduler.cs|Plan|40|Target Scheduler: plan started for M31";
+        const string planStoppedLine =
+            "2026-06-18T22:00:30.0000|INFO|Scheduler.cs|Plan|50|Target Scheduler: hard stop reached for M31";
+        const string imageGradedLine =
+            "2026-06-18T22:01:00.0000|INFO|ImageGrader.cs|Grade|60|Target Scheduler: image grade accepted target=M31 score=0.92";
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, rawForwardingEnabled: true);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(temp.Path, PlanningStartedLine + Environment.NewLine);
+        await File.AppendAllTextAsync(temp.Path, PlanningCompletedLine + Environment.NewLine);
+        await File.AppendAllTextAsync(temp.Path, selectedLine + Environment.NewLine);
+        await File.AppendAllTextAsync(temp.Path, planStartedLine + Environment.NewLine);
+        await File.AppendAllTextAsync(temp.Path, planStoppedLine + Environment.NewLine);
+        await File.AppendAllTextAsync(temp.Path, imageGradedLine + Environment.NewLine);
+
+        var expectedMetricNames = new[]
+        {
+            "target_scheduler_planning_run_count",
+            "target_scheduler_planning_run_completed_count",
+            "target_scheduler_target_selected_count",
+            "target_scheduler_current_target",
+            "target_scheduler_plan_started_count",
+            "target_scheduler_plan_stopped_count",
+            "target_scheduler_image_graded_count",
+            "target_scheduler_image_grade_score",
+        };
+
+        foreach (var metricName in expectedMetricNames)
+        {
+            var metric = await WaitForRecordAsync(sink, record => record.Name == metricName);
+            metric.Signal.Should().Be(TelemetrySignal.Metric);
+            metric.Source.Should().Be("target-scheduler");
+            metric.Attributes.Should().Contain("addon.id", "target-scheduler");
+            metric.Attributes.Should().ContainKey("source");
+            metric.Attributes.Should().ContainKey("source.file");
+            metric.Attributes.Should().ContainKey("event.kind");
+            metric.Attributes.Should().NotContainKey("message");
+            metric.Attributes.Should().NotContainKey("raw.line");
+            metric.Attributes.Should().NotContainKey("grade.score");
+        }
+
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler_current_target" &&
+            Equals(record.Attributes["target.name"], "M31") &&
+            record.NumericValue == 1);
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler_plan_stopped_count" &&
+            Equals(record.Attributes["stop.reason"], "hard_stop") &&
+            record.NumericValue == 1);
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler_image_graded_count" &&
+            Equals(record.Attributes["target.name"], "M31") &&
+            Equals(record.Attributes["grade.status"], "accepted") &&
+            record.NumericValue == 1);
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler_image_grade_score" &&
+            Equals(record.Attributes["target.name"], "M31") &&
+            Equals(record.Attributes["grade.status"], "accepted") &&
+            record.NumericValue == 0.92);
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Tailer_WhenContinuationLinesFollowTimestampedRecord_GroupsThemBeforeParsing()
+    {
+        const string selectedLine =
+            "2026-06-18T22:00:10.0000|INFO|Scheduler.cs|Select|30|Target Scheduler: selected target M31 filter L";
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, rawForwardingEnabled: true);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            selectedLine + Environment.NewLine +
+            "  planning row: altitude=44 score=0.92" + Environment.NewLine +
+            PlanningCompletedLine + Environment.NewLine);
+
+        var selected = await WaitForRecordAsync(sink, record => record.Name == "target_scheduler.target_selected");
+
+        selected.Body.Should().Contain("planning row: altitude=44 score=0.92");
+        selected.Attributes["raw.line"].Should().Be(
+            selectedLine + Environment.NewLine + "  planning row: altitude=44 score=0.92");
+        selected.Attributes["target.name"].Should().Be("M31");
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenTimestampedRecordIsPendingAfterBoundaryFlush_PublishesRecordAndMetric()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new TargetSchedulerTelemetryAddon(TimeSpan.FromMilliseconds(500));
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            PlanningStartedLine + Environment.NewLine +
+            PlanningCompletedLine + Environment.NewLine);
+
+        await WaitForRecordAsync(sink, record => record.Name == "target_scheduler.planning_started");
+
+        await addon.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler_planning_run_completed_count" &&
+            record.NumericValue == 1);
+    }
+
+    [Fact]
+    public async Task StopAsync_WhenPlanningCompletedFlushesDuringStop_UsesActivePlanningSpanId()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new TargetSchedulerTelemetryAddon(TimeSpan.FromMilliseconds(500));
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            PlanningStartedLine + Environment.NewLine +
+            PlanningCompletedLine + Environment.NewLine);
+
+        var start = await WaitForRecordAsync(sink, record =>
+            record.Name == "target_scheduler.planning" &&
+            record.SpanKind == SpanEventKind.Start);
+
+        await addon.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+
+        var stop = sink.Records.Should().ContainSingle(record =>
+            record.Name == "target_scheduler.planning" &&
+            record.SpanKind == SpanEventKind.Stop).Subject;
+        stop.SpanId.Should().Be(start.SpanId);
+    }
+
+    [Fact]
+    public async Task Tailer_WhenMalformedTimestampRecordIsRecognized_PreservesParserFallbackBehavior()
+    {
+        const string malformedTimestampLine =
+            "not-a-timestamp|INFO|Scheduler.cs|Run|10|Target Scheduler: planning run started";
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, rawForwardingEnabled: true);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            malformedTimestampLine + Environment.NewLine +
+            PlanningCompletedLine + Environment.NewLine);
+
+        var record = await WaitForRecordAsync(sink, record => record.Name == "target_scheduler.planning_started");
+
+        record.Attributes["raw.line"].Should().Be(malformedTimestampLine);
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler_planning_run_count" &&
+            record.NumericValue == 1);
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Tailer_WhenWarningOrErrorLineIsAppended_PublishesImportantLog()
     {
         const string warningLine =
