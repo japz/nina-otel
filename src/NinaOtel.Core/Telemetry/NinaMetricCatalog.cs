@@ -66,6 +66,11 @@ public static class NinaMetricCatalog
             Metric("guider_dec_distance", "guider", "Guide step declination distance.", "double", "guider_name"),
             Metric("guider_dec_duration", "guider", "Guide step declination duration.", "double", "guider_name"),
 
+            Phd2Metric("phd2_guide_rms_ra_arcsec", "PHD2 GuideLog session RA RMS in arcseconds.", "double"),
+            Phd2Metric("phd2_guide_rms_dec_arcsec", "PHD2 GuideLog session declination RMS in arcseconds.", "double"),
+            Phd2Metric("phd2_guide_rms_total_arcsec", "PHD2 GuideLog session combined RMS in arcseconds.", "double"),
+            Phd2Metric("phd2_guide_sample_count", "PHD2 GuideLog guide sample count.", "integer"),
+
             Metric("mount_altitude", "mount", "Mount altitude in degrees.", "double", "mount_name"),
             Metric("mount_azimuth", "mount", "Mount azimuth in degrees.", "double", "mount_name"),
 
@@ -218,6 +223,18 @@ public static class NinaMetricCatalog
             description,
             valueKind,
             ImageAttributes,
+            NinaMetricExportKind.DeferredPointInTime);
+
+    private static NinaMetricDefinition Phd2Metric(
+        string name,
+        string description,
+        string valueKind) =>
+        Metric(
+            name,
+            "phd2",
+            description,
+            valueKind,
+            ["addon.id", "guider_name", "source.file", "phd2.session_start"],
             NinaMetricExportKind.DeferredPointInTime);
 
     private static bool IsSwitchReadOnlyGaugeName(string metricName)

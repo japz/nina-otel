@@ -20,3 +20,11 @@ internal sealed record Phd2LogEvent(
     string Source,
     string SourcePath,
     string OriginalLine);
+
+internal sealed record Phd2GuideSample(
+    DateTimeOffset Timestamp,
+    double RaDistanceArcsec,
+    double DecDistanceArcsec,
+    string Source,
+    string SourcePath,
+    string OriginalLine);

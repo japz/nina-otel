@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace NinaOtel.Addons.PHD2;
@@ -8,6 +9,9 @@ internal static class Phd2LogParser
     private const string Source = "phd2";
     private const int FullTimestampPrefixLength = 23;
     private const int TimeOfDayTimestampPrefixLength = 12;
+    private const int GuideSampleTimeIndex = 1;
+    private const int GuideSampleRaRawDistanceIndex = 5;
+    private const int GuideSampleDecRawDistanceIndex = 6;
     private static readonly TimeSpan TimestampDateWindow = TimeSpan.FromHours(12);
 
     private static readonly string[] TimestampFormats =
@@ -60,6 +64,84 @@ internal static class Phd2LogParser
             line);
         return true;
     }
+
+    internal static bool TryParseGuideSampleLine(
+        string line,
+        DateTimeOffset sessionStartedAt,
+        string sourcePath,
+        out Phd2GuideSample? parsed)
+    {
+        parsed = null;
+
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        var fields = SplitCsv(line);
+        if (fields.Count <= GuideSampleDecRawDistanceIndex)
+        {
+            return false;
+        }
+
+        if (!double.TryParse(
+                fields[GuideSampleTimeIndex],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var sampleSeconds) ||
+            !double.IsFinite(sampleSeconds))
+        {
+            return false;
+        }
+
+        if (!double.TryParse(
+                fields[GuideSampleRaRawDistanceIndex],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var raDistance) ||
+            !double.IsFinite(raDistance))
+        {
+            return false;
+        }
+
+        if (!double.TryParse(
+                fields[GuideSampleDecRawDistanceIndex],
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var decDistance) ||
+            !double.IsFinite(decDistance))
+        {
+            return false;
+        }
+
+        if (!CanSquare(raDistance) ||
+            !CanSquare(decDistance) ||
+            !double.IsFinite((raDistance * raDistance) + (decDistance * decDistance)))
+        {
+            return false;
+        }
+
+        DateTimeOffset sampleTimestamp;
+        try
+        {
+            sampleTimestamp = sessionStartedAt.AddSeconds(Math.Max(0, sampleSeconds));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+
+        parsed = new Phd2GuideSample(
+            sampleTimestamp,
+            raDistance,
+            decDistance,
+            Source,
+            sourcePath ?? string.Empty,
+            line);
+        return true;
+    }
+
+    private static bool CanSquare(double value) => double.IsFinite(value * value);
 
     private static bool TryGetKind(string line, out Phd2LogEventKind kind)
     {
@@ -262,6 +344,44 @@ internal static class Phd2LogParser
 
     private static Regex CreateEventTokenPattern(string eventName) =>
         new($@"(?<![\w]){Regex.Escape(eventName)}(?![\w])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static IReadOnlyList<string> SplitCsv(string line)
+    {
+        var fields = new List<string>();
+        var current = new StringBuilder();
+        var inQuotes = false;
+
+        for (var index = 0; index < line.Length; index++)
+        {
+            var currentChar = line[index];
+            if (currentChar == '"')
+            {
+                if (inQuotes &&
+                    index + 1 < line.Length &&
+                    line[index + 1] == '"')
+                {
+                    current.Append('"');
+                    index++;
+                    continue;
+                }
+
+                inQuotes = !inQuotes;
+                continue;
+            }
+
+            if (currentChar == ',' && !inQuotes)
+            {
+                fields.Add(current.ToString().Trim());
+                current.Clear();
+                continue;
+            }
+
+            current.Append(currentChar);
+        }
+
+        fields.Add(current.ToString().Trim());
+        return fields;
+    }
 
     private static bool TryParseLocalTimestamp(
         string value,

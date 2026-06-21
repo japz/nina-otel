@@ -254,6 +254,104 @@ public sealed class Phd2TelemetryAddonTests
     }
 
     [Fact]
+    public async Task Tailer_WhenGuideLogSessionEnds_PublishesAggregatedGuideSummaryMetrics()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new Phd2TelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var timeProvider = new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero));
+        var context = CreateContext(
+            sink,
+            shutdown.Token,
+            guideLogPath: temp.Path,
+            timeProvider: timeProvider);
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            string.Join(
+                Environment.NewLine,
+                [
+                    "Guiding Begins at 2026-06-18 22:00:00",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DEGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
+                    "1,1.000,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
+                    "2,2.000,Mount,-0.1,0.3,0,0,0.0,0.0,0,E,0,S,31,0,5100",
+                    "Guiding Ends at 2026-06-18 22:00:03",
+                    string.Empty,
+                ]));
+
+        await WaitForRecordAsync(sink, record => record.Name == "phd2_guide_rms_total_arcsec");
+
+        var metrics = sink.Records
+            .Where(record => record.Signal == TelemetrySignal.Metric)
+            .ToArray();
+        metrics.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_ra_arcsec")
+            .Which.NumericValue.Should().BeApproximately(Math.Sqrt(4.5), 1e-9);
+        metrics.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_dec_arcsec")
+            .Which.NumericValue.Should().BeApproximately(Math.Sqrt(8), 1e-9);
+        metrics.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_rms_total_arcsec")
+            .Which.NumericValue.Should().BeApproximately(Math.Sqrt(12.5), 1e-9);
+        metrics.Should()
+            .ContainSingle(record => record.Name == "phd2_guide_sample_count")
+            .Which.NumericValue.Should().Be(2);
+
+        var summaryMetrics = metrics
+            .Where(record => record.Name.StartsWith("phd2_guide_", StringComparison.Ordinal))
+            .ToArray();
+        summaryMetrics.Should().HaveCount(4);
+        foreach (var record in summaryMetrics)
+        {
+            record.Source.Should().Be("phd2");
+            record.Priority.Should().Be(TelemetryPriority.Normal);
+            record.Attributes.Should().Contain("addon.id", "phd2");
+            record.Attributes.Should().Contain("guider_name", "PHD2");
+            record.Attributes.Should().Contain("source.file", temp.Path);
+            record.Attributes.Should().Contain("phd2.session_start", "2026-06-18T22:00:00.0000000+00:00");
+        }
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Tailer_WhenGuideLogSampleWouldOverflowTotalRms_IgnoresSampleWithoutPublishingSummaryMetrics()
+    {
+        using var temp = new TempLogFile();
+        var sink = new RecordingSink();
+        var addon = new Phd2TelemetryAddon(PollInterval);
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(
+            sink,
+            shutdown.Token,
+            guideLogPath: temp.Path,
+            timeProvider: new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero)));
+
+        await addon.StartAsync(context, CancellationToken.None);
+        await File.AppendAllTextAsync(
+            temp.Path,
+            string.Join(
+                Environment.NewLine,
+                [
+                    "Guiding Begins at 2026-06-18 22:00:00",
+                    "Frame,Time,mount,dx,dy,RARawDistance,DECRawDistance,RAGuideDistance,DEGuideDistance,RADuration,RADirection,DECDuration,DECDirection,SNR,ErrorCode,StarMass",
+                    "1,1.000,Mount,0.1,-0.2,1e154,1e154,0.5,-0.6,100,W,200,N,30,0,5000",
+                    "Guiding Ends at 2026-06-18 22:00:03",
+                    string.Empty,
+                ]));
+
+        await WaitForRecordAsync(sink, record => record.Name == "phd2.guiding_stopped");
+
+        sink.Records.Should().NotContain(record =>
+            record.Signal == TelemetrySignal.Metric &&
+            record.Name.StartsWith("phd2_guide_", StringComparison.Ordinal));
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public void Validate_AcceptsEmptyAndMissingLogPaths()
     {
         var addon = new Phd2TelemetryAddon(PollInterval);
@@ -274,7 +372,8 @@ public sealed class Phd2TelemetryAddonTests
         CancellationToken shutdownToken,
         string? debugLogPath = null,
         string? guideLogPath = null,
-        bool rawForwardingEnabled = false)
+        bool rawForwardingEnabled = false,
+        TimeProvider? timeProvider = null)
     {
         var settings = new Dictionary<string, string>();
         if (debugLogPath is not null)
@@ -289,7 +388,7 @@ public sealed class Phd2TelemetryAddonTests
 
         return new AddonContext(
             sink,
-            TimeProvider.System,
+            timeProvider ?? TimeProvider.System,
             shutdownToken,
             new AddonConfiguration(rawForwardingEnabled: rawForwardingEnabled, settings: settings));
     }
@@ -379,6 +478,20 @@ public sealed class Phd2TelemetryAddonTests
             blocked.Dispose();
             release.Dispose();
         }
+    }
+
+    private sealed class FixedTimeProvider : TimeProvider
+    {
+        private readonly DateTimeOffset utcNow;
+
+        public FixedTimeProvider(DateTimeOffset utcNow)
+        {
+            this.utcNow = utcNow.ToUniversalTime();
+        }
+
+        public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Utc;
+
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 
     private sealed class TempDirectory : IDisposable

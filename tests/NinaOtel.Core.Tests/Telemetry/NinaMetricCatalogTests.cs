@@ -173,6 +173,36 @@ public sealed class NinaMetricCatalogTests
     }
 
     [Fact]
+    public void All_IncludesDeferredPhd2GuideSummaryMetrics()
+    {
+        string[] metricNames =
+        [
+            "phd2_guide_rms_ra_arcsec",
+            "phd2_guide_rms_dec_arcsec",
+            "phd2_guide_rms_total_arcsec",
+            "phd2_guide_sample_count",
+        ];
+
+        foreach (var metricName in metricNames)
+        {
+            var metric = NinaMetricCatalog.All.Should()
+                .ContainSingle(candidate => candidate.Name == metricName)
+                .Subject;
+
+            metric.Category.Should().Be("phd2");
+            metric.ExportKind.Should().Be(NinaMetricExportKind.DeferredPointInTime);
+            metric.AttributeNames.Should().Contain(
+                "profile_name",
+                "host_name",
+                "addon.id",
+                "guider_name",
+                "source.file",
+                "phd2.session_start");
+            NinaMetricCatalog.IsLiveObservableGauge(metricName).Should().BeFalse();
+        }
+    }
+
+    [Fact]
     public void SwitchReadOnlyGaugeName_UsesInfluxExporterSwitchMetricPattern()
     {
         NinaMetricCatalog.SwitchReadOnlyGaugeName(23).Should().Be("switch_ro_sw23");

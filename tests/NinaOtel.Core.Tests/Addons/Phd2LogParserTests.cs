@@ -160,7 +160,7 @@ public sealed class Phd2LogParserTests
         var parsed = Phd2LogParser.TryParseDebugLine(
             line,
             SourcePath,
-            TimeProvider.System,
+            new FixedTimeProvider(DateTimeOffset.UtcNow),
             out var logEvent);
 
         parsed.Should().BeTrue();
@@ -169,6 +169,55 @@ public sealed class Phd2LogParserTests
 
         parsedEvent.Kind.Should().Be(expectedKind);
         parsedEvent.Timestamp.Should().Be(DateTimeOffset.Parse(expectedTimestamp));
+    }
+
+    [Fact]
+    public void TryParseGuideSampleLine_WhenSampleTimeWouldOverflow_ReturnsFalseWithoutThrowing()
+    {
+        var act = () => Phd2LogParser.TryParseGuideSampleLine(
+            "1,1e300,Mount,0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
+            DateTimeOffset.UnixEpoch,
+            SourcePath,
+            out _);
+
+        act.Should().NotThrow().Which.Should().BeFalse();
+    }
+
+    [Fact]
+    public void TryParseGuideSampleLine_WhenRowIsValid_ReturnsGuideSample()
+    {
+        var sessionStartedAt = DateTimeOffset.Parse("2026-06-18T22:00:00Z");
+
+        var parsed = Phd2LogParser.TryParseGuideSampleLine(
+            "1,1.500,\"Mount,USB\",0.1,-0.2,3,4,0.5,-0.6,100,W,200,N,30,0,5000",
+            sessionStartedAt,
+            SourcePath,
+            out var sample);
+
+        parsed.Should().BeTrue();
+        sample.Should().NotBeNull();
+        var guideSample = sample!;
+        guideSample.Timestamp.Should().Be(DateTimeOffset.Parse("2026-06-18T22:00:01.500Z"));
+        guideSample.RaDistanceArcsec.Should().Be(3);
+        guideSample.DecDistanceArcsec.Should().Be(4);
+        guideSample.Source.Should().Be("phd2");
+        guideSample.SourcePath.Should().Be(SourcePath);
+    }
+
+    [Theory]
+    [InlineData("1,1.000,Mount,0.1,-0.2,not-a-number,4,0.5,-0.6,100,W,200,N,30,0,5000")]
+    [InlineData("1,1.000,Mount,0.1,-0.2,3,not-a-number,0.5,-0.6,100,W,200,N,30,0,5000")]
+    [InlineData("1,1.000,Mount,0.1,-0.2,1e308,4,0.5,-0.6,100,W,200,N,30,0,5000")]
+    [InlineData("1,1.000,Mount,0.1,-0.2,3,1e308,0.5,-0.6,100,W,200,N,30,0,5000")]
+    public void TryParseGuideSampleLine_WhenDistancesAreMalformedOrTooLarge_ReturnsFalse(string line)
+    {
+        var act = () => Phd2LogParser.TryParseGuideSampleLine(
+            line,
+            DateTimeOffset.UnixEpoch,
+            SourcePath,
+            out _);
+
+        act.Should().NotThrow().Which.Should().BeFalse();
     }
 
     [Theory]

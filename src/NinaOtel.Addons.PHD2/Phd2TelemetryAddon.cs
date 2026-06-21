@@ -1,5 +1,6 @@
 using NinaOtel.Abstractions.Addons;
 using NinaOtel.Abstractions.Telemetry;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -16,6 +17,8 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
     private readonly object syncRoot = new();
     private List<Phd2LogTailer> tailers = [];
     private string? activeSettleSpanId;
+    private readonly Dictionary<string, Phd2GuideSession> activeGuideSessions =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public Phd2TelemetryAddon()
         : this(DefaultPollInterval, DefaultStopTimeout)
@@ -54,14 +57,14 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         }
 
         var startedTailers = new List<Phd2LogTailer>(configuredPaths.Count);
-        foreach (var sourcePath in configuredPaths)
+        foreach (var configuredPath in configuredPaths)
         {
             var tailer = new Phd2LogTailer(
-                sourcePath,
+                configuredPath.Path,
                 pollInterval,
                 (line, token) =>
                 {
-                    PublishLine(context, line, sourcePath);
+                    PublishLine(context, line, configuredPath);
                     return Task.CompletedTask;
                 },
                 missingPath => ReportWaiting(context, $"PHD2 log file not found: {missingPath}"));
@@ -99,6 +102,7 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             tailersToStop = tailers;
             tailers = [];
             activeSettleSpanId = null;
+            activeGuideSessions.Clear();
         }
 
         if (tailersToStop.Count == 0)
@@ -136,27 +140,39 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         }
     }
 
-    private static IReadOnlyList<string> GetConfiguredPaths(AddonConfiguration configuration)
+    private static IReadOnlyList<ConfiguredPhd2LogPath> GetConfiguredPaths(AddonConfiguration configuration)
     {
-        var paths = new List<string>(capacity: 2);
-        AddConfiguredPath(configuration, DebugLogPathSetting, paths);
-        AddConfiguredPath(configuration, GuideLogPathSetting, paths);
+        var paths = new List<ConfiguredPhd2LogPath>(capacity: 2);
+        AddConfiguredPath(configuration, DebugLogPathSetting, Phd2LogSourceKind.DebugLog, paths);
+        AddConfiguredPath(configuration, GuideLogPathSetting, Phd2LogSourceKind.GuideLog, paths);
         return paths;
     }
 
     private static void AddConfiguredPath(
         AddonConfiguration configuration,
         string settingKey,
-        List<string> paths)
+        Phd2LogSourceKind sourceKind,
+        List<ConfiguredPhd2LogPath> paths)
     {
         if (configuration.Settings.TryGetValue(settingKey, out var path) &&
             !string.IsNullOrWhiteSpace(path))
         {
-            paths.Add(path);
+            paths.Add(new ConfiguredPhd2LogPath(path, sourceKind));
         }
     }
 
-    private void PublishLine(IAddonContext context, string line, string sourcePath)
+    private void PublishLine(IAddonContext context, string line, ConfiguredPhd2LogPath configuredPath)
+    {
+        if (configuredPath.SourceKind == Phd2LogSourceKind.GuideLog)
+        {
+            PublishGuideLine(context, line, configuredPath.Path);
+            return;
+        }
+
+        PublishDebugLine(context, line, configuredPath.Path);
+    }
+
+    private void PublishDebugLine(IAddonContext context, string line, string sourcePath)
     {
         if (!Phd2LogParser.TryParseDebugLine(line, sourcePath, context.TimeProvider, out var logEvent) ||
             logEvent is null)
@@ -170,6 +186,105 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             context.Sink.TryPublish(record);
         }
     }
+
+    private void PublishGuideLine(IAddonContext context, string line, string sourcePath)
+    {
+        if (Phd2LogParser.TryParseDebugLine(line, sourcePath, context.TimeProvider, out var logEvent) &&
+            logEvent is not null)
+        {
+            var summary = UpdateGuideSession(logEvent);
+            var record = CreateTelemetryRecord(logEvent, context.Configuration.RawForwardingEnabled);
+            if (record is not null)
+            {
+                context.Sink.TryPublish(record);
+            }
+
+            if (summary is not null)
+            {
+                foreach (var metric in CreateGuideSummaryMetrics(summary))
+                {
+                    context.Sink.TryPublish(metric);
+                }
+            }
+
+            return;
+        }
+
+        lock (syncRoot)
+        {
+            if (!activeGuideSessions.TryGetValue(sourcePath, out var session))
+            {
+                return;
+            }
+
+            if (Phd2LogParser.TryParseGuideSampleLine(
+                    line,
+                    session.StartedAt,
+                    sourcePath,
+                    out var sample) &&
+                sample is not null)
+            {
+                session.Add(sample);
+            }
+        }
+    }
+
+    private Phd2GuideSummary? UpdateGuideSession(Phd2LogEvent logEvent)
+    {
+        lock (syncRoot)
+        {
+            if (logEvent.Kind == Phd2LogEventKind.GuidingStarted)
+            {
+                activeGuideSessions[logEvent.SourcePath] = new Phd2GuideSession(
+                    logEvent.Timestamp,
+                    logEvent.SourcePath);
+                return null;
+            }
+
+            if (logEvent.Kind == Phd2LogEventKind.GuidingStopped &&
+                activeGuideSessions.Remove(logEvent.SourcePath, out var session))
+            {
+                return session.Complete(logEvent.Timestamp);
+            }
+
+            return null;
+        }
+    }
+
+    private static IEnumerable<TelemetryRecord> CreateGuideSummaryMetrics(Phd2GuideSummary summary)
+    {
+        if (summary.SampleCount == 0)
+        {
+            yield break;
+        }
+
+        var attributes = new Dictionary<string, object?>
+        {
+            ["addon.id"] = "phd2",
+            ["source"] = "phd2",
+            ["source.file"] = summary.SourcePath,
+            ["guider_name"] = "PHD2",
+            ["phd2.session_start"] = summary.StartedAt.ToString("O", CultureInfo.InvariantCulture),
+        };
+
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_ra_arcsec", summary.RaRmsArcsec, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_dec_arcsec", summary.DecRmsArcsec, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_rms_total_arcsec", summary.TotalRmsArcsec, attributes);
+        yield return CreateGuideMetric(summary, "phd2_guide_sample_count", summary.SampleCount, attributes);
+    }
+
+    private static TelemetryRecord CreateGuideMetric(
+        Phd2GuideSummary summary,
+        string name,
+        double value,
+        IReadOnlyDictionary<string, object?> attributes) =>
+        TelemetryRecord.Metric(
+            summary.EndedAt,
+            "phd2",
+            name,
+            value,
+            TelemetryPriority.Normal,
+            attributes);
 
     private TelemetryRecord? CreateTelemetryRecord(
         Phd2LogEvent logEvent,
@@ -336,4 +451,78 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             "waiting",
             message,
             TelemetryPriority.Routine);
+
+    private enum Phd2LogSourceKind
+    {
+        DebugLog,
+        GuideLog,
+    }
+
+    private sealed record ConfiguredPhd2LogPath(string Path, Phd2LogSourceKind SourceKind);
+
+    private sealed class Phd2GuideSession
+    {
+        private double raSquaredSum;
+        private double decSquaredSum;
+
+        public Phd2GuideSession(DateTimeOffset startedAt, string sourcePath)
+        {
+            StartedAt = startedAt;
+            SourcePath = sourcePath;
+        }
+
+        public DateTimeOffset StartedAt { get; }
+
+        public string SourcePath { get; }
+
+        public int SampleCount { get; private set; }
+
+        public void Add(Phd2GuideSample sample)
+        {
+            var raSquare = sample.RaDistanceArcsec * sample.RaDistanceArcsec;
+            var decSquare = sample.DecDistanceArcsec * sample.DecDistanceArcsec;
+            var nextRaSquaredSum = raSquaredSum + raSquare;
+            var nextDecSquaredSum = decSquaredSum + decSquare;
+            var nextTotalSquaredSum = nextRaSquaredSum + nextDecSquaredSum;
+
+            if (!double.IsFinite(raSquare) ||
+                !double.IsFinite(decSquare) ||
+                !double.IsFinite(nextRaSquaredSum) ||
+                !double.IsFinite(nextDecSquaredSum) ||
+                !double.IsFinite(nextTotalSquaredSum))
+            {
+                return;
+            }
+
+            raSquaredSum = nextRaSquaredSum;
+            decSquaredSum = nextDecSquaredSum;
+            SampleCount++;
+        }
+
+        public Phd2GuideSummary? Complete(DateTimeOffset endedAt)
+        {
+            if (SampleCount == 0)
+            {
+                return null;
+            }
+
+            return new Phd2GuideSummary(
+                StartedAt,
+                endedAt,
+                SourcePath,
+                SampleCount,
+                Math.Sqrt(raSquaredSum / SampleCount),
+                Math.Sqrt(decSquaredSum / SampleCount),
+                Math.Sqrt((raSquaredSum + decSquaredSum) / SampleCount));
+        }
+    }
+
+    private sealed record Phd2GuideSummary(
+        DateTimeOffset StartedAt,
+        DateTimeOffset EndedAt,
+        string SourcePath,
+        int SampleCount,
+        double RaRmsArcsec,
+        double DecRmsArcsec,
+        double TotalRmsArcsec);
 }
