@@ -21,7 +21,7 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     public async Task ExportAsync_WhenInnerFails_PersistsBatchAndDoesNotThrow()
     {
         var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        var exporter = new DurableTelemetryExporter(
+        using var exporter = CreateExporter(
             new ThrowingExporter(new InvalidOperationException("collector unavailable")),
             spool);
         var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
@@ -38,7 +38,7 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     {
         var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
         var inner = new RecordingExporter();
-        var exporter = new DurableTelemetryExporter(inner, spool);
+        using var exporter = CreateExporter(inner, spool);
         var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Routine);
         var second = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddMilliseconds(1), "test", "second", TelemetryPriority.Routine);
         var live = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddMilliseconds(2), "test", "live", TelemetryPriority.Routine);
@@ -60,7 +60,7 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     {
         var spoolPath = Path.Combine(root, "spool");
         var inner = new RecordingExporter();
-        var exporter = new DurableTelemetryExporter(inner, new DiskTelemetrySpool(spoolPath));
+        using var exporter = CreateExporter(inner, new DiskTelemetrySpool(spoolPath));
         var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
 
         await exporter.ExportAsync(new[] { record }, CancellationToken.None);
@@ -76,7 +76,7 @@ public sealed class DurableTelemetryExporterTests : IDisposable
         Directory.CreateDirectory(spoolPath);
         await File.WriteAllTextAsync(Path.Combine(spoolPath, "0000000000000000001-bad.ready"), "null");
         var inner = new RecordingExporter();
-        var exporter = new DurableTelemetryExporter(inner, new DiskTelemetrySpool(spoolPath));
+        using var exporter = CreateExporter(inner, new DiskTelemetrySpool(spoolPath));
         var live = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
         var next = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddSeconds(1), "test", "next", TelemetryPriority.Routine);
 
@@ -99,7 +99,7 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     {
         var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
         var inner = new ThrowOnAttemptExporter(1, new InvalidOperationException("replay failed"));
-        var exporter = new DurableTelemetryExporter(inner, spool);
+        using var exporter = CreateExporter(inner, spool);
         var replay = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "replay", TelemetryPriority.Routine);
         var live = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddMilliseconds(1), "test", "live", TelemetryPriority.Routine);
 
@@ -115,12 +115,31 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     }
 
     [Fact]
+    public async Task ExportAsync_WhenInnerRecovers_DrainsSpooledBatchWithoutNewLiveExport()
+    {
+        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
+        using var inner = new RecoveringExporter(new InvalidOperationException("collector unavailable"));
+        using var exporter = CreateExporter(inner, spool, TimeSpan.FromMilliseconds(10));
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Important);
+
+        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
+        inner.Recover();
+
+        await inner.WaitForCountAsync(1, TimeSpan.FromSeconds(2));
+        await WaitForSpoolToDrainAsync(spool, TimeSpan.FromSeconds(2));
+
+        inner.Batches.Should().ContainSingle()
+            .Which.Should().ContainSingle()
+            .Which.Name.Should().Be("live");
+    }
+
+    [Fact]
     public async Task ExportAsync_WhenCancellationRequested_PropagatesAndDoesNotSpool()
     {
         var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
         using var cts = new CancellationTokenSource();
         await cts.CancelAsync();
-        var exporter = new DurableTelemetryExporter(new CanceledExporter(), spool);
+        using var exporter = CreateExporter(new CanceledExporter(), spool);
         var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
 
         Func<Task> export = async () => await exporter.ExportAsync(new[] { record }, cts.Token);
@@ -133,7 +152,7 @@ public sealed class DurableTelemetryExporterTests : IDisposable
     public async Task ExportAsync_WhenAppendFails_RethrowsOriginalExportFailure()
     {
         var exportFailure = new InvalidOperationException("collector unavailable");
-        var exporter = new DurableTelemetryExporter(
+        using var exporter = CreateExporter(
             new ThrowingExporter(exportFailure),
             new DiskTelemetrySpool(Path.Combine(root, "not-a-directory", "spool")));
         Directory.CreateDirectory(root);
@@ -143,6 +162,60 @@ public sealed class DurableTelemetryExporterTests : IDisposable
         var exception = await Record.ExceptionAsync(() => exporter.ExportAsync(new[] { record }, CancellationToken.None));
 
         exception.Should().BeSameAs(exportFailure);
+    }
+
+    [Fact]
+    public async Task Dispose_WhenRecoveryExportIsInFlight_DefersInnerDisposeUntilWorkerExits()
+    {
+        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
+        var inner = new BlockingRecoveringExporter(new InvalidOperationException("collector unavailable"));
+        var exporter = CreateExporter(inner, spool, TimeSpan.FromMilliseconds(1));
+        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Important);
+
+        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
+        inner.Recover();
+        await inner.WaitForExportAttemptAsync(TimeSpan.FromSeconds(2));
+
+        exporter.Dispose();
+
+        inner.Disposed.Should().BeFalse();
+
+        inner.ReleaseExport();
+        await inner.WaitForDisposeAsync(TimeSpan.FromSeconds(2));
+        inner.Disposed.Should().BeTrue();
+    }
+
+    private static DurableTelemetryExporter CreateExporter(
+        ITelemetryExporter inner,
+        DiskTelemetrySpool spool,
+        TimeSpan? recoveryInitialDelay = null)
+    {
+        var delay = recoveryInitialDelay ?? TimeSpan.FromMinutes(1);
+        return new DurableTelemetryExporter(inner, spool, delay, delay);
+    }
+
+    private static async Task WaitForSpoolToDrainAsync(DiskTelemetrySpool spool, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+
+        while (!cts.IsCancellationRequested)
+        {
+            if (!(await spool.ReadBatchesAsync(CancellationToken.None)).Any())
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), cts.Token);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+
+        throw new TimeoutException("Telemetry spool did not drain before the timeout elapsed.");
     }
 
     private sealed class RecordingExporter : ITelemetryExporter
@@ -175,6 +248,102 @@ public sealed class DurableTelemetryExporterTests : IDisposable
 
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class RecoveringExporter(Exception initialException) : ITelemetryExporter, IDisposable
+    {
+        private readonly object gate = new();
+        private readonly TaskCompletionSource exported = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Exception? exception = initialException;
+        private int disposed;
+
+        public List<IReadOnlyList<TelemetryRecord>> Batches { get; } = [];
+
+        public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (Volatile.Read(ref disposed) != 0)
+            {
+                return Task.FromException(new ObjectDisposedException(nameof(RecoveringExporter)));
+            }
+
+            var currentException = Volatile.Read(ref exception);
+            if (currentException != null)
+            {
+                return Task.FromException(currentException);
+            }
+
+            lock (gate)
+            {
+                Batches.Add(records.ToArray());
+            }
+
+            exported.TrySetResult();
+            return Task.CompletedTask;
+        }
+
+        public void Recover() => Volatile.Write(ref exception, null);
+
+        public async Task WaitForCountAsync(int count, TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+
+            while (!cts.IsCancellationRequested)
+            {
+                lock (gate)
+                {
+                    if (Batches.Count >= count)
+                    {
+                        return;
+                    }
+                }
+
+                await exported.Task.WaitAsync(timeout);
+            }
+        }
+
+        public void Dispose()
+        {
+            Volatile.Write(ref disposed, 1);
+            exported.TrySetCanceled();
+        }
+    }
+
+    private sealed class BlockingRecoveringExporter(Exception initialException) : ITelemetryExporter, IDisposable
+    {
+        private readonly TaskCompletionSource enteredExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Exception? exception = initialException;
+
+        public bool Disposed => disposed.Task.IsCompleted;
+
+        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var currentException = Volatile.Read(ref exception);
+            if (currentException != null)
+            {
+                throw currentException;
+            }
+
+            enteredExport.TrySetResult();
+            await releaseExport.Task.ConfigureAwait(false);
+        }
+
+        public void Recover() => Volatile.Write(ref exception, null);
+
+        public void ReleaseExport() => releaseExport.TrySetResult();
+
+        public async Task WaitForExportAttemptAsync(TimeSpan timeout) =>
+            await enteredExport.Task.WaitAsync(timeout);
+
+        public async Task WaitForDisposeAsync(TimeSpan timeout) =>
+            await disposed.Task.WaitAsync(timeout);
+
+        public void Dispose() => disposed.TrySetResult();
     }
 
     private sealed class CanceledExporter : ITelemetryExporter
