@@ -177,6 +177,60 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
+    public async Task AppendBatchAsync_WhenSpoolExceedsMaxBytes_CountsDroppedRecordsForEvictedReadyBatches()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes: 9_000, maxAge: TimeSpan.FromDays(7));
+
+        await spool.AppendBatchAsync(
+            new[]
+            {
+                CreateLargeRecord("first-a", TelemetryPriority.Routine, payloadSize: 1_200),
+                CreateLargeRecord("first-b", TelemetryPriority.Routine, payloadSize: 1_200),
+            },
+            CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("second") }, CancellationToken.None);
+        await spool.AppendBatchAsync(new[] { CreateLargeRecord("third") }, CancellationToken.None);
+
+        var stats = await spool.GetStatsAsync(CancellationToken.None);
+
+        stats.DroppedRecords.Should().Be(2);
+        (await spool.ReadBatchesAsync(CancellationToken.None))
+            .SelectMany(batch => batch.Records)
+            .Select(record => record.Name)
+            .Should().Equal("second", "third");
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenPruningExpiredReadyFile_CountsDroppedRecords()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var firstSpool = new DiskTelemetrySpool(spoolPath, maxBytes: 1024 * 1024, maxAge: TimeSpan.FromDays(7));
+        await firstSpool.AppendBatchAsync(
+            new[]
+            {
+                CreateHealthRecord("expired-a"),
+                CreateHealthRecord("expired-b"),
+            },
+            CancellationToken.None);
+        foreach (var readyFile in Directory.GetFiles(spoolPath, "*.ready"))
+        {
+            File.SetLastWriteTimeUtc(readyFile, DateTime.UtcNow.AddDays(-8));
+        }
+
+        var pruningSpool = new DiskTelemetrySpool(spoolPath, maxBytes: 1024 * 1024, maxAge: TimeSpan.FromDays(7));
+        await pruningSpool.AppendBatchAsync(new[] { CreateHealthRecord("new") }, CancellationToken.None);
+
+        var stats = await pruningSpool.GetStatsAsync(CancellationToken.None);
+
+        stats.DroppedRecords.Should().Be(2);
+        (await pruningSpool.ReadBatchesAsync(CancellationToken.None))
+            .SelectMany(batch => batch.Records)
+            .Select(record => record.Name)
+            .Should().Equal("new");
+    }
+
+    [Fact]
     public async Task AppendBatchAsync_WhenSpoolExceedsMaxBytes_DropsRoutineBatchBeforeOlderImportantBatch()
     {
         var spoolPath = Path.Combine(root, "spool");
@@ -304,6 +358,21 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
 
         await append.Should().ThrowAsync<IOException>();
         Directory.GetFiles(spoolPath, "*.ready").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task AppendBatchAsync_WhenNewBatchAloneExceedsMaxBytes_CountsDroppedRecordsBeforeThrowing()
+    {
+        var spoolPath = Path.Combine(root, "spool");
+        var spool = new DiskTelemetrySpool(spoolPath, maxBytes: 32, maxAge: TimeSpan.FromDays(7));
+
+        Func<Task> append = async () => await spool.AppendBatchAsync(
+            new[] { CreateLargeRecord("oversized") },
+            CancellationToken.None);
+
+        await append.Should().ThrowAsync<IOException>();
+        var stats = await spool.GetStatsAsync(CancellationToken.None);
+        stats.DroppedRecords.Should().Be(1);
     }
 
     [Fact]

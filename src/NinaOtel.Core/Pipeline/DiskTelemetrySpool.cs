@@ -16,6 +16,7 @@ internal sealed class DiskTelemetrySpool
     private readonly long maxBytes;
     private readonly TimeSpan maxAge;
     private readonly Func<string, TelemetryPriority> evictionPriorityResolver;
+    private long droppedRecords;
 
     public DiskTelemetrySpool(string spoolPath)
         : this(spoolPath, DefaultMaxBytes, DefaultMaxAge)
@@ -151,7 +152,8 @@ internal sealed class DiskTelemetrySpool
             readyFiles.Length,
             queuedRecords,
             queuedBytes,
-            oldestQueuedTimestamp);
+            oldestQueuedTimestamp,
+            Interlocked.Read(ref droppedRecords));
     }
 
     public void Quarantine(BatchReadException exception)
@@ -173,7 +175,14 @@ internal sealed class DiskTelemetrySpool
         {
             if (File.GetLastWriteTimeUtc(path) < cutoff)
             {
-                TryDelete(path);
+                if (path.EndsWith(".ready", StringComparison.Ordinal))
+                {
+                    TryDeleteDroppedBatch(path);
+                }
+                else
+                {
+                    TryDelete(path);
+                }
             }
         }
     }
@@ -219,7 +228,15 @@ internal sealed class DiskTelemetrySpool
             }
 
             var length = file.Length;
-            TryDelete(file.FullName);
+            if (file.FullName.EndsWith(".ready", StringComparison.Ordinal))
+            {
+                TryDeleteDroppedBatch(file.FullName);
+            }
+            else
+            {
+                TryDelete(file.FullName);
+            }
+
             if (!File.Exists(file.FullName))
             {
                 totalBytes -= length;
@@ -231,7 +248,7 @@ internal sealed class DiskTelemetrySpool
             return;
         }
 
-        TryDelete(newestReadyPath);
+        TryDeleteDroppedBatch(newestReadyPath);
         throw new IOException($"Telemetry spool batch '{newestReadyPath}' exceeds max spool bytes '{maxBytes}'.");
     }
 
@@ -380,6 +397,40 @@ internal sealed class DiskTelemetrySpool
         }
     }
 
+    private void TryDeleteDroppedBatch(string path)
+    {
+        var droppedRecordCount = CountReadyRecordsForDrop(path);
+        TryDelete(path);
+        if (!File.Exists(path) && droppedRecordCount > 0)
+        {
+            Interlocked.Add(ref droppedRecords, droppedRecordCount);
+        }
+    }
+
+    private static int CountReadyRecordsForDrop(string path)
+    {
+        if (!path.EndsWith(".ready", StringComparison.Ordinal))
+        {
+            return 0;
+        }
+
+        try
+        {
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 16 * 1024);
+            var dto = JsonSerializer.Deserialize<BatchDto>(stream, JsonOptions);
+            return dto?.Records.Count ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     internal sealed class BatchReadException : IOException
     {
         public BatchReadException(string path, Exception innerException)
@@ -395,9 +446,10 @@ internal sealed class DiskTelemetrySpool
         int QueuedBatches,
         int QueuedRecords,
         long QueuedBytes,
-        DateTimeOffset? OldestQueuedTimestamp)
+        DateTimeOffset? OldestQueuedTimestamp,
+        long DroppedRecords)
     {
-        public static Stats Empty { get; } = new(0, 0, 0, null);
+        public static Stats Empty { get; } = new(0, 0, 0, null, 0);
     }
 
     private sealed class BatchDto
