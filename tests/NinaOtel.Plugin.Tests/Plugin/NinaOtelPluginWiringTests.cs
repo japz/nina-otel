@@ -146,6 +146,18 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().NotContain("Array.Empty<ITelemetryAddon>()");
     }
 
+    [Fact]
+    public void Plugin_ConstructsStartsAndDisposesNinaLogTelemetryCollector()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("private readonly NinaLogTelemetryCollector ninaLogTelemetry;");
+        source.Should().Contain("new NinaLogTelemetryCollector(options.CoreTelemetry, telemetrySink, timeProvider)");
+        source.Should().Contain("ninaLogTelemetry.Start();");
+        source.Should().Contain("ninaLogTelemetry.UpdateOptions(options.CoreTelemetry);");
+        source.Should().Contain("ninaLogTelemetry.Dispose();");
+    }
+
     private static string FindPluginSourcePath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

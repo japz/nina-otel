@@ -42,6 +42,7 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly FlatDeviceTelemetryCollector flatDeviceTelemetry;
     private readonly DomeTelemetryCollector domeTelemetry;
     private readonly ImageTelemetryCollector imageTelemetry;
+    private readonly NinaLogTelemetryCollector ninaLogTelemetry;
 
     [ImportingConstructor]
     public NinaOtelPlugin(
@@ -93,6 +94,7 @@ public sealed class NinaOtelPlugin : PluginBase
         flatDeviceTelemetry = new FlatDeviceTelemetryCollector(flatDeviceMediator, telemetrySink, timeProvider);
         domeTelemetry = new DomeTelemetryCollector(domeMediator, telemetrySink, timeProvider);
         imageTelemetry = new ImageTelemetryCollector(imageSaveMediator, telemetrySink, timeProvider);
+        ninaLogTelemetry = new NinaLogTelemetryCollector(options.CoreTelemetry, telemetrySink, timeProvider);
         lifecycleTelemetry = new CoreLifecycleTelemetryProducer(telemetrySink, timeProvider, options);
         addonHost = new AddonHost(
             telemetrySink,
@@ -123,6 +125,7 @@ public sealed class NinaOtelPlugin : PluginBase
         flatDeviceTelemetry.Start();
         domeTelemetry.Start();
         imageTelemetry.Start();
+        ninaLogTelemetry.Start();
         lifecycleTelemetry.PluginInitialized();
         await addonHost.StartAsync(FirstPartyAddonCatalog.CreateAll(), shutdownCts.Token).ConfigureAwait(false);
         Logger.Info("NinaOtel foundation initialized.");
@@ -145,6 +148,7 @@ public sealed class NinaOtelPlugin : PluginBase
         flatDeviceTelemetry.Dispose();
         domeTelemetry.Dispose();
         imageTelemetry.Dispose();
+        ninaLogTelemetry.Dispose();
         lifecycleTelemetry.PluginStopping();
         await addonHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
         lifecycleTelemetry.PluginStopped();
@@ -166,6 +170,7 @@ public sealed class NinaOtelPlugin : PluginBase
 
         var options = NinaOtelOptionsViewModel.Options;
         exporter.Update(CreateCollectorExporter(options));
+        ninaLogTelemetry.UpdateOptions(options.CoreTelemetry);
         lifecycleTelemetry.ProfileChanged(options);
         Logger.Info("NinaOtel exporter settings applied.");
     }
