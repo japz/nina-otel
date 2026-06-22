@@ -18,6 +18,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string SpoolPathKey = nameof(SpoolPath);
     private const string MaxSpoolSizeGbKey = nameof(MaxSpoolSizeGb);
     private const string MaxSpoolAgeDaysKey = nameof(MaxSpoolAgeDays);
+    private const string NinaLogPathKey = nameof(NinaLogPath);
+    private const string FilteredLogsEnabledKey = nameof(FilteredLogsEnabled);
+    private const string RawCoreLogForwardingEnabledKey = nameof(RawCoreLogForwardingEnabled);
     private const string StaticHeadersKey = nameof(StaticHeaders);
     private const string AuthenticationModeKey = nameof(AuthenticationMode);
     private const string BearerTokenProtectedKey = "BearerTokenProtected";
@@ -65,6 +68,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private long appliedMaxSpoolBytes;
     private string maxSpoolAgeDays = string.Empty;
     private TimeSpan appliedMaxSpoolAge;
+    private string ninaLogPath = string.Empty;
+    private bool filteredLogsEnabled;
+    private bool rawCoreLogForwardingEnabled;
     private string staticHeaders = string.Empty;
     private IReadOnlyDictionary<string, string> appliedStaticHeaders = new Dictionary<string, string>();
     private OtlpAuthenticationMode authenticationMode;
@@ -267,6 +273,46 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
     }
 
+    public string NinaLogPath
+    {
+        get => ninaLogPath;
+        set
+        {
+            var normalized = value?.Trim() ?? string.Empty;
+            if (SetField(ref ninaLogPath, normalized))
+            {
+                settingsStore.SetString(NinaLogPathKey, normalized);
+                Status = "Settings saved";
+            }
+        }
+    }
+
+    public bool FilteredLogsEnabled
+    {
+        get => filteredLogsEnabled;
+        set
+        {
+            if (SetField(ref filteredLogsEnabled, value))
+            {
+                settingsStore.SetBoolean(FilteredLogsEnabledKey, value);
+                Status = "Settings saved";
+            }
+        }
+    }
+
+    public bool RawCoreLogForwardingEnabled
+    {
+        get => rawCoreLogForwardingEnabled;
+        set
+        {
+            if (SetField(ref rawCoreLogForwardingEnabled, value))
+            {
+                settingsStore.SetBoolean(RawCoreLogForwardingEnabledKey, value);
+                Status = "Settings saved";
+            }
+        }
+    }
+
     public string StaticHeaders
     {
         get => staticHeaders;
@@ -445,6 +491,13 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         appliedMaxSpoolAge = TryConvertDaysToAge(maxSpoolAgeDays, out var age, out _)
             ? age
             : defaults.Buffer.MaxSpoolAge;
+        ninaLogPath = settingsStore.GetString(NinaLogPathKey, defaults.CoreTelemetry.NinaLogPath);
+        filteredLogsEnabled = settingsStore.GetBoolean(
+            FilteredLogsEnabledKey,
+            defaults.CoreTelemetry.FilteredLogsEnabled);
+        rawCoreLogForwardingEnabled = settingsStore.GetBoolean(
+            RawCoreLogForwardingEnabledKey,
+            defaults.CoreTelemetry.RawForwardingEnabled);
         staticHeaders = settingsStore.GetString(StaticHeadersKey, string.Empty);
         appliedStaticHeaders = TryParseHeaders(staticHeaders, out var parsedHeaders, out _)
             ? parsedHeaders
@@ -472,6 +525,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(SpoolPath));
         RaisePropertyChanged(nameof(MaxSpoolSizeGb));
         RaisePropertyChanged(nameof(MaxSpoolAgeDays));
+        RaisePropertyChanged(nameof(NinaLogPath));
+        RaisePropertyChanged(nameof(FilteredLogsEnabled));
+        RaisePropertyChanged(nameof(RawCoreLogForwardingEnabled));
         RaisePropertyChanged(nameof(StaticHeaders));
         RaisePropertyChanged(nameof(AuthenticationMode));
         RaisePropertyChanged(nameof(BasicUsername));
@@ -550,6 +606,12 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
                 SpoolPath = appliedSpoolPath,
                 MaxSpoolBytes = appliedMaxSpoolBytes,
                 MaxSpoolAge = appliedMaxSpoolAge,
+            },
+            CoreTelemetry = defaults.CoreTelemetry with
+            {
+                NinaLogPath = ninaLogPath,
+                FilteredLogsEnabled = filteredLogsEnabled,
+                RawForwardingEnabled = rawCoreLogForwardingEnabled,
             },
             Addons = CreateAddonOptions(),
         };

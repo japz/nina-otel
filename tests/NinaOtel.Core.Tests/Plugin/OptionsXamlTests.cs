@@ -68,6 +68,48 @@ public sealed class OptionsXamlTests
     }
 
     [Fact]
+    public void OptionsTemplate_CoreTelemetrySectionExposesSwitchesAndLogPath()
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+        var labels = document
+            .Descendants(PresentationNamespace + "TextBlock")
+            .Select(element => element.Attribute("Text")?.Value)
+            .OfType<string>()
+            .ToArray();
+
+        labels.Should().Contain("Core telemetry");
+        labels.Should().Contain("Filtered NINA logs:");
+        labels.Should().Contain("Raw NINA log forwarding:");
+        labels.Should().Contain("NINA log path:");
+
+        document
+            .Descendants(PresentationNamespace + "CheckBox")
+            .Single(element => element.Attribute("IsChecked")?.Value.Contains("FilteredLogsEnabled", StringComparison.Ordinal) == true)
+            .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
+        document
+            .Descendants(PresentationNamespace + "CheckBox")
+            .Single(element => element.Attribute("IsChecked")?.Value.Contains("RawCoreLogForwardingEnabled", StringComparison.Ordinal) == true)
+            .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
+
+        var textbox = SingleTextBoxBoundTo(document, "NinaLogPath");
+        textbox.Attribute("Text")?.Value.Should().Contain("Mode=TwoWay");
+        textbox.Attribute("Text")?.Value.Should().Contain("UpdateSourceTrigger=LostFocus");
+    }
+
+    [Fact]
+    public void OptionsTemplate_CheckBoxBindingsDeclareModeExplicitly()
+    {
+        var document = XDocument.Load(FindOptionsXamlPath());
+
+        document
+            .Descendants(PresentationNamespace + "CheckBox")
+            .Select(element => element.Attribute("IsChecked")?.Value)
+            .OfType<string>()
+            .Should()
+            .OnlyContain(binding => binding.Contains("Mode=", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void OptionsTemplate_AddonsExposeEnableRawAndHealthBindings()
     {
         var document = XDocument.Load(FindOptionsXamlPath());

@@ -102,6 +102,7 @@ public sealed record CoreTelemetryOptions
     public bool EquipmentEnabled { get; init; } = true;
     public bool ImageStatsEnabled { get; init; } = true;
     public bool WorkflowTracesEnabled { get; init; } = true;
+    public string NinaLogPath { get; init; } = string.Empty;
     public bool FilteredLogsEnabled { get; init; } = true;
     public bool RawForwardingEnabled { get; init; } = false;
 }

@@ -26,6 +26,59 @@
                 FontSize="11"
                 TextWrapping="Wrap" />
             <TextBlock Text="{Binding NinaOtelOptionsViewModel.Status}" Margin="0,8,0,0" />
+            <TextBlock Text="Core telemetry" FontWeight="Bold" Margin="0,12,0,0" />
+            <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="320" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="6" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="6" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock
+                    Grid.Row="0"
+                    Grid.Column="0"
+                    Text="Filtered NINA logs:"
+                    FontWeight="SemiBold"
+                    VerticalAlignment="Center" />
+                <CheckBox
+                    Grid.Row="0"
+                    Grid.Column="2"
+                    IsChecked="{Binding NinaOtelOptionsViewModel.FilteredLogsEnabled, Mode=TwoWay}"
+                    HorizontalAlignment="Left"
+                    ToolTip="Emit filtered NINA warning, error, and lifecycle log telemetry." />
+
+                <TextBlock
+                    Grid.Row="2"
+                    Grid.Column="0"
+                    Text="Raw NINA log forwarding:"
+                    FontWeight="SemiBold"
+                    VerticalAlignment="Center" />
+                <CheckBox
+                    Grid.Row="2"
+                    Grid.Column="2"
+                    IsChecked="{Binding NinaOtelOptionsViewModel.RawCoreLogForwardingEnabled, Mode=TwoWay}"
+                    HorizontalAlignment="Left"
+                    ToolTip="Forward parsed raw NINA log records." />
+
+                <TextBlock
+                    Grid.Row="4"
+                    Grid.Column="0"
+                    Text="NINA log path:"
+                    FontWeight="SemiBold"
+                    VerticalAlignment="Center" />
+                <TextBox
+                    Grid.Row="4"
+                    Grid.Column="2"
+                    MinWidth="320"
+                    Text="{Binding NinaOtelOptionsViewModel.NinaLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+            </Grid>
             <TextBlock Text="Add-ons" FontWeight="Bold" Margin="0,12,0,0" />
             <ItemsControl ItemsSource="{Binding NinaOtelOptionsViewModel.Addons}">
                 <ItemsControl.ItemTemplate>

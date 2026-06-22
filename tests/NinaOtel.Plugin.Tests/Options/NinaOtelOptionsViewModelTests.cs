@@ -27,6 +27,12 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Buffer.SpoolPath.Should().Be("%LOCALAPPDATA%\\NINA\\NinaOtel\\spool");
         viewModel.Options.Buffer.MaxSpoolBytes.Should().Be(1L * 1024 * 1024 * 1024);
         viewModel.Options.Buffer.MaxSpoolAge.Should().Be(TimeSpan.FromDays(7));
+        viewModel.NinaLogPath.Should().BeEmpty();
+        viewModel.FilteredLogsEnabled.Should().BeTrue();
+        viewModel.RawCoreLogForwardingEnabled.Should().BeFalse();
+        viewModel.Options.CoreTelemetry.NinaLogPath.Should().BeEmpty();
+        viewModel.Options.CoreTelemetry.FilteredLogsEnabled.Should().BeTrue();
+        viewModel.Options.CoreTelemetry.RawForwardingEnabled.Should().BeFalse();
         viewModel.StaticHeaders.Should().BeEmpty();
         viewModel.Options.Otlp.Headers.Should().BeEmpty();
         viewModel.CaCertificatePemPath.Should().BeEmpty();
@@ -341,6 +347,48 @@ public sealed class NinaOtelOptionsViewModelTests
         settings.GetBoolean("DiskOnFailureEnabled", true).Should().BeFalse();
         viewModel.Options.Otlp.Protocol.Should().Be(OtlpProtocol.HttpProtobuf);
         viewModel.Options.Buffer.DiskOnFailureEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void CoreTelemetrySettings_SaveImmediatelyAndUpdateOptions()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.NinaLogPath = " C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log ";
+        viewModel.FilteredLogsEnabled = false;
+        viewModel.RawCoreLogForwardingEnabled = true;
+
+        settings.GetString("NinaLogPath", string.Empty)
+            .Should()
+            .Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
+        settings.GetBoolean("FilteredLogsEnabled", true).Should().BeFalse();
+        settings.GetBoolean("RawCoreLogForwardingEnabled", false).Should().BeTrue();
+        viewModel.NinaLogPath.Should().Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
+        viewModel.Options.CoreTelemetry.NinaLogPath
+            .Should()
+            .Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
+        viewModel.Options.CoreTelemetry.FilteredLogsEnabled.Should().BeFalse();
+        viewModel.Options.CoreTelemetry.RawForwardingEnabled.Should().BeTrue();
+        viewModel.Status.Should().Be("Settings saved");
+    }
+
+    [Fact]
+    public void Constructor_LoadsPersistedCoreTelemetrySettings()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        settings.SetString("NinaLogPath", "D:\\NINA\\Logs\\nina.log");
+        settings.SetBoolean("FilteredLogsEnabled", false);
+        settings.SetBoolean("RawCoreLogForwardingEnabled", true);
+
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.NinaLogPath.Should().Be("D:\\NINA\\Logs\\nina.log");
+        viewModel.FilteredLogsEnabled.Should().BeFalse();
+        viewModel.RawCoreLogForwardingEnabled.Should().BeTrue();
+        viewModel.Options.CoreTelemetry.NinaLogPath.Should().Be("D:\\NINA\\Logs\\nina.log");
+        viewModel.Options.CoreTelemetry.FilteredLogsEnabled.Should().BeFalse();
+        viewModel.Options.CoreTelemetry.RawForwardingEnabled.Should().BeTrue();
     }
 
     [Fact]
