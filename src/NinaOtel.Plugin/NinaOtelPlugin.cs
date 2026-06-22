@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.ComponentModel.Composition;
+using System.Reflection;
 using NINA.Core.Utility;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Plugin;
@@ -95,7 +96,11 @@ public sealed class NinaOtelPlugin : PluginBase
         domeTelemetry = new DomeTelemetryCollector(domeMediator, telemetrySink, timeProvider);
         imageTelemetry = new ImageTelemetryCollector(imageSaveMediator, telemetrySink, timeProvider);
         ninaLogTelemetry = new NinaLogTelemetryCollector(options.CoreTelemetry, telemetrySink, timeProvider);
-        lifecycleTelemetry = new CoreLifecycleTelemetryProducer(telemetrySink, timeProvider, options);
+        lifecycleTelemetry = new CoreLifecycleTelemetryProducer(
+            telemetrySink,
+            timeProvider,
+            options,
+            ResolvePluginVersion());
         addonHost = new AddonHost(
             telemetrySink,
             timeProvider,
@@ -108,6 +113,24 @@ public sealed class NinaOtelPlugin : PluginBase
     }
 
     public NinaOtelOptionsViewModel NinaOtelOptionsViewModel { get; }
+
+    private static string? ResolvePluginVersion()
+    {
+        var assembly = typeof(NinaOtelPlugin).Assembly;
+        var informationalVersion = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(informationalVersion))
+        {
+            return informationalVersion;
+        }
+
+        var fileVersion = assembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version;
+        if (!string.IsNullOrWhiteSpace(fileVersion))
+        {
+            return fileVersion;
+        }
+
+        return assembly.GetName().Version?.ToString();
+    }
 
     public override async Task Initialize()
     {

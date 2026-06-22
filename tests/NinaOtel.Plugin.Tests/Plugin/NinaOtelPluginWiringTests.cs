@@ -129,7 +129,8 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("new CameraTelemetryCollector(cameraMediator, telemetrySink, timeProvider)");
         source.Should().Contain("new FocuserTelemetryCollector(focuserMediator, telemetrySink, timeProvider)");
         source.Should().Contain("new ImageTelemetryCollector(imageSaveMediator, telemetrySink, timeProvider)");
-        source.Should().Contain("new CoreLifecycleTelemetryProducer(telemetrySink, timeProvider, options)");
+        source.Should().Contain("new CoreLifecycleTelemetryProducer(");
+        source.Should().Contain("ResolvePluginVersion()");
         var addonHostStart = source.IndexOf("addonHost = new AddonHost(", StringComparison.Ordinal);
         addonHostStart.Should().BeGreaterThanOrEqualTo(0);
         source.Substring(addonHostStart, 120).Should().Contain("telemetrySink,");
