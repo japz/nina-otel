@@ -782,6 +782,22 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.CollectorHealthDebugInfo.Should().Contain("SocketException");
     }
 
+    [Fact]
+    public void UpdateCollectorHealth_WhenDroppedRecordsHaveNoQueue_ShowsDroppedDebugInfo()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+
+        viewModel.UpdateCollectorHealth(CollectorHealthSnapshot.Healthy(
+            new Uri("http://collector.local:4317/"),
+            OtlpProtocol.Grpc,
+            exportedRecords: 0,
+            checkedAt: new DateTimeOffset(2026, 6, 22, 10, 0, 0, TimeSpan.Zero),
+            droppedRecords: 3));
+
+        viewModel.CollectorHealthDebugInfo.Should().Contain("Dropped: 3 record(s)");
+    }
+
     private sealed class FakeSecretProtector : ISecretProtector
     {
         public string Protect(string secret) => $"protected:{secret}";

@@ -957,18 +957,31 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
     private static string FormatQueueDebugInfo(CollectorHealthSnapshot snapshot)
     {
-        if (snapshot.QueuedRecords <= 0 && snapshot.QueuedBytes <= 0 && snapshot.OldestQueuedTimestamp is null)
+        if (snapshot.QueuedRecords <= 0 &&
+            snapshot.QueuedBytes <= 0 &&
+            snapshot.OldestQueuedTimestamp is null &&
+            snapshot.DroppedRecords <= 0)
         {
             return string.Empty;
         }
 
-        var oldest = snapshot.OldestQueuedTimestamp is null
-            ? string.Empty
-            : $" Oldest queued: {snapshot.OldestQueuedTimestamp:O};";
-        var dropped = snapshot.DroppedRecords <= 0
-            ? string.Empty
-            : $" Dropped: {snapshot.DroppedRecords} record(s);";
-        return $"Queued: {snapshot.QueuedRecords} record(s), {snapshot.QueuedBytes} byte(s);{oldest}{dropped} ";
+        var parts = new List<string>();
+        if (snapshot.QueuedRecords > 0 || snapshot.QueuedBytes > 0)
+        {
+            parts.Add($"Queued: {snapshot.QueuedRecords} record(s), {snapshot.QueuedBytes} byte(s);");
+        }
+
+        if (snapshot.OldestQueuedTimestamp is not null)
+        {
+            parts.Add($"Oldest queued: {snapshot.OldestQueuedTimestamp:O};");
+        }
+
+        if (snapshot.DroppedRecords > 0)
+        {
+            parts.Add($"Dropped: {snapshot.DroppedRecords} record(s);");
+        }
+
+        return string.Join(" ", parts) + " ";
     }
 
     private sealed record CollectorHealthUpdate(

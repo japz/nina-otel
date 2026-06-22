@@ -88,6 +88,7 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
         try
         {
             await innerExporter.ExportAsync(records, cancellationToken).ConfigureAwait(false);
+            await ReportAfterLiveSuccessAsync(records.Count, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -202,6 +203,7 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
         Exception originalException,
         CancellationToken cancellationToken)
     {
+        await spoolReplayLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await spool.AppendBatchAsync(records, cancellationToken).ConfigureAwait(false);
@@ -212,8 +214,16 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
         }
         catch
         {
+            await ReportUnhealthyAsync(
+                originalException,
+                CollectorBufferMode.Degraded,
+                cancellationToken).ConfigureAwait(false);
             ExceptionDispatchInfo.Capture(originalException).Throw();
             throw;
+        }
+        finally
+        {
+            spoolReplayLock.Release();
         }
     }
 
@@ -312,6 +322,26 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
         return TimeSpan.FromTicks(Math.Min(nextTicks, recoveryMaxDelay.Ticks));
     }
 
+    private async Task ReportAfterLiveSuccessAsync(int exportedRecords, CancellationToken cancellationToken)
+    {
+        if (reportHealth is null)
+        {
+            return;
+        }
+
+        var stats = await GetStatsSafelyAsync(cancellationToken).ConfigureAwait(false);
+        ReportSafely(CollectorHealthSnapshot.Healthy(
+            endpoint!,
+            protocol,
+            exportedRecords,
+            timeProvider!.GetUtcNow(),
+            bufferMode: CollectorBufferMode.Healthy,
+            queuedRecords: stats.QueuedRecords,
+            queuedBytes: stats.QueuedBytes,
+            oldestQueuedTimestamp: stats.OldestQueuedTimestamp,
+            droppedRecords: ToSnapshotDroppedRecords(stats.DroppedRecords)));
+    }
+
     private async Task ReportAfterReplaySuccessAsync(int exportedRecords, CancellationToken cancellationToken)
     {
         if (reportHealth is null)
@@ -327,7 +357,8 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
                 protocol,
                 exportedRecords,
                 timeProvider!.GetUtcNow(),
-                bufferMode: CollectorBufferMode.Healthy));
+                bufferMode: CollectorBufferMode.Healthy,
+                droppedRecords: ToSnapshotDroppedRecords(stats.DroppedRecords)));
             return;
         }
 
@@ -341,7 +372,8 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
             CollectorBufferMode.Recovering,
             stats.QueuedRecords,
             stats.QueuedBytes,
-            stats.OldestQueuedTimestamp));
+            stats.OldestQueuedTimestamp,
+            ToSnapshotDroppedRecords(stats.DroppedRecords)));
     }
 
     private async Task ReportUnhealthyAsync(
@@ -364,8 +396,12 @@ internal sealed class DurableTelemetryExporter : ITelemetryExporter, IDisposable
             bufferMode: bufferMode,
             queuedRecords: stats.QueuedRecords,
             queuedBytes: stats.QueuedBytes,
-            oldestQueuedTimestamp: stats.OldestQueuedTimestamp));
+            oldestQueuedTimestamp: stats.OldestQueuedTimestamp,
+            droppedRecords: ToSnapshotDroppedRecords(stats.DroppedRecords)));
     }
+
+    private static int ToSnapshotDroppedRecords(long droppedRecords) =>
+        droppedRecords > int.MaxValue ? int.MaxValue : (int)droppedRecords;
 
     private async Task<DiskTelemetrySpool.Stats> GetStatsSafelyAsync(CancellationToken cancellationToken)
     {
