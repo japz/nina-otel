@@ -381,6 +381,41 @@ public sealed class NinaLogTelemetryCollectorTests
             .Which.Body.Should().Be("Application shutting down");
     }
 
+    [Fact]
+    public async Task Start_WhenContinuationLineArrivesAfterIdlePoll_AttachesItToPriorEvent()
+    {
+        using var logFile = TempNinaLog.Create([]);
+        var sink = new RecordingTelemetrySink();
+        using var collector = CreateCollector(
+            logFile.Path,
+            sink,
+            filteredLogsEnabled: true,
+            pollInterval: TimeSpan.FromMilliseconds(10),
+            pendingEventFlushDelay: TimeSpan.FromSeconds(5));
+
+        collector.Start();
+        logFile.Append("2026-06-18T22:00:00.0000|ERROR|NINA.Core.PluginLoader|Load|10|Could not load plugin NinaOtel");
+        await WaitForTailerToHoldEventAsync(collector);
+        logFile.Append("System.InvalidOperationException: Plugin manifest is invalid");
+        logFile.Append("2026-06-18T22:00:01.0000|INFO|NINA.Core.App|Stop|11|Application shutting down");
+        logFile.Append("2026-06-18T22:00:02.0000|INFO|NINA.Core.App|Tick|12|Sentinel");
+
+        var records = await WaitForRecordsAsync(sink, expectedCount: 3);
+        var filteredError = records.Should()
+            .ContainSingle(static record => record.Name == "nina.log")
+            .Which;
+        filteredError.Body.Should().Be(
+            "Could not load plugin NinaOtel" + Environment.NewLine +
+            "System.InvalidOperationException: Plugin manifest is invalid");
+
+        var loadFailed = records.Should()
+            .ContainSingle(static record => record.Name == "nina.plugin.load_failed")
+            .Which;
+        loadFailed.Body.Should().Be(filteredError.Body);
+        records.Should().ContainSingle(static record => record.Name == "nina.application.stop")
+            .Which.Body.Should().Be("Application shutting down");
+    }
+
     private static NinaLogTelemetryCollector CreateCollector(
         string logPath,
         RecordingTelemetrySink sink,
@@ -388,7 +423,8 @@ public sealed class NinaLogTelemetryCollectorTests
         bool rawForwardingEnabled = false,
         int readBufferSize = 4096,
         NinaLogTailerStartPosition startPosition = NinaLogTailerStartPosition.Beginning,
-        TimeSpan? pollInterval = null) =>
+        TimeSpan? pollInterval = null,
+        TimeSpan? pendingEventFlushDelay = null) =>
         CreateCollector(
             new CoreTelemetryOptions
             {
@@ -399,21 +435,24 @@ public sealed class NinaLogTelemetryCollectorTests
             sink,
             readBufferSize,
             startPosition,
-            pollInterval);
+            pollInterval,
+            pendingEventFlushDelay);
 
     private static NinaLogTelemetryCollector CreateCollector(
         CoreTelemetryOptions options,
         RecordingTelemetrySink sink,
         int readBufferSize = 4096,
         NinaLogTailerStartPosition startPosition = NinaLogTailerStartPosition.Beginning,
-        TimeSpan? pollInterval = null) =>
+        TimeSpan? pollInterval = null,
+        TimeSpan? pendingEventFlushDelay = null) =>
         new(
             options,
             sink,
             TimeProvider.System,
             startPosition,
             pollInterval ?? TimeSpan.FromMilliseconds(10),
-            readBufferSize);
+            readBufferSize,
+            pendingEventFlushDelay ?? TimeSpan.FromMilliseconds(10));
 
     private static async Task WaitForTailerToHoldEventAsync(NinaLogTelemetryCollector collector)
     {

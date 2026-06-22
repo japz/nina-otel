@@ -11,17 +11,20 @@ public sealed class NinaLogTelemetryCollector : IDisposable
     private const string SourceName = "nina.log";
     private const string FilteredLogName = "nina.log";
     private const string RawLogName = "nina.log.raw";
+    private static readonly TimeSpan DefaultPendingEventFlushDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly object syncRoot = new();
     private readonly ITelemetrySink sink;
     private readonly TimeProvider timeProvider;
     private readonly NinaLogTailerStartPosition startPosition;
     private readonly TimeSpan pollInterval;
+    private readonly TimeSpan pendingEventFlushDelay;
     private readonly int readBufferSize;
     private CoreTelemetryOptions options;
     private NinaLogTailer? tailer;
     private CancellationTokenSource? cancellation;
     private Task? pumpTask;
+    private DateTimeOffset? pendingEventUpdatedAt;
     private bool started;
     private bool disposed;
 
@@ -35,7 +38,8 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             timeProvider,
             NinaLogTailerStartPosition.End,
             TimeSpan.FromSeconds(1),
-            readBufferSize: 4096)
+            readBufferSize: 4096,
+            pendingEventFlushDelay: DefaultPendingEventFlushDelay)
     {
     }
 
@@ -45,7 +49,8 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         TimeProvider timeProvider,
         NinaLogTailerStartPosition startPosition,
         TimeSpan pollInterval,
-        int readBufferSize)
+        int readBufferSize,
+        TimeSpan? pendingEventFlushDelay = null)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.sink = sink ?? throw new ArgumentNullException(nameof(sink));
@@ -58,6 +63,14 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         this.pollInterval = pollInterval;
         this.startPosition = startPosition;
         this.readBufferSize = readBufferSize;
+        this.pendingEventFlushDelay = pendingEventFlushDelay ?? DefaultPendingEventFlushDelay;
+        if (this.pendingEventFlushDelay < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pendingEventFlushDelay),
+                pendingEventFlushDelay,
+                "Pending event flush delay cannot be negative.");
+        }
     }
 
     internal bool HasPendingTailEventForTests
@@ -241,12 +254,32 @@ public sealed class NinaLogTelemetryCollector : IDisposable
 
             tailer ??= CreateTailer(optionsSnapshot.NinaLogPath);
             var readResult = tailer.ReadAvailable();
-            if (!readResult.HasNewLines && tailer.HasPendingEvent)
+            if (readResult.HasNewLines)
             {
-                return (tailer.FlushPending(), optionsSnapshot);
+                if (tailer.HasPendingEvent)
+                {
+                    pendingEventUpdatedAt = timeProvider.GetUtcNow();
+                }
+                else
+                {
+                    pendingEventUpdatedAt = null;
+                }
+
+                return (readResult.Events, optionsSnapshot);
             }
 
-            return (readResult.Events, optionsSnapshot);
+            if (tailer.HasPendingEvent)
+            {
+                var now = timeProvider.GetUtcNow();
+                pendingEventUpdatedAt ??= now;
+                if (now - pendingEventUpdatedAt.Value >= pendingEventFlushDelay)
+                {
+                    pendingEventUpdatedAt = null;
+                    return (tailer.FlushPending(), optionsSnapshot);
+                }
+            }
+
+            return ([], optionsSnapshot);
         }
     }
 
@@ -341,6 +374,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         finally
         {
             tailer = null;
+            pendingEventUpdatedAt = null;
         }
     }
 
