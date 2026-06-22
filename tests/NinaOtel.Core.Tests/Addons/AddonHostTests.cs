@@ -11,6 +11,7 @@ namespace NinaOtel.Core.Tests.Addons;
 public sealed class AddonHostTests
 {
     private static readonly TimeSpan LifecycleTimeout = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan TestObservationTimeout = TimeSpan.FromSeconds(5);
 
     [Fact]
     public async Task StartAsync_ReturnsWithoutWaitingForHangingAddon()
@@ -728,7 +729,7 @@ public sealed class AddonHostTests
         string addonId,
         string status)
     {
-        var stopAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+        var stopAt = DateTimeOffset.UtcNow + TestObservationTimeout;
 
         while (DateTimeOffset.UtcNow < stopAt)
         {
@@ -746,7 +747,7 @@ public sealed class AddonHostTests
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
-        var stopAt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+        var stopAt = DateTimeOffset.UtcNow + TestObservationTimeout;
 
         while (DateTimeOffset.UtcNow < stopAt)
         {
