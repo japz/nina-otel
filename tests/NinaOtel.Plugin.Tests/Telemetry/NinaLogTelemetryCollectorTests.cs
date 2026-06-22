@@ -312,6 +312,7 @@ public sealed class NinaLogTelemetryCollectorTests
             FilteredLogsEnabled = true,
         });
         secondLogFile.Append("2026-06-18T22:00:01.0000|ERROR|NINA.Core.App|Run|11|After switch");
+        secondLogFile.Append("2026-06-18T22:00:02.0000|INFO|NINA.Core.App|Tick|12|Sentinel");
 
         var records = await WaitForRecordsAsync(sink, expectedCount: 2);
         records.Select(static record => record.Body).Should().Equal("Held before switch", "After switch");
