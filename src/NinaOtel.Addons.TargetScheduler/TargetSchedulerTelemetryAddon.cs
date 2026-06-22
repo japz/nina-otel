@@ -323,6 +323,11 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
             ["message"] = logEvent.Message,
         };
 
+        if (TryGetWorkflowKind(logEvent.Kind, out var workflowKind))
+        {
+            attributes["workflow.kind"] = workflowKind;
+        }
+
         if (rawForwardingEnabled)
         {
             attributes["raw.line"] = logEvent.OriginalLine;
@@ -342,8 +347,31 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
             ["event.kind"] = ToEventKindName(logEvent.Kind),
         };
 
+        if (TryGetWorkflowKind(logEvent.Kind, out var workflowKind))
+        {
+            attributes["workflow.kind"] = workflowKind;
+        }
+
         AddStructuredAttributes(logEvent, attributes, includeGradeScore: false);
         return attributes;
+    }
+
+    private static bool TryGetWorkflowKind(TargetSchedulerLogEventKind kind, out string workflowKind)
+    {
+        workflowKind = kind switch
+        {
+            TargetSchedulerLogEventKind.PlanningStarted or
+            TargetSchedulerLogEventKind.PlanningCompleted or
+            TargetSchedulerLogEventKind.TargetSelected or
+            TargetSchedulerLogEventKind.Warning or
+            TargetSchedulerLogEventKind.Error => "scheduling",
+            TargetSchedulerLogEventKind.PlanStarted or
+            TargetSchedulerLogEventKind.PlanStopped or
+            TargetSchedulerLogEventKind.ImageGraded => "imaging_plan",
+            _ => string.Empty,
+        };
+
+        return !string.IsNullOrWhiteSpace(workflowKind);
     }
 
     private static void AddStructuredAttributes(

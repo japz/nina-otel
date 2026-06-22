@@ -90,19 +90,21 @@ public sealed class Phd2TelemetryAddonTests
         record.Priority.Should().Be(TelemetryPriority.Normal);
         record.Attributes["source.file"].Should().Be(temp.Path);
         record.Attributes["event.kind"].Should().Be("guiding_started");
+        record.Attributes["workflow.kind"].Should().Be("guiding");
         record.Attributes["raw.line"].Should().Be("2026-06-18 22:00:00.125 Guiding Begins");
 
         await addon.StopAsync(CancellationToken.None);
     }
 
     [Theory]
-    [InlineData("2026-06-18 22:00:10.000 Dither: started", "phd2.dither", "dither", SpanEventKind.Stop)]
-    [InlineData("2026-06-18 22:00:15.000 Settling started", "phd2.settle", "settle_started", SpanEventKind.Start)]
-    [InlineData("2026-06-18 22:00:20.500 Settle complete", "phd2.settle", "settle_completed", SpanEventKind.Stop)]
+    [InlineData("2026-06-18 22:00:10.000 Dither: started", "phd2.dither", "dither", "dither", SpanEventKind.Stop)]
+    [InlineData("2026-06-18 22:00:15.000 Settling started", "phd2.settle", "settle_started", "dither", SpanEventKind.Start)]
+    [InlineData("2026-06-18 22:00:20.500 Settle complete", "phd2.settle", "settle_completed", "dither", SpanEventKind.Stop)]
     public async Task Tailer_WhenSpanEventLineIsAppended_PublishesSpan(
         string line,
         string expectedName,
         string expectedKind,
+        string expectedWorkflowKind,
         SpanEventKind expectedSpanKind)
     {
         using var temp = new TempLogFile();
@@ -122,6 +124,7 @@ public sealed class Phd2TelemetryAddonTests
         record.SpanId.Should().NotBeNullOrWhiteSpace();
         record.Priority.Should().Be(TelemetryPriority.Normal);
         record.Attributes["event.kind"].Should().Be(expectedKind);
+        record.Attributes["workflow.kind"].Should().Be(expectedWorkflowKind);
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -187,6 +190,7 @@ public sealed class Phd2TelemetryAddonTests
         record.Severity.Should().Be(TelemetrySeverity.Error);
         record.Priority.Should().Be(TelemetryPriority.Important);
         record.Attributes["event.kind"].Should().Be("capture_error");
+        record.Attributes["workflow.kind"].Should().Be("guiding");
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -318,6 +322,7 @@ public sealed class Phd2TelemetryAddonTests
             record.Attributes.Should().Contain("guider_name", "PHD2");
             record.Attributes.Should().Contain("source.file", temp.Path);
             record.Attributes.Should().Contain("phd2.session_start", "2026-06-18T22:00:00.0000000+00:00");
+            record.Attributes.Should().Contain("workflow.kind", "guiding");
         }
 
         await addon.StopAsync(CancellationToken.None);
@@ -561,6 +566,7 @@ public sealed class Phd2TelemetryAddonTests
         record.Attributes.Should().Contain("phd2.session_start", "2026-06-18T22:00:00.0000000+00:00");
         record.Attributes.Should().Contain("phd2.ra_direction", raDirection);
         record.Attributes.Should().Contain("phd2.dec_direction", decDirection);
+        record.Attributes.Should().Contain("workflow.kind", "guiding");
         record.Attributes.Should().NotContainKey("phd2.frame");
     }
 

@@ -418,6 +418,11 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
             ["message"] = logEvent.Message,
         };
 
+        if (TryGetWorkflowKind(logEvent.Kind, out var workflowKind))
+        {
+            attributes["workflow.kind"] = workflowKind;
+        }
+
         if (!string.IsNullOrWhiteSpace(sessionId))
         {
             attributes["session.id"] = sessionId;
@@ -429,6 +434,25 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         }
 
         return attributes;
+    }
+
+    private static bool TryGetWorkflowKind(NightSummaryLogEventKind kind, out string workflowKind)
+    {
+        workflowKind = kind switch
+        {
+            NightSummaryLogEventKind.SessionStarted or
+            NightSummaryLogEventKind.SessionEnded or
+            NightSummaryLogEventKind.ReportGenerating or
+            NightSummaryLogEventKind.ReportDelivering or
+            NightSummaryLogEventKind.ReportSaved or
+            NightSummaryLogEventKind.ReportDelivered or
+            NightSummaryLogEventKind.ReportFailed => "session_summary",
+            NightSummaryLogEventKind.AutoFocusCompleted => "autofocus",
+            NightSummaryLogEventKind.MeridianFlip => "meridian_flip",
+            _ => string.Empty,
+        };
+
+        return !string.IsNullOrWhiteSpace(workflowKind);
     }
 
     private static string CreateSpanId(

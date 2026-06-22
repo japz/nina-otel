@@ -278,6 +278,7 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             ["source"] = "phd2",
             ["source.file"] = summary.SourcePath,
             ["guider_name"] = "PHD2",
+            ["workflow.kind"] = "guiding",
             ["phd2.session_start"] = summary.StartedAt.ToString("O", CultureInfo.InvariantCulture),
         };
 
@@ -302,6 +303,7 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             ["source"] = "phd2",
             ["source.file"] = sample.SourcePath,
             ["guider_name"] = "PHD2",
+            ["workflow.kind"] = "guiding",
             ["phd2.session_start"] = session.StartedAt.ToString("O", CultureInfo.InvariantCulture),
             ["phd2.ra_direction"] = pulse.RaDirection,
             ["phd2.dec_direction"] = pulse.DecDirection,
@@ -460,12 +462,33 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             ["message"] = CreateBoundedMessage(logEvent),
         };
 
+        if (TryGetWorkflowKind(logEvent.Kind, out var workflowKind))
+        {
+            attributes["workflow.kind"] = workflowKind;
+        }
+
         if (rawForwardingEnabled)
         {
             attributes["raw.line"] = logEvent.OriginalLine;
         }
 
         return attributes;
+    }
+
+    private static bool TryGetWorkflowKind(Phd2LogEventKind kind, out string workflowKind)
+    {
+        workflowKind = kind switch
+        {
+            Phd2LogEventKind.Dither or
+            Phd2LogEventKind.SettleStarted or
+            Phd2LogEventKind.SettleCompleted => "dither",
+            Phd2LogEventKind.GuidingStarted or
+            Phd2LogEventKind.GuidingStopped or
+            Phd2LogEventKind.CaptureError => "guiding",
+            _ => string.Empty,
+        };
+
+        return !string.IsNullOrWhiteSpace(workflowKind);
     }
 
     private static string CreateBoundedMessage(Phd2LogEvent logEvent) =>

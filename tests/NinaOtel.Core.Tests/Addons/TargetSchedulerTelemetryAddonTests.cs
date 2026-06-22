@@ -85,6 +85,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
         record.Priority.Should().Be(TelemetryPriority.Normal);
         record.Attributes["source.file"].Should().Be(temp.Path);
         record.Attributes["event.kind"].Should().Be("planning_started");
+        record.Attributes["workflow.kind"].Should().Be("scheduling");
         record.Attributes["raw.line"].Should().Be(PlanningStartedLine);
 
         await addon.StopAsync(CancellationToken.None);
@@ -114,8 +115,10 @@ public sealed class TargetSchedulerTelemetryAddonTests
 
         span.Attributes["target.name"].Should().Be("M31");
         span.Attributes["filter.name"].Should().Be("L");
+        span.Attributes["workflow.kind"].Should().Be("scheduling");
         selected.Attributes["target.name"].Should().Be("M31");
         selected.Attributes["filter.name"].Should().Be("L");
+        selected.Attributes["workflow.kind"].Should().Be("scheduling");
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -160,12 +163,18 @@ public sealed class TargetSchedulerTelemetryAddonTests
         foreach (var metricName in expectedMetricNames)
         {
             var metric = await WaitForRecordAsync(sink, record => record.Name == metricName);
+            var expectedWorkflowKind = metricName.Contains("_plan_", StringComparison.Ordinal) ||
+                metricName.Contains("_image_", StringComparison.Ordinal)
+                    ? "imaging_plan"
+                    : "scheduling";
+
             metric.Signal.Should().Be(TelemetrySignal.Metric);
             metric.Source.Should().Be("target-scheduler");
             metric.Attributes.Should().Contain("addon.id", "target-scheduler");
             metric.Attributes.Should().ContainKey("source");
             metric.Attributes.Should().ContainKey("source.file");
             metric.Attributes.Should().ContainKey("event.kind");
+            metric.Attributes.Should().Contain("workflow.kind", expectedWorkflowKind);
             metric.Attributes.Should().NotContainKey("message");
             metric.Attributes.Should().NotContainKey("raw.line");
             metric.Attributes.Should().NotContainKey("grade.score");
@@ -174,21 +183,39 @@ public sealed class TargetSchedulerTelemetryAddonTests
         sink.Records.Should().Contain(record =>
             record.Name == "target_scheduler_current_target" &&
             Equals(record.Attributes["target.name"], "M31") &&
+            Equals(record.Attributes["workflow.kind"], "scheduling") &&
+            record.NumericValue == 1);
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler_current_target" &&
+            Equals(record.Attributes["event.kind"], "plan_started") &&
+            Equals(record.Attributes["workflow.kind"], "imaging_plan") &&
             record.NumericValue == 1);
         sink.Records.Should().Contain(record =>
             record.Name == "target_scheduler_plan_stopped_count" &&
             Equals(record.Attributes["stop.reason"], "hard_stop") &&
+            Equals(record.Attributes["workflow.kind"], "imaging_plan") &&
             record.NumericValue == 1);
         sink.Records.Should().Contain(record =>
             record.Name == "target_scheduler_image_graded_count" &&
             Equals(record.Attributes["target.name"], "M31") &&
             Equals(record.Attributes["grade.status"], "accepted") &&
+            Equals(record.Attributes["workflow.kind"], "imaging_plan") &&
             record.NumericValue == 1);
         sink.Records.Should().Contain(record =>
             record.Name == "target_scheduler_image_grade_score" &&
             Equals(record.Attributes["target.name"], "M31") &&
             Equals(record.Attributes["grade.status"], "accepted") &&
+            Equals(record.Attributes["workflow.kind"], "imaging_plan") &&
             record.NumericValue == 0.92);
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler.plan_started" &&
+            Equals(record.Attributes["workflow.kind"], "imaging_plan"));
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler.plan_stopped" &&
+            Equals(record.Attributes["workflow.kind"], "imaging_plan"));
+        sink.Records.Should().Contain(record =>
+            record.Name == "target_scheduler.image_graded" &&
+            Equals(record.Attributes["workflow.kind"], "imaging_plan"));
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -323,10 +350,12 @@ public sealed class TargetSchedulerTelemetryAddonTests
         warning.Severity.Should().Be(TelemetrySeverity.Warning);
         warning.Priority.Should().Be(TelemetryPriority.Important);
         warning.Attributes["event.kind"].Should().Be("warning");
+        warning.Attributes["workflow.kind"].Should().Be("scheduling");
         error.Signal.Should().Be(TelemetrySignal.Log);
         error.Severity.Should().Be(TelemetrySeverity.Error);
         error.Priority.Should().Be(TelemetryPriority.Important);
         error.Attributes["event.kind"].Should().Be("error");
+        error.Attributes["workflow.kind"].Should().Be("scheduling");
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -355,10 +384,12 @@ public sealed class TargetSchedulerTelemetryAddonTests
         start.Source.Should().Be("target-scheduler");
         start.SpanId.Should().NotBeNullOrWhiteSpace();
         start.Attributes["event.kind"].Should().Be("planning_started");
+        start.Attributes["workflow.kind"].Should().Be("scheduling");
         stop.Signal.Should().Be(TelemetrySignal.Span);
         stop.Source.Should().Be("target-scheduler");
         stop.SpanId.Should().Be(start.SpanId);
         stop.Attributes["event.kind"].Should().Be("planning_completed");
+        stop.Attributes["workflow.kind"].Should().Be("scheduling");
 
         await addon.StopAsync(CancellationToken.None);
     }

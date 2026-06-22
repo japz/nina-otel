@@ -125,6 +125,7 @@ public sealed class NightSummaryTelemetryAddonTests
         record.Body.Should().Be("NightSummary: Session started. SessionId=abc-123");
         record.Attributes["source.file"].Should().Be(temp.Path);
         record.Attributes["event.kind"].Should().Be("session_started");
+        record.Attributes["workflow.kind"].Should().Be("session_summary");
         record.Attributes["session.id"].Should().Be("abc-123");
 
         await addon.StopAsync(CancellationToken.None);
@@ -161,15 +162,18 @@ public sealed class NightSummaryTelemetryAddonTests
         startSpan.Attributes["source"].Should().Be("night-summary");
         startSpan.Attributes["source.file"].Should().Be(temp.Path);
         startSpan.Attributes["event.kind"].Should().Be("session_started");
+        startSpan.Attributes["workflow.kind"].Should().Be("session_summary");
         startSpan.Attributes["message"].Should().Be("NightSummary: Session started. SessionId=abc-123");
         startSpan.Attributes["session.id"].Should().Be("abc-123");
 
         startedMetric.Signal.Should().Be(TelemetrySignal.Metric);
         startedMetric.NumericValue.Should().Be(1);
         startedMetric.Attributes["event.kind"].Should().Be("session_started");
+        startedMetric.Attributes["workflow.kind"].Should().Be("session_summary");
         startedMetric.Attributes["session.id"].Should().Be("abc-123");
         endedMetric.NumericValue.Should().Be(1);
         endedMetric.Attributes["event.kind"].Should().Be("session_ended");
+        endedMetric.Attributes["workflow.kind"].Should().Be("session_summary");
         endedMetric.Attributes["session.id"].Should().Be("abc-123");
 
         sink.Records.Where(record => record.Name == "night_summary.log_event")
@@ -208,10 +212,13 @@ public sealed class NightSummaryTelemetryAddonTests
         startSpan.SpanId.Should().Be($"night_summary.report|{temp.Path}|abc-123");
         stopSpan.SpanId.Should().Be(startSpan.SpanId);
         stopSpan.Attributes["event.kind"].Should().Be("report_delivered");
+        stopSpan.Attributes["workflow.kind"].Should().Be("session_summary");
         stopSpan.Attributes["session.id"].Should().Be("abc-123");
         deliveredMetric.Attributes["session.id"].Should().Be("abc-123");
+        deliveredMetric.Attributes["workflow.kind"].Should().Be("session_summary");
         deliveredMetric.NumericValue.Should().Be(1);
         startedMetric.NumericValue.Should().Be(1);
+        startedMetric.Attributes["workflow.kind"].Should().Be("session_summary");
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -247,13 +254,16 @@ public sealed class NightSummaryTelemetryAddonTests
         startSpan.SpanId.Should().Be($"night_summary.report|{temp.Path}|abc-123");
         stopSpan.SpanId.Should().Be(startSpan.SpanId);
         stopSpan.Attributes["event.kind"].Should().Be("report_failed");
+        stopSpan.Attributes["workflow.kind"].Should().Be("session_summary");
         stopSpan.Attributes["session.id"].Should().Be("abc-123");
         failedMetric.NumericValue.Should().Be(1);
         failedMetric.Attributes["event.kind"].Should().Be("report_failed");
+        failedMetric.Attributes["workflow.kind"].Should().Be("session_summary");
         failedMetric.Attributes["session.id"].Should().Be("abc-123");
         failedLog.Severity.Should().Be(TelemetrySeverity.Error);
         failedLog.Priority.Should().Be(TelemetryPriority.Important);
         failedLog.Attributes["event.kind"].Should().Be("report_failed");
+        failedLog.Attributes["workflow.kind"].Should().Be("session_summary");
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -320,6 +330,8 @@ public sealed class NightSummaryTelemetryAddonTests
         metric.Attributes["source"].Should().Be("night-summary");
         metric.Attributes["source.file"].Should().Be(temp.Path);
         metric.Attributes["event.kind"].Should().Be(expectedEventKind);
+        metric.Attributes["workflow.kind"].Should().Be(
+            expectedEventKind == "autofocus_completed" ? "autofocus" : "meridian_flip");
 
         await addon.StopAsync(CancellationToken.None);
     }
