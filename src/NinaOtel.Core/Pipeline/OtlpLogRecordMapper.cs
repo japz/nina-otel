@@ -29,6 +29,11 @@ internal static class OtlpLogRecordMapper
             new("ninaotel.timestamp_unix_ms", record.Timestamp.ToUnixTimeMilliseconds()),
         };
 
+        if (!record.Attributes.ContainsKey("name"))
+        {
+            attributes.Add(new KeyValuePair<string, object?>("name", record.Name));
+        }
+
         foreach (var attribute in record.Attributes)
         {
             attributes.Add(new KeyValuePair<string, object?>(attribute.Key, attribute.Value));

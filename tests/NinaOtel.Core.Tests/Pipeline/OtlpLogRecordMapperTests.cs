@@ -72,4 +72,52 @@ public sealed class OtlpLogRecordMapperTests
         payload.Level.Should().Be(LogLevel.Warning);
         payload.Message.Should().Be("image saved");
     }
+
+    [Fact]
+    public void Map_WhenRecordHasNoLegacyNameAttribute_AddsNameAttributeFromRecordName()
+    {
+        var record = TelemetryRecord.Log(
+            DateTimeOffset.UtcNow,
+            "nina.mount",
+            TelemetrySeverity.Information,
+            "Mount connected",
+            TelemetryPriority.Normal,
+            new Dictionary<string, object?>
+            {
+                ["mount_name"] = "EQ6-R",
+            }) with
+            {
+                Name = "mount_connected",
+            };
+
+        var payload = OtlpLogRecordMapper.Map(record);
+
+        payload.Attributes.Should().Contain(new KeyValuePair<string, object?>("name", "mount_connected"));
+    }
+
+    [Fact]
+    public void Map_WhenRecordAlreadyHasLegacyNameAttribute_PreservesExplicitValue()
+    {
+        var record = TelemetryRecord.Log(
+            DateTimeOffset.UtcNow,
+            "nina.image",
+            TelemetrySeverity.Information,
+            "Image taken",
+            TelemetryPriority.Normal,
+            new Dictionary<string, object?>
+            {
+                ["name"] = "image",
+            }) with
+            {
+                Name = "nina.image_save",
+            };
+
+        var payload = OtlpLogRecordMapper.Map(record);
+
+        payload.Attributes
+            .Where(static attribute => attribute.Key == "name")
+            .Should()
+            .ContainSingle()
+            .Which.Value.Should().Be("image");
+    }
 }
