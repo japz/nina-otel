@@ -38,6 +38,7 @@ public sealed class NinaLogTelemetryCollectorTests
             "Routine warning",
             "Routine error",
             "Routine fatal");
+        records.Should().OnlyContain(static record => !record.Attributes.ContainsKey("raw.line"));
         AssertLogAttributes(
             records[0],
             level: "WARNING",
@@ -76,6 +77,7 @@ public sealed class NinaLogTelemetryCollectorTests
             record.Source == "nina.log" &&
             record.Priority == TelemetryPriority.Normal &&
             record.Severity == TelemetrySeverity.Information);
+        records.Should().OnlyContain(static record => !record.Attributes.ContainsKey("raw.line"));
         AssertLogAttributes(
             records[3],
             level: "INFO",
@@ -104,6 +106,7 @@ public sealed class NinaLogTelemetryCollectorTests
             record.Name == "nina.log.raw" &&
             record.Priority == TelemetryPriority.Debug);
         records.Select(static record => record.Body).Should().Equal(warningLine, infoLine);
+        records.Select(static record => record.Attributes["raw.line"]).Should().Equal(warningLine, infoLine);
         records.Select(static record => record.Severity).Should().Equal(
             TelemetrySeverity.Warning,
             TelemetrySeverity.Information);

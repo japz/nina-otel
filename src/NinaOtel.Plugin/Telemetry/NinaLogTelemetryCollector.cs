@@ -333,7 +333,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             SourceName,
             RawLogName,
             TelemetryPriority.Debug,
-            CreateAttributes(logEvent),
+            CreateRawAttributes(logEvent),
             Body: logEvent.RawLine,
             Severity: logEvent.Severity ?? TelemetrySeverity.Information));
     }
@@ -453,6 +453,16 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             ["nina.log.kind"] = ToSnakeCase(logEvent.Kind.ToString()),
             ["nina.log.timestamp"] = logEvent.Timestamp.ToString("O", CultureInfo.InvariantCulture),
         };
+
+    private static IReadOnlyDictionary<string, object?> CreateRawAttributes(NinaLogEvent logEvent)
+    {
+        var attributes = new Dictionary<string, object?>(CreateAttributes(logEvent))
+        {
+            ["raw.line"] = logEvent.RawLine,
+        };
+
+        return attributes;
+    }
 
     private static bool IsErrorLogKind(NinaLogEventKind kind) =>
         kind is NinaLogEventKind.Warning or NinaLogEventKind.Error or NinaLogEventKind.Fatal;
