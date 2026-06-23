@@ -176,6 +176,41 @@ public sealed class NinaOtelPluginWiringTests
         handlerSource.Should().Contain("exporter.Update(CreateCollectorExporter(options));");
         handlerSource.Should().Contain("ninaLogTelemetry.UpdateOptions(options.CoreTelemetry);");
         handlerSource.Should().Contain("lifecycleTelemetry.ProfileChanged(options);");
+        handlerSource.Should().Contain("ApplyAddonOptions(options);");
+    }
+
+    [Fact]
+    public void Plugin_RestartsAddonsWhenAddonOptionsChange()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("private IReadOnlyDictionary<string, AddonConfiguration> addonConfigurations;");
+        source.Should().Contain("AddonConfigurationsEqual(addonConfigurations, updatedConfigurations)");
+        source.Should().Contain(
+            ".RestartAsync(FirstPartyAddonCatalog.CreateAll(), configurations, shutdownCts.Token)");
+    }
+
+    [Fact]
+    public void Plugin_DefersAddonRestartsUntilInitialAddonStart()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("private bool addOnsStarted;");
+        source.Should().Contain("if (!addOnsStarted)");
+        source.Should().Contain(
+            ".StartAsync(FirstPartyAddonCatalog.CreateAll(), initialAddonConfigurations, shutdownCts.Token)");
+    }
+
+    [Fact]
+    public void Plugin_CoalescesAddonOptionRestartsAndAdvancesAppliedStateAfterSuccess()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        source.Should().Contain("private IReadOnlyDictionary<string, AddonConfiguration>? pendingAddonConfigurations;");
+        source.Should().Contain("private bool addonOptionsApplyRunning;");
+        source.Should().Contain("pendingAddonConfigurations = updatedConfigurations;");
+        source.Should().Contain("appliedAddonConfigurations = configurations;");
+        source.Should().Contain("_ = addonOptionsApplyTask;");
     }
 
     private static string FindPluginSourcePath()

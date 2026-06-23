@@ -88,6 +88,20 @@ public sealed class NinaOtelOptionsViewModelTests
     }
 
     [Fact]
+    public void AddonSettings_SaveStatusDoesNotMentionReload()
+    {
+        var settings = new InMemoryPluginSettingsStore();
+        var viewModel = new NinaOtelOptionsViewModel(settings);
+        var phd2 = viewModel.Addons.Single(addon => addon.Id == "phd2");
+
+        phd2.IsEnabled = true;
+
+        viewModel.Status.Should().Be("Settings saved");
+        phd2.Status.Should().Be("enabled");
+        phd2.Message.Should().Be("Add-on enabled.");
+    }
+
+    [Fact]
     public void Constructor_LoadsPersistedAddonSettings()
     {
         var settings = new InMemoryPluginSettingsStore();

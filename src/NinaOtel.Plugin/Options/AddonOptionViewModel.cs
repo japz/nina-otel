@@ -263,7 +263,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         if (IsEnabled)
         {
             Status = "enabled";
-            Message = "Add-on enabled; reload plugin to apply changes.";
+            Message = "Add-on enabled.";
             return;
         }
 

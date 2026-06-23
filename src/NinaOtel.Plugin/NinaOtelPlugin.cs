@@ -30,6 +30,7 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly ITelemetrySink telemetrySink;
     private readonly CoreTelemetryFilteringSink filteringTelemetrySink;
     private readonly AddonHost addonHost;
+    private readonly object addonOptionsSyncRoot = new();
     private readonly CoreLifecycleTelemetryProducer lifecycleTelemetry;
     private readonly CameraTelemetryCollector cameraTelemetry;
     private readonly FocuserTelemetryCollector focuserTelemetry;
@@ -45,6 +46,12 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly DomeTelemetryCollector domeTelemetry;
     private readonly ImageTelemetryCollector imageTelemetry;
     private readonly NinaLogTelemetryCollector ninaLogTelemetry;
+    private IReadOnlyDictionary<string, AddonConfiguration> addonConfigurations;
+    private IReadOnlyDictionary<string, AddonConfiguration> appliedAddonConfigurations;
+    private IReadOnlyDictionary<string, AddonConfiguration>? pendingAddonConfigurations;
+    private Task? addonOptionsApplyTask;
+    private bool addOnsStarted;
+    private bool addonOptionsApplyRunning;
 
     [ImportingConstructor]
     public NinaOtelPlugin(
@@ -105,12 +112,14 @@ public sealed class NinaOtelPlugin : PluginBase
             timeProvider,
             options,
             ResolvePluginVersion());
+        addonConfigurations = CreateAddonConfigurations(options.Addons);
+        appliedAddonConfigurations = addonConfigurations;
         addonHost = new AddonHost(
             telemetrySink,
             timeProvider,
             TimeSpan.FromSeconds(1),
             TimeSpan.FromSeconds(1),
-            CreateAddonConfigurations(options.Addons),
+            addonConfigurations,
             NinaOtelOptionsViewModel.UpdateAddonHealth);
         profileService.ProfileChanged += ProfileService_ProfileChanged;
         NinaOtelOptionsViewModel.PropertyChanged += NinaOtelOptionsViewModel_PropertyChanged;
@@ -154,7 +163,33 @@ public sealed class NinaOtelPlugin : PluginBase
         imageTelemetry.Start();
         ninaLogTelemetry.Start();
         lifecycleTelemetry.PluginInitialized();
-        await addonHost.StartAsync(FirstPartyAddonCatalog.CreateAll(), shutdownCts.Token).ConfigureAwait(false);
+        IReadOnlyDictionary<string, AddonConfiguration> initialAddonConfigurations;
+        lock (addonOptionsSyncRoot)
+        {
+            initialAddonConfigurations = addonConfigurations;
+        }
+
+        await addonHost.StartAsync(FirstPartyAddonCatalog.CreateAll(), initialAddonConfigurations, shutdownCts.Token)
+            .ConfigureAwait(false);
+
+        lock (addonOptionsSyncRoot)
+        {
+            addOnsStarted = true;
+            if (AddonConfigurationsEqual(addonConfigurations, initialAddonConfigurations))
+            {
+                appliedAddonConfigurations = initialAddonConfigurations;
+            }
+            else
+            {
+                pendingAddonConfigurations = addonConfigurations;
+                if (!addonOptionsApplyRunning)
+                {
+                    addonOptionsApplyRunning = true;
+                    StartAddonOptionsApplyLoop();
+                }
+            }
+        }
+
         Logger.Info("NinaOtel foundation initialized.");
     }
 
@@ -162,6 +197,26 @@ public sealed class NinaOtelPlugin : PluginBase
     {
         profileService.ProfileChanged -= ProfileService_ProfileChanged;
         NinaOtelOptionsViewModel.PropertyChanged -= NinaOtelOptionsViewModel_PropertyChanged;
+        Task? applyTask;
+        lock (addonOptionsSyncRoot)
+        {
+            addOnsStarted = false;
+            pendingAddonConfigurations = null;
+            applyTask = addonOptionsApplyTask;
+        }
+
+        await shutdownCts.CancelAsync().ConfigureAwait(false);
+        if (applyTask is not null)
+        {
+            try
+            {
+                await applyTask.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
         cameraTelemetry.Dispose();
         focuserTelemetry.Dispose();
         rotatorTelemetry.Dispose();
@@ -180,7 +235,6 @@ public sealed class NinaOtelPlugin : PluginBase
         await addonHost.StopAsync(CancellationToken.None).ConfigureAwait(false);
         lifecycleTelemetry.PluginStopped();
         await pipeline.DisposeAsync().ConfigureAwait(false);
-        await shutdownCts.CancelAsync().ConfigureAwait(false);
         shutdownCts.Dispose();
         await base.Teardown().ConfigureAwait(false);
     }
@@ -200,7 +254,86 @@ public sealed class NinaOtelPlugin : PluginBase
         filteringTelemetrySink.UpdateOptions(options.CoreTelemetry);
         ninaLogTelemetry.UpdateOptions(options.CoreTelemetry);
         lifecycleTelemetry.ProfileChanged(options);
+        ApplyAddonOptions(options);
         Logger.Info("NinaOtel exporter settings applied.");
+    }
+
+    private void ApplyAddonOptions(NinaOtelOptions options)
+    {
+        var updatedConfigurations = CreateAddonConfigurations(options.Addons);
+
+        lock (addonOptionsSyncRoot)
+        {
+            var desiredUnchanged = AddonConfigurationsEqual(addonConfigurations, updatedConfigurations);
+            addonConfigurations = updatedConfigurations;
+
+            if (!addOnsStarted)
+            {
+                return;
+            }
+
+            if (desiredUnchanged && AddonConfigurationsEqual(appliedAddonConfigurations, updatedConfigurations))
+            {
+                return;
+            }
+
+            pendingAddonConfigurations = updatedConfigurations;
+            if (!addonOptionsApplyRunning)
+            {
+                addonOptionsApplyRunning = true;
+                StartAddonOptionsApplyLoop();
+            }
+        }
+    }
+
+    private void StartAddonOptionsApplyLoop()
+    {
+        addonOptionsApplyTask = Task.Run(ApplyAddonOptionsAsync);
+        _ = addonOptionsApplyTask;
+    }
+
+    private async Task ApplyAddonOptionsAsync()
+    {
+        while (true)
+        {
+            IReadOnlyDictionary<string, AddonConfiguration>? configurations;
+            lock (addonOptionsSyncRoot)
+            {
+                configurations = pendingAddonConfigurations;
+                pendingAddonConfigurations = null;
+                if (configurations is null)
+                {
+                    addonOptionsApplyRunning = false;
+                    return;
+                }
+            }
+
+            try
+            {
+                await addonHost.RestartAsync(FirstPartyAddonCatalog.CreateAll(), configurations, shutdownCts.Token)
+                    .ConfigureAwait(false);
+                lock (addonOptionsSyncRoot)
+                {
+                    appliedAddonConfigurations = configurations;
+                }
+
+                Logger.Info("NinaOtel add-on settings applied.");
+            }
+            catch (OperationCanceledException) when (shutdownCts.IsCancellationRequested)
+            {
+                lock (addonOptionsSyncRoot)
+                {
+                    addonOptionsApplyRunning = false;
+                    pendingAddonConfigurations = null;
+                }
+
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Info($"NinaOtel add-on settings apply failed: {ex.Message}");
+            }
+        }
     }
 
     private static IReadOnlyDictionary<string, AddonConfiguration> CreateAddonConfigurations(
@@ -220,6 +353,51 @@ public sealed class NinaOtelPlugin : PluginBase
         }
 
         return configurations;
+    }
+
+    private static bool AddonConfigurationsEqual(
+        IReadOnlyDictionary<string, AddonConfiguration> left,
+        IReadOnlyDictionary<string, AddonConfiguration> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        foreach (var (addonId, leftConfiguration) in left)
+        {
+            if (!right.TryGetValue(addonId, out var rightConfiguration) ||
+                leftConfiguration.ConfigVersion != rightConfiguration.ConfigVersion ||
+                leftConfiguration.RawForwardingEnabled != rightConfiguration.RawForwardingEnabled ||
+                leftConfiguration.Enabled != rightConfiguration.Enabled ||
+                !AddonSettingsEqual(leftConfiguration.Settings, rightConfiguration.Settings))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AddonSettingsEqual(
+        IReadOnlyDictionary<string, string> left,
+        IReadOnlyDictionary<string, string> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+
+        foreach (var (key, leftValue) in left)
+        {
+            if (!right.TryGetValue(key, out var rightValue) ||
+                !string.Equals(leftValue, rightValue, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private ITelemetryExporter CreateCollectorExporter(NinaOtelOptions options)

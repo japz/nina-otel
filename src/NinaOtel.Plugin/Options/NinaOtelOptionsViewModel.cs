@@ -721,7 +721,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
 
         RaisePropertyChanged(nameof(Options));
-        Status = "Settings saved; reload plugin to apply add-on changes.";
+        Status = "Settings saved";
     }
 
     private void ApplyAddonHealthSafely(string addonId, string status, string message)

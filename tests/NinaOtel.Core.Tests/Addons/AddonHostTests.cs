@@ -171,6 +171,49 @@ public sealed class AddonHostTests
     }
 
     [Fact]
+    public async Task StartAsync_WithRuntimeConfigurations_UsesLatestConfiguration()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(
+            sink,
+            TimeProvider.System,
+            LifecycleTimeout,
+            LifecycleTimeout,
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = new(
+                    configVersion: 1,
+                    settings: new Dictionary<string, string>
+                    {
+                        ["endpoint"] = "tcp://old",
+                    }),
+            });
+        var addon = new ConfigurationRecordingAddon();
+        var latestConfiguration = new AddonConfiguration(
+            configVersion: 2,
+            rawForwardingEnabled: true,
+            settings: new Dictionary<string, string>
+            {
+                ["endpoint"] = "tcp://latest",
+            });
+
+        await host.StartAsync(
+            [addon],
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = latestConfiguration,
+            },
+            CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "configured", "started");
+
+        addon.ValidatedConfiguration.Should().NotBeNull();
+        addon.ValidatedConfiguration!.ConfigVersion.Should().Be(2);
+        addon.ValidatedConfiguration.RawForwardingEnabled.Should().BeTrue();
+        addon.ValidatedConfiguration.Settings["endpoint"].Should().Be("tcp://latest");
+        addon.StartConfiguration.Should().BeSameAs(addon.ValidatedConfiguration);
+    }
+
+    [Fact]
     public async Task StartAsync_WhenAddonConfigurationIsDisabled_ReportsDisabledWithoutValidatingOrStarting()
     {
         var sink = new RecordingSink();
@@ -192,6 +235,176 @@ public sealed class AddonHostTests
         record.Priority.Should().Be(TelemetryPriority.Routine);
         addon.ValidateCalls.Should().Be(0);
         addon.StartCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RestartAsync_StopsExistingAddonsAndStartsFreshAddonsWithUpdatedConfiguration()
+    {
+        var sink = new RecordingSink();
+        var firstConfiguration = new AddonConfiguration(
+            configVersion: 1,
+            settings: new Dictionary<string, string>
+            {
+                ["endpoint"] = "tcp://old",
+            });
+        var host = new AddonHost(
+            sink,
+            TimeProvider.System,
+            LifecycleTimeout,
+            LifecycleTimeout,
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = firstConfiguration,
+            });
+        var firstAddon = new ConfigurationRecordingAddon();
+        var secondAddon = new ConfigurationRecordingAddon();
+        var secondConfiguration = new AddonConfiguration(
+            configVersion: 2,
+            rawForwardingEnabled: true,
+            settings: new Dictionary<string, string>
+            {
+                ["endpoint"] = "tcp://new",
+            });
+
+        await host.StartAsync([firstAddon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "configured", "started");
+
+        await host.RestartAsync(
+            [secondAddon],
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = secondConfiguration,
+            },
+            CancellationToken.None);
+        await WaitUntilAsync(() => secondAddon.StartCalls == 1);
+
+        firstAddon.StopCalls.Should().Be(1);
+        secondAddon.ValidatedConfiguration.Should().NotBeNull();
+        secondAddon.ValidatedConfiguration!.ConfigVersion.Should().Be(2);
+        secondAddon.ValidatedConfiguration.RawForwardingEnabled.Should().BeTrue();
+        secondAddon.ValidatedConfiguration.Settings["endpoint"].Should().Be("tcp://new");
+        secondAddon.StartConfiguration.Should().BeSameAs(secondAddon.ValidatedConfiguration);
+    }
+
+    [Fact]
+    public async Task RestartAsync_CancelsOldAddonShutdownTokenAndStartsReplacementWithFreshToken()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        var firstAddon = new ShutdownTokenRecordingAddon("restart-token", "Restart Token");
+        var secondAddon = new ShutdownTokenRecordingAddon("restart-token", "Restart Token");
+
+        await host.StartAsync([firstAddon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "restart-token", "started");
+
+        await host.RestartAsync([secondAddon], addonConfigurations: null, CancellationToken.None);
+        await WaitUntilAsync(() => secondAddon.StartCalls == 1);
+
+        firstAddon.StartShutdownToken.IsCancellationRequested.Should().BeTrue();
+        firstAddon.StopCalls.Should().Be(1);
+        secondAddon.StartShutdownToken.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RestartAsync_WhenShutdownAlreadyRequested_DoesNotStartReplacement()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, LifecycleTimeout, LifecycleTimeout);
+        var replacement = new RecordingLifecycleAddon();
+
+        await host.StopAsync(CancellationToken.None);
+        await host.RestartAsync([replacement], addonConfigurations: null, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        replacement.StartCalls.Should().Be(0);
+        replacement.StopCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RestartAsync_WhenCallerCancellationRequestedDuringStop_RetainsExistingStopForLaterShutdown()
+    {
+        var sink = new RecordingSink();
+        var host = new AddonHost(sink, TimeProvider.System, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        var firstAddon = new ControllableStopAddon();
+        var secondAddon = new RecordingLifecycleAddon();
+        using var restartCts = new CancellationTokenSource();
+
+        await host.StartAsync([firstAddon], CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "controllable-stop", "started");
+
+        var restart = host.RestartAsync([secondAddon], addonConfigurations: null, restartCts.Token);
+        await firstAddon.WaitForStopInvocationAsync();
+        await restartCts.CancelAsync();
+        await restart.Invoking(task => task.WaitAsync(TimeSpan.FromMilliseconds(250)))
+            .Should()
+            .ThrowAsync<OperationCanceledException>();
+
+        Task? shutdown = null;
+        try
+        {
+            shutdown = host.StopAsync(CancellationToken.None);
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+            shutdown.IsCompleted.Should().BeFalse(
+                "a canceled restart should keep the old add-on tracked for later teardown");
+
+            firstAddon.CompleteStop();
+            await shutdown.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+        finally
+        {
+            firstAddon.CompleteStop();
+            if (shutdown is not null && !shutdown.IsCompleted)
+            {
+                await shutdown.WaitAsync(TimeSpan.FromSeconds(1));
+            }
+        }
+
+        firstAddon.StopCalls.Should().Be(1);
+        secondAddon.StartCalls.Should().Be(0);
+        sink.Records.ContainHealth("controllable-stop", "stopped");
+    }
+
+    [Fact]
+    public async Task RestartAsync_DoesNotUseReplacementConfigurationForStartAlreadyInProgress()
+    {
+        var sink = new RecordingSink();
+        using var metadataCanReturn = new ManualResetEventSlim(false);
+        var host = new AddonHost(
+            sink,
+            TimeProvider.System,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(1),
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = new(enabled: true),
+            });
+        var firstAddon = new BlockingConfiguredMetadataAddon(metadataCanReturn);
+        var secondAddon = new ConfigurationRecordingAddon();
+
+        await host.StartAsync([firstAddon], CancellationToken.None);
+        await firstAddon.WaitForMetadataEnteredAsync();
+
+        await host.RestartAsync(
+            [secondAddon],
+            new Dictionary<string, AddonConfiguration>
+            {
+                ["configured"] = new(enabled: false),
+            },
+            CancellationToken.None);
+        await WaitForHealthRecordAsync(sink, "configured", "disabled");
+
+        metadataCanReturn.Set();
+        await firstAddon.WaitForMetadataReturnedAsync();
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        sink.Records.CountHealth("configured", "disabled").Should().Be(
+            1,
+            "only the replacement generation should observe the replacement disabled configuration");
+        firstAddon.ValidateCalls.Should().Be(0);
+        firstAddon.StartCalls.Should().Be(0);
+        secondAddon.ValidateCalls.Should().Be(0);
+        secondAddon.StartCalls.Should().Be(0);
     }
 
     [Fact]
@@ -972,6 +1185,17 @@ public sealed class AddonHostTests
 
     private sealed class RecordingLifecycleAddon() : TestAddon("queued-start", "Queued Start");
 
+    private sealed class ShutdownTokenRecordingAddon(string id, string displayName) : TestAddon(id, displayName)
+    {
+        public CancellationToken StartShutdownToken { get; private set; }
+
+        protected override Task StartCoreAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            StartShutdownToken = context.ShutdownToken;
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class CallbackCountingAddon : ITelemetryAddon
     {
         public int MetadataCalls { get; private set; }
@@ -1035,6 +1259,49 @@ public sealed class AddonHostTests
                 return new AddonMetadata("blocking-metadata", "Blocking Metadata", new Version(1, 0, 0), "test");
             }
         }
+
+        public AddonValidationResult Validate(AddonConfiguration configuration)
+        {
+            ValidateCalls++;
+            return AddonValidationResult.Success;
+        }
+
+        public Task StartAsync(IAddonContext context, CancellationToken cancellationToken)
+        {
+            StartCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class BlockingConfiguredMetadataAddon(ManualResetEventSlim metadataCanReturn) : ITelemetryAddon
+    {
+        private readonly TaskCompletionSource metadataEntered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private readonly TaskCompletionSource metadataReturned =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int MetadataCalls { get; private set; }
+        public int ValidateCalls { get; private set; }
+        public int StartCalls { get; private set; }
+
+        public AddonMetadata Metadata
+        {
+            get
+            {
+                MetadataCalls++;
+                metadataEntered.TrySetResult();
+                metadataCanReturn.Wait();
+                metadataReturned.TrySetResult();
+                return new AddonMetadata("configured", "Configured", new Version(1, 0, 0), "test");
+            }
+        }
+
+        public Task WaitForMetadataEnteredAsync() => metadataEntered.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        public Task WaitForMetadataReturnedAsync() => metadataReturned.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         public AddonValidationResult Validate(AddonConfiguration configuration)
         {

@@ -6,11 +6,11 @@ namespace NinaOtel.Core.Addons;
 public sealed class AddonHost
 {
     private readonly object syncRoot = new();
+    private readonly SemaphoreSlim lifecycleGate = new(1, 1);
     private readonly ITelemetrySink sink;
     private readonly TimeProvider timeProvider;
     private readonly TimeSpan startTimeout;
     private readonly TimeSpan stopTimeout;
-    private readonly IReadOnlyDictionary<string, AddonConfiguration> addonConfigurations;
     private readonly Func<Func<Task>, Task> startWorkScheduler;
     private readonly Func<Func<Task>, CancellationToken, Task> startLifecycleScheduler;
     private readonly Func<CancellationToken, Task> startCallbackCommitObserver;
@@ -18,6 +18,7 @@ public sealed class AddonHost
     private readonly Action<string, string, string, TelemetryPriority>? healthCallback;
     private readonly CancellationTokenSource shutdownCts = new();
     private readonly List<AddonRuntime> knownAddons = [];
+    private IReadOnlyDictionary<string, AddonConfiguration> addonConfigurations;
     private bool shutdownRequested;
 
     public AddonHost(
@@ -139,14 +140,104 @@ public sealed class AddonHost
     }
 
     public Task StartAsync(IEnumerable<ITelemetryAddon> addons, CancellationToken cancellationToken)
+        => StartAsync(addons, addonConfigurations: null, cancellationToken);
+
+    public async Task StartAsync(
+        IEnumerable<ITelemetryAddon> addons,
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(addons);
 
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (addonConfigurations is not null)
+            {
+                this.addonConfigurations = SnapshotAddonConfigurations(addonConfigurations);
+            }
+
+            StartAddons(addons, cancellationToken);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        AddonRuntime[] addons;
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            lock (syncRoot)
+            {
+                shutdownRequested = true;
+                addons = knownAddons.ToArray();
+            }
+
+            RequestShutdownCancellationWithoutWaiting();
+            await StopRuntimesAsync(addons, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    public async Task RestartAsync(
+        IEnumerable<ITelemetryAddon> addons,
+        IReadOnlyDictionary<string, AddonConfiguration>? addonConfigurations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(addons);
+
+        var updatedConfigurations = SnapshotAddonConfigurations(addonConfigurations);
+        AddonRuntime[] previousAddons;
+
+        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            lock (syncRoot)
+            {
+                if (shutdownRequested)
+                {
+                    return;
+                }
+
+                previousAddons = knownAddons.ToArray();
+            }
+
+            await StopRuntimesAsync(previousAddons, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            lock (syncRoot)
+            {
+                if (shutdownRequested)
+                {
+                    return;
+                }
+
+                knownAddons.Clear();
+                this.addonConfigurations = updatedConfigurations;
+            }
+
+            StartAddons(addons, cancellationToken);
+        }
+        finally
+        {
+            lifecycleGate.Release();
+        }
+    }
+
+    private void StartAddons(IEnumerable<ITelemetryAddon> addons, CancellationToken cancellationToken)
+    {
         foreach (var addon in addons)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var runtime = new AddonRuntime(addon);
+            var runtime = new AddonRuntime(addon, addonConfigurations);
 
             lock (syncRoot)
             {
@@ -160,22 +251,11 @@ public sealed class AddonHost
 
             ScheduleStart(runtime);
         }
-
-        return Task.CompletedTask;
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    private async Task StopRuntimesAsync(IReadOnlyList<AddonRuntime> addons, CancellationToken cancellationToken)
     {
-        AddonRuntime[] addons;
-        lock (syncRoot)
-        {
-            shutdownRequested = true;
-            addons = knownAddons.ToArray();
-        }
-
-        RequestShutdownCancellationWithoutWaiting();
-
-        var stopTasks = new List<Task>(addons.Length);
+        var stopTasks = new List<Task>(addons.Count);
         foreach (var runtime in addons)
         {
             stopTasks.Add(StopOneAsync(runtime, cancellationToken));
@@ -285,7 +365,9 @@ public sealed class AddonHost
             runtime.State = AddonRuntimeState.Starting;
         }
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(shutdownCts.Token);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(
+            shutdownCts.Token,
+            runtime.ShutdownCts.Token);
         timeoutCts.CancelAfter(startTimeout);
         var startTask = InvokeStartAsync(runtime, timeoutCts.Token);
 
@@ -420,7 +502,7 @@ public sealed class AddonHost
 
         var metadata = metadataResult.Value!;
         SetMetadataSnapshot(runtime, metadata);
-        var configuration = ResolveAddonConfiguration(metadata.Id);
+        var configuration = ResolveAddonConfiguration(runtime, metadata.Id);
         if (!configuration.Enabled)
         {
             PublishHealth(runtime, "disabled", "Add-on disabled.", TelemetryPriority.Routine);
@@ -450,7 +532,7 @@ public sealed class AddonHost
             return StartLifecycleResult.ValidationFailed(message);
         }
 
-        var context = new AddonContext(sink, timeProvider, shutdownCts.Token, configuration, healthCallback);
+        var context = new AddonContext(sink, timeProvider, runtime.ShutdownCts.Token, configuration, healthCallback);
         var startEntered = await InvokeAddonStartAsync(runtime, context, cancellationToken).ConfigureAwait(false);
         return startEntered
             ? StartLifecycleResult.Started
@@ -591,6 +673,7 @@ public sealed class AddonHost
 
     private async Task StopOneAsync(AddonRuntime runtime, CancellationToken cancellationToken)
     {
+        RequestAddonCancellationWithoutWaiting(runtime);
         var stopTask = GetOrStartStopTask(runtime);
         if (stopTask is null)
         {
@@ -635,6 +718,22 @@ public sealed class AddonHost
         }
     }
 
+    private void RequestAddonCancellationWithoutWaiting(AddonRuntime runtime)
+    {
+        Task cancellationTask;
+
+        try
+        {
+            cancellationTask = runtime.ShutdownCts.CancelAsync();
+        }
+        catch
+        {
+            return;
+        }
+
+        _ = ObserveCancellationWithoutThrowingAsync(cancellationTask);
+    }
+
     private bool TryPublishStopResult(AddonRuntime runtime)
     {
         lock (syncRoot)
@@ -671,8 +770,8 @@ public sealed class AddonHost
         }
     }
 
-    private AddonConfiguration ResolveAddonConfiguration(string addonId)
-        => addonConfigurations.TryGetValue(addonId, out var configuration)
+    private static AddonConfiguration ResolveAddonConfiguration(AddonRuntime runtime, string addonId)
+        => runtime.AddonConfigurations.TryGetValue(addonId, out var configuration)
             ? configuration
             : AddonConfiguration.Default;
 
@@ -824,9 +923,13 @@ public sealed class AddonHost
         }
     }
 
-    private sealed class AddonRuntime(ITelemetryAddon addon)
+    private sealed class AddonRuntime(
+        ITelemetryAddon addon,
+        IReadOnlyDictionary<string, AddonConfiguration> addonConfigurations)
     {
         public ITelemetryAddon Addon { get; } = addon;
+        public IReadOnlyDictionary<string, AddonConfiguration> AddonConfigurations { get; } = addonConfigurations;
+        public CancellationTokenSource ShutdownCts { get; } = new();
         public int State = AddonRuntimeState.PendingStart;
         public AddonIdentity? Metadata;
         public bool StartCallbacksCommitted;
