@@ -34,6 +34,23 @@ public static class NinaMetricCatalog
             "exposure_duration_seconds",
         ]);
 
+    private static readonly HashSet<string> CoreEquipmentCategories =
+        new(StringComparer.Ordinal)
+        {
+            "astrometric",
+            "camera",
+            "dome",
+            "filter_wheel",
+            "flat_device",
+            "focuser",
+            "guider",
+            "mount",
+            "rotator",
+            "safety",
+            "switch",
+            "weather",
+        };
+
     public static IReadOnlyList<NinaMetricDefinition> All { get; } =
         Array.AsReadOnly(
         [
@@ -182,6 +199,34 @@ public static class NinaMetricCatalog
         return DefinitionsByName.TryGetValue(metricName, out var metric)
             ? metric.ExportKind == NinaMetricExportKind.LiveObservableGauge
             : IsSwitchReadOnlyGaugeName(metricName);
+    }
+
+    public static bool IsCoreEquipmentMetric(string metricName)
+    {
+        if (string.IsNullOrWhiteSpace(metricName))
+        {
+            return false;
+        }
+
+        if (IsSwitchReadOnlyGaugeName(metricName))
+        {
+            return true;
+        }
+
+        return DefinitionsByName.TryGetValue(metricName, out var metric) &&
+            metric.ExportKind == NinaMetricExportKind.LiveObservableGauge &&
+            CoreEquipmentCategories.Contains(metric.Category);
+    }
+
+    public static bool IsImageMetric(string metricName)
+    {
+        if (string.IsNullOrWhiteSpace(metricName))
+        {
+            return false;
+        }
+
+        return DefinitionsByName.TryGetValue(metricName, out var metric) &&
+            string.Equals(metric.Category, "image", StringComparison.Ordinal);
     }
 
     internal static bool TryGetExportKind(string metricName, out NinaMetricExportKind exportKind)

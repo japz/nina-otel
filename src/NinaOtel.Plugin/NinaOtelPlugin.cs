@@ -28,6 +28,7 @@ public sealed class NinaOtelPlugin : PluginBase
     private readonly ReloadableTelemetryExporter exporter;
     private readonly TelemetryPipeline pipeline;
     private readonly ITelemetrySink telemetrySink;
+    private readonly CoreTelemetryFilteringSink filteringTelemetrySink;
     private readonly AddonHost addonHost;
     private readonly CoreLifecycleTelemetryProducer lifecycleTelemetry;
     private readonly CameraTelemetryCollector cameraTelemetry;
@@ -81,7 +82,10 @@ public sealed class NinaOtelPlugin : PluginBase
         var options = NinaOtelOptionsViewModel.Options;
         exporter = new ReloadableTelemetryExporter(CreateCollectorExporter(options));
         pipeline = new TelemetryPipeline(exporter, options.Buffer.MemoryQueueCapacity);
-        telemetrySink = new ProfileHostTelemetrySink(pipeline, profileService);
+        filteringTelemetrySink = new CoreTelemetryFilteringSink(
+            new ProfileHostTelemetrySink(pipeline, profileService),
+            options.CoreTelemetry);
+        telemetrySink = filteringTelemetrySink;
         cameraTelemetry = new CameraTelemetryCollector(cameraMediator, telemetrySink, timeProvider);
         focuserTelemetry = new FocuserTelemetryCollector(focuserMediator, telemetrySink, timeProvider);
         rotatorTelemetry = new RotatorTelemetryCollector(rotatorMediator, telemetrySink, timeProvider);
@@ -193,6 +197,7 @@ public sealed class NinaOtelPlugin : PluginBase
 
         var options = NinaOtelOptionsViewModel.Options;
         exporter.Update(CreateCollectorExporter(options));
+        filteringTelemetrySink.UpdateOptions(options.CoreTelemetry);
         ninaLogTelemetry.UpdateOptions(options.CoreTelemetry);
         lifecycleTelemetry.ProfileChanged(options);
         Logger.Info("NinaOtel exporter settings applied.");

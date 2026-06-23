@@ -19,6 +19,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private const string MaxSpoolSizeGbKey = nameof(MaxSpoolSizeGb);
     private const string MaxSpoolAgeDaysKey = nameof(MaxSpoolAgeDays);
     private const string NinaLogPathKey = nameof(NinaLogPath);
+    private const string EquipmentEnabledKey = nameof(EquipmentEnabled);
+    private const string ImageStatsEnabledKey = nameof(ImageStatsEnabled);
+    private const string WorkflowTracesEnabledKey = nameof(WorkflowTracesEnabled);
     private const string FilteredLogsEnabledKey = nameof(FilteredLogsEnabled);
     private const string RawCoreLogForwardingEnabledKey = nameof(RawCoreLogForwardingEnabled);
     private const string StaticHeadersKey = nameof(StaticHeaders);
@@ -69,6 +72,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     private string maxSpoolAgeDays = string.Empty;
     private TimeSpan appliedMaxSpoolAge;
     private string ninaLogPath = string.Empty;
+    private bool equipmentEnabled;
+    private bool imageStatsEnabled;
+    private bool workflowTracesEnabled;
     private bool filteredLogsEnabled;
     private bool rawCoreLogForwardingEnabled;
     private string staticHeaders = string.Empty;
@@ -287,6 +293,45 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         }
     }
 
+    public bool EquipmentEnabled
+    {
+        get => equipmentEnabled;
+        set
+        {
+            if (SetField(ref equipmentEnabled, value))
+            {
+                settingsStore.SetBoolean(EquipmentEnabledKey, value);
+                Status = "Settings saved";
+            }
+        }
+    }
+
+    public bool ImageStatsEnabled
+    {
+        get => imageStatsEnabled;
+        set
+        {
+            if (SetField(ref imageStatsEnabled, value))
+            {
+                settingsStore.SetBoolean(ImageStatsEnabledKey, value);
+                Status = "Settings saved";
+            }
+        }
+    }
+
+    public bool WorkflowTracesEnabled
+    {
+        get => workflowTracesEnabled;
+        set
+        {
+            if (SetField(ref workflowTracesEnabled, value))
+            {
+                settingsStore.SetBoolean(WorkflowTracesEnabledKey, value);
+                Status = "Settings saved";
+            }
+        }
+    }
+
     public bool FilteredLogsEnabled
     {
         get => filteredLogsEnabled;
@@ -492,6 +537,15 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
             ? age
             : defaults.Buffer.MaxSpoolAge;
         ninaLogPath = settingsStore.GetString(NinaLogPathKey, defaults.CoreTelemetry.NinaLogPath);
+        equipmentEnabled = settingsStore.GetBoolean(
+            EquipmentEnabledKey,
+            defaults.CoreTelemetry.EquipmentEnabled);
+        imageStatsEnabled = settingsStore.GetBoolean(
+            ImageStatsEnabledKey,
+            defaults.CoreTelemetry.ImageStatsEnabled);
+        workflowTracesEnabled = settingsStore.GetBoolean(
+            WorkflowTracesEnabledKey,
+            defaults.CoreTelemetry.WorkflowTracesEnabled);
         filteredLogsEnabled = settingsStore.GetBoolean(
             FilteredLogsEnabledKey,
             defaults.CoreTelemetry.FilteredLogsEnabled);
@@ -526,6 +580,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(MaxSpoolSizeGb));
         RaisePropertyChanged(nameof(MaxSpoolAgeDays));
         RaisePropertyChanged(nameof(NinaLogPath));
+        RaisePropertyChanged(nameof(EquipmentEnabled));
+        RaisePropertyChanged(nameof(ImageStatsEnabled));
+        RaisePropertyChanged(nameof(WorkflowTracesEnabled));
         RaisePropertyChanged(nameof(FilteredLogsEnabled));
         RaisePropertyChanged(nameof(RawCoreLogForwardingEnabled));
         RaisePropertyChanged(nameof(StaticHeaders));
@@ -610,6 +667,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
             CoreTelemetry = defaults.CoreTelemetry with
             {
                 NinaLogPath = ninaLogPath,
+                EquipmentEnabled = equipmentEnabled,
+                ImageStatsEnabled = imageStatsEnabled,
+                WorkflowTracesEnabled = workflowTracesEnabled,
                 FilteredLogsEnabled = filteredLogsEnabled,
                 RawForwardingEnabled = rawCoreLogForwardingEnabled,
             },

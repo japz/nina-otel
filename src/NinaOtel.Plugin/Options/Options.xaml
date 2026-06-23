@@ -39,42 +39,87 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="6" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="6" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="6" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="6" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <TextBlock
                     Grid.Row="0"
                     Grid.Column="0"
-                    Text="Filtered NINA logs:"
+                    Text="Equipment metrics:"
                     FontWeight="SemiBold"
                     VerticalAlignment="Center" />
                 <CheckBox
                     Grid.Row="0"
+                    Grid.Column="2"
+                    IsChecked="{Binding NinaOtelOptionsViewModel.EquipmentEnabled, Mode=TwoWay}"
+                    HorizontalAlignment="Left"
+                    ToolTip="Emit NINA core live equipment metric telemetry." />
+
+                <TextBlock
+                    Grid.Row="2"
+                    Grid.Column="0"
+                    Text="Image stats:"
+                    FontWeight="SemiBold"
+                    VerticalAlignment="Center" />
+                <CheckBox
+                    Grid.Row="2"
+                    Grid.Column="2"
+                    IsChecked="{Binding NinaOtelOptionsViewModel.ImageStatsEnabled, Mode=TwoWay}"
+                    HorizontalAlignment="Left"
+                    ToolTip="Emit NINA core image statistic metric telemetry." />
+
+                <TextBlock
+                    Grid.Row="4"
+                    Grid.Column="0"
+                    Text="Workflow traces:"
+                    FontWeight="SemiBold"
+                    VerticalAlignment="Center" />
+                <CheckBox
+                    Grid.Row="4"
+                    Grid.Column="2"
+                    IsChecked="{Binding NinaOtelOptionsViewModel.WorkflowTracesEnabled, Mode=TwoWay}"
+                    HorizontalAlignment="Left"
+                    ToolTip="Emit NINA core workflow span telemetry." />
+
+                <TextBlock
+                    Grid.Row="6"
+                    Grid.Column="0"
+                    Text="Filtered NINA logs:"
+                    FontWeight="SemiBold"
+                    VerticalAlignment="Center" />
+                <CheckBox
+                    Grid.Row="6"
                     Grid.Column="2"
                     IsChecked="{Binding NinaOtelOptionsViewModel.FilteredLogsEnabled, Mode=TwoWay}"
                     HorizontalAlignment="Left"
                     ToolTip="Emit filtered NINA warning, error, and lifecycle log telemetry." />
 
                 <TextBlock
-                    Grid.Row="2"
+                    Grid.Row="8"
                     Grid.Column="0"
                     Text="Raw NINA log forwarding:"
                     FontWeight="SemiBold"
                     VerticalAlignment="Center" />
                 <CheckBox
-                    Grid.Row="2"
+                    Grid.Row="8"
                     Grid.Column="2"
                     IsChecked="{Binding NinaOtelOptionsViewModel.RawCoreLogForwardingEnabled, Mode=TwoWay}"
                     HorizontalAlignment="Left"
                     ToolTip="Forward parsed raw NINA log records." />
 
                 <TextBlock
-                    Grid.Row="4"
+                    Grid.Row="10"
                     Grid.Column="0"
                     Text="NINA log path:"
                     FontWeight="SemiBold"
                     VerticalAlignment="Center" />
                 <TextBox
-                    Grid.Row="4"
+                    Grid.Row="10"
                     Grid.Column="2"
                     MinWidth="320"
                     Text="{Binding NinaOtelOptionsViewModel.NinaLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />

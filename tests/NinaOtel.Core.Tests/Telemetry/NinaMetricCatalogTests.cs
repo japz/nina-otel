@@ -173,6 +173,30 @@ public sealed class NinaMetricCatalogTests
     }
 
     [Fact]
+    public void IsCoreEquipmentMetric_ClassifiesOnlyCoreLiveEquipmentMetrics()
+    {
+        NinaMetricCatalog.IsCoreEquipmentMetric("camera_sensor_temperature").Should().BeTrue();
+        NinaMetricCatalog.IsCoreEquipmentMetric("astro_moon_altitude").Should().BeTrue();
+        NinaMetricCatalog.IsCoreEquipmentMetric("wx_temperature").Should().BeTrue();
+        NinaMetricCatalog.IsCoreEquipmentMetric("switch_ro_sw3").Should().BeTrue();
+        NinaMetricCatalog.IsCoreEquipmentMetric("image_mean").Should().BeFalse();
+        NinaMetricCatalog.IsCoreEquipmentMetric("phd2_guide_sample_count").Should().BeFalse();
+        NinaMetricCatalog.IsCoreEquipmentMetric("target_scheduler_plan_started_count").Should().BeFalse();
+        NinaMetricCatalog.IsCoreEquipmentMetric("night_summary_session_started_count").Should().BeFalse();
+        NinaMetricCatalog.IsCoreEquipmentMetric("onstepx_tracking_enabled").Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsImageMetric_ClassifiesOnlyImageStatsMetrics()
+    {
+        NinaMetricCatalog.IsImageMetric("image_mean").Should().BeTrue();
+        NinaMetricCatalog.IsImageMetric("image_star_count").Should().BeTrue();
+        NinaMetricCatalog.IsImageMetric("camera_sensor_temperature").Should().BeFalse();
+        NinaMetricCatalog.IsImageMetric("phd2_guide_sample_count").Should().BeFalse();
+        NinaMetricCatalog.IsImageMetric("switch_ro_sw3").Should().BeFalse();
+    }
+
+    [Fact]
     public void All_IncludesDeferredPhd2GuideSummaryMetrics()
     {
         string[] metricNames =

@@ -28,9 +28,15 @@ public sealed class NinaOtelOptionsViewModelTests
         viewModel.Options.Buffer.MaxSpoolBytes.Should().Be(1L * 1024 * 1024 * 1024);
         viewModel.Options.Buffer.MaxSpoolAge.Should().Be(TimeSpan.FromDays(7));
         viewModel.NinaLogPath.Should().BeEmpty();
+        viewModel.EquipmentEnabled.Should().BeTrue();
+        viewModel.ImageStatsEnabled.Should().BeTrue();
+        viewModel.WorkflowTracesEnabled.Should().BeTrue();
         viewModel.FilteredLogsEnabled.Should().BeTrue();
         viewModel.RawCoreLogForwardingEnabled.Should().BeFalse();
         viewModel.Options.CoreTelemetry.NinaLogPath.Should().BeEmpty();
+        viewModel.Options.CoreTelemetry.EquipmentEnabled.Should().BeTrue();
+        viewModel.Options.CoreTelemetry.ImageStatsEnabled.Should().BeTrue();
+        viewModel.Options.CoreTelemetry.WorkflowTracesEnabled.Should().BeTrue();
         viewModel.Options.CoreTelemetry.FilteredLogsEnabled.Should().BeTrue();
         viewModel.Options.CoreTelemetry.RawForwardingEnabled.Should().BeFalse();
         viewModel.StaticHeaders.Should().BeEmpty();
@@ -356,18 +362,27 @@ public sealed class NinaOtelOptionsViewModelTests
         var viewModel = new NinaOtelOptionsViewModel(settings);
 
         viewModel.NinaLogPath = " C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log ";
+        viewModel.EquipmentEnabled = false;
+        viewModel.ImageStatsEnabled = false;
+        viewModel.WorkflowTracesEnabled = false;
         viewModel.FilteredLogsEnabled = false;
         viewModel.RawCoreLogForwardingEnabled = true;
 
         settings.GetString("NinaLogPath", string.Empty)
             .Should()
             .Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
+        settings.GetBoolean("EquipmentEnabled", true).Should().BeFalse();
+        settings.GetBoolean("ImageStatsEnabled", true).Should().BeFalse();
+        settings.GetBoolean("WorkflowTracesEnabled", true).Should().BeFalse();
         settings.GetBoolean("FilteredLogsEnabled", true).Should().BeFalse();
         settings.GetBoolean("RawCoreLogForwardingEnabled", false).Should().BeTrue();
         viewModel.NinaLogPath.Should().Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
         viewModel.Options.CoreTelemetry.NinaLogPath
             .Should()
             .Be("C:\\Users\\astro\\AppData\\Local\\NINA\\Logs\\nina.log");
+        viewModel.Options.CoreTelemetry.EquipmentEnabled.Should().BeFalse();
+        viewModel.Options.CoreTelemetry.ImageStatsEnabled.Should().BeFalse();
+        viewModel.Options.CoreTelemetry.WorkflowTracesEnabled.Should().BeFalse();
         viewModel.Options.CoreTelemetry.FilteredLogsEnabled.Should().BeFalse();
         viewModel.Options.CoreTelemetry.RawForwardingEnabled.Should().BeTrue();
         viewModel.Status.Should().Be("Settings saved");
@@ -378,15 +393,24 @@ public sealed class NinaOtelOptionsViewModelTests
     {
         var settings = new InMemoryPluginSettingsStore();
         settings.SetString("NinaLogPath", "D:\\NINA\\Logs\\nina.log");
+        settings.SetBoolean("EquipmentEnabled", false);
+        settings.SetBoolean("ImageStatsEnabled", false);
+        settings.SetBoolean("WorkflowTracesEnabled", false);
         settings.SetBoolean("FilteredLogsEnabled", false);
         settings.SetBoolean("RawCoreLogForwardingEnabled", true);
 
         var viewModel = new NinaOtelOptionsViewModel(settings);
 
         viewModel.NinaLogPath.Should().Be("D:\\NINA\\Logs\\nina.log");
+        viewModel.EquipmentEnabled.Should().BeFalse();
+        viewModel.ImageStatsEnabled.Should().BeFalse();
+        viewModel.WorkflowTracesEnabled.Should().BeFalse();
         viewModel.FilteredLogsEnabled.Should().BeFalse();
         viewModel.RawCoreLogForwardingEnabled.Should().BeTrue();
         viewModel.Options.CoreTelemetry.NinaLogPath.Should().Be("D:\\NINA\\Logs\\nina.log");
+        viewModel.Options.CoreTelemetry.EquipmentEnabled.Should().BeFalse();
+        viewModel.Options.CoreTelemetry.ImageStatsEnabled.Should().BeFalse();
+        viewModel.Options.CoreTelemetry.WorkflowTracesEnabled.Should().BeFalse();
         viewModel.Options.CoreTelemetry.FilteredLogsEnabled.Should().BeFalse();
         viewModel.Options.CoreTelemetry.RawForwardingEnabled.Should().BeTrue();
     }

@@ -78,10 +78,25 @@ public sealed class OptionsXamlTests
             .ToArray();
 
         labels.Should().Contain("Core telemetry");
+        labels.Should().Contain("Equipment metrics:");
+        labels.Should().Contain("Image stats:");
+        labels.Should().Contain("Workflow traces:");
         labels.Should().Contain("Filtered NINA logs:");
         labels.Should().Contain("Raw NINA log forwarding:");
         labels.Should().Contain("NINA log path:");
 
+        document
+            .Descendants(PresentationNamespace + "CheckBox")
+            .Single(element => element.Attribute("IsChecked")?.Value.Contains("EquipmentEnabled", StringComparison.Ordinal) == true)
+            .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
+        document
+            .Descendants(PresentationNamespace + "CheckBox")
+            .Single(element => element.Attribute("IsChecked")?.Value.Contains("ImageStatsEnabled", StringComparison.Ordinal) == true)
+            .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
+        document
+            .Descendants(PresentationNamespace + "CheckBox")
+            .Single(element => element.Attribute("IsChecked")?.Value.Contains("WorkflowTracesEnabled", StringComparison.Ordinal) == true)
+            .Attribute("IsChecked")?.Value.Should().Contain("Mode=TwoWay");
         document
             .Descendants(PresentationNamespace + "CheckBox")
             .Single(element => element.Attribute("IsChecked")?.Value.Contains("FilteredLogsEnabled", StringComparison.Ordinal) == true)

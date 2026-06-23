@@ -125,7 +125,9 @@ public sealed class NinaOtelPluginWiringTests
         var source = File.ReadAllText(FindPluginSourcePath());
 
         source.Should().Contain("private readonly ITelemetrySink telemetrySink;");
-        source.Should().Contain("telemetrySink = new ProfileHostTelemetrySink(pipeline, profileService);");
+        source.Should().Contain("private readonly CoreTelemetryFilteringSink filteringTelemetrySink;");
+        source.Should().Contain("filteringTelemetrySink = new CoreTelemetryFilteringSink(");
+        source.Should().Contain("new ProfileHostTelemetrySink(pipeline, profileService)");
         source.Should().Contain("new CameraTelemetryCollector(cameraMediator, telemetrySink, timeProvider)");
         source.Should().Contain("new FocuserTelemetryCollector(focuserMediator, telemetrySink, timeProvider)");
         source.Should().Contain("new ImageTelemetryCollector(imageSaveMediator, telemetrySink, timeProvider)");
@@ -157,6 +159,23 @@ public sealed class NinaOtelPluginWiringTests
         source.Should().Contain("ninaLogTelemetry.Start();");
         source.Should().Contain("ninaLogTelemetry.UpdateOptions(options.CoreTelemetry);");
         source.Should().Contain("ninaLogTelemetry.Dispose();");
+    }
+
+    [Fact]
+    public void Plugin_UpdatesCoreTelemetryFilterWhenOptionsChange()
+    {
+        var source = File.ReadAllText(FindPluginSourcePath());
+
+        var handlerStart = source.IndexOf(
+            "private void NinaOtelOptionsViewModel_PropertyChanged",
+            StringComparison.Ordinal);
+
+        handlerStart.Should().BeGreaterThanOrEqualTo(0);
+        var handlerSource = source[handlerStart..];
+        handlerSource.Should().Contain("filteringTelemetrySink.UpdateOptions(options.CoreTelemetry);");
+        handlerSource.Should().Contain("exporter.Update(CreateCollectorExporter(options));");
+        handlerSource.Should().Contain("ninaLogTelemetry.UpdateOptions(options.CoreTelemetry);");
+        handlerSource.Should().Contain("lifecycleTelemetry.ProfileChanged(options);");
     }
 
     private static string FindPluginSourcePath()
