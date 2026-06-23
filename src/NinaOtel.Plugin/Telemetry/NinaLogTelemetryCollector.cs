@@ -86,6 +86,8 @@ public sealed class NinaLogTelemetryCollector : IDisposable
 
     public void Start()
     {
+        var publishWaitingStatus = false;
+
         lock (syncRoot)
         {
             if (started || disposed)
@@ -99,8 +101,17 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             {
                 ReplaceTailerLocked();
             }
+            else if (IsCollectionEnabled(options))
+            {
+                publishWaitingStatus = true;
+            }
 
             pumpTask = Task.Run(() => PumpAsync(cancellation.Token));
+        }
+
+        if (publishWaitingStatus)
+        {
+            PublishWaitingStatus();
         }
     }
 
@@ -109,6 +120,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         ArgumentNullException.ThrowIfNull(updatedOptions);
         CoreTelemetryOptions? previousOptions = null;
         IReadOnlyList<NinaLogEvent> pendingEvents = [];
+        var publishWaitingStatus = false;
 
         lock (syncRoot)
         {
@@ -125,10 +137,16 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             previousOptions = options;
             options = updatedOptions;
 
-            if (!IsEnabled(options))
+            if (!IsCollectionEnabled(options))
             {
                 pendingEvents = tailer?.FlushPending() ?? [];
                 DisposeTailerLocked();
+            }
+            else if (!HasConfiguredPath(options))
+            {
+                pendingEvents = tailer?.FlushPending() ?? [];
+                DisposeTailerLocked();
+                publishWaitingStatus = true;
             }
             else if (tailer is null || pathChanged || !wasEnabled)
             {
@@ -140,6 +158,11 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         if (previousOptions is not null)
         {
             PublishEvents(pendingEvents, previousOptions);
+        }
+
+        if (publishWaitingStatus)
+        {
+            PublishWaitingStatus();
         }
     }
 
@@ -357,6 +380,11 @@ public sealed class NinaLogTelemetryCollector : IDisposable
     private void ReplaceTailerLocked()
     {
         DisposeTailerLocked();
+        if (string.IsNullOrWhiteSpace(options.NinaLogPath))
+        {
+            return;
+        }
+
         tailer = CreateTailer(options.NinaLogPath);
         tailer.Prime();
     }
@@ -379,8 +407,26 @@ public sealed class NinaLogTelemetryCollector : IDisposable
     }
 
     private static bool IsEnabled(CoreTelemetryOptions options) =>
-        (options.FilteredLogsEnabled || options.RawForwardingEnabled) &&
+        IsCollectionEnabled(options) && HasConfiguredPath(options);
+
+    private static bool IsCollectionEnabled(CoreTelemetryOptions options) =>
+        options.FilteredLogsEnabled || options.RawForwardingEnabled;
+
+    private static bool HasConfiguredPath(CoreTelemetryOptions options) =>
         !string.IsNullOrWhiteSpace(options.NinaLogPath);
+
+    private void PublishWaitingStatus() =>
+        TryPublishSafely(TelemetryRecord.Health(
+            timeProvider.GetUtcNow(),
+            SourceName,
+            "nina.log.status",
+            TelemetryPriority.Normal,
+            new Dictionary<string, object?>
+            {
+                ["nina.log.path"] = string.Empty,
+                ["status"] = "waiting",
+                ["reason"] = "not_configured",
+            }));
 
     private void TryPublishSafely(TelemetryRecord record)
     {

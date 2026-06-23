@@ -132,6 +132,25 @@ public sealed class NinaLogTelemetryCollectorTests
     }
 
     [Fact]
+    public void Start_WhenCollectionEnabledAndPathIsEmpty_PublishesWaitingHealthRecordAndDoesNotThrow()
+    {
+        var sink = new RecordingTelemetrySink();
+        using var collector = CreateCollector(string.Empty, sink, filteredLogsEnabled: true);
+
+        var act = () => collector.Start();
+
+        act.Should().NotThrow();
+        sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Source == "nina.log" &&
+            record.Name == "nina.log.status" &&
+            record.Priority == TelemetryPriority.Normal &&
+            Equals(record.Attributes["nina.log.path"], string.Empty) &&
+            Equals(record.Attributes["status"], "waiting") &&
+            Equals(record.Attributes["reason"], "not_configured"));
+    }
+
+    [Fact]
     public async Task Dispose_StopsPublishingLaterLogRecords()
     {
         using var logFile = TempNinaLog.Create([]);
@@ -163,6 +182,9 @@ public sealed class NinaLogTelemetryCollectorTests
             sink,
             startPosition: NinaLogTailerStartPosition.End);
         collector.Start();
+        sink.Records.Should().ContainSingle(static record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Name == "nina.log.status");
 
         collector.UpdateOptions(new CoreTelemetryOptions
         {
@@ -171,8 +193,8 @@ public sealed class NinaLogTelemetryCollectorTests
         });
         logFile.Append("2026-06-18T22:00:00.0000|WARNING|NINA.Core.App|Warn|10|Configured later");
 
-        var records = await WaitForRecordsAsync(sink, expectedCount: 1);
-        records.Should().ContainSingle()
+        var records = await WaitForRecordsAsync(sink, expectedCount: 2);
+        records.Should().ContainSingle(static record => record.Signal == TelemetrySignal.Log)
             .Which.Body.Should().Be("Configured later");
     }
 
@@ -190,6 +212,9 @@ public sealed class NinaLogTelemetryCollectorTests
             startPosition: NinaLogTailerStartPosition.End,
             pollInterval: TimeSpan.FromSeconds(1));
         collector.Start();
+        sink.Records.Should().ContainSingle(static record =>
+            record.Signal == TelemetrySignal.Health &&
+            record.Name == "nina.log.status");
 
         collector.UpdateOptions(new CoreTelemetryOptions
         {
@@ -201,8 +226,8 @@ public sealed class NinaLogTelemetryCollectorTests
             missingLog.Path,
             "2026-06-18T22:00:00.0000|WARNING|NINA.Core.App|Warn|10|Created after prime" + Environment.NewLine);
 
-        var records = await WaitForRecordsAsync(sink, expectedCount: 1);
-        records.Should().ContainSingle()
+        var records = await WaitForRecordsAsync(sink, expectedCount: 2);
+        records.Should().ContainSingle(static record => record.Signal == TelemetrySignal.Log)
             .Which.Body.Should().Be("Created after prime");
     }
 
