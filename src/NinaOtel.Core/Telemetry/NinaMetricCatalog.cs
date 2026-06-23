@@ -132,19 +132,19 @@ public static class NinaMetricCatalog
 
             Metric("fwheel_filter", "filter_wheel", "Current filter wheel position.", "integer", "filter_wheel_name", "filter_name"),
 
-            Metric("wx_cloud_cover", "weather", "Cloud cover in percent.", "double", "wx_device_name"),
-            Metric("wx_dewpoint", "weather", "Dewpoint in degrees Celsius.", "double", "wx_device_name"),
-            Metric("wx_humidity", "weather", "Relative humidity in percent.", "double", "wx_device_name"),
-            Metric("wx_pressure", "weather", "Air pressure in hectopascals.", "double", "wx_device_name"),
-            Metric("wx_rain_rate", "weather", "Rain rate in millimeters per hour.", "double", "wx_device_name"),
-            Metric("wx_sky_brightness", "weather", "Sky brightness in lux.", "double", "wx_device_name"),
-            Metric("wx_sky_quality", "weather", "Sky quality in magnitudes per square arcsecond.", "double", "wx_device_name"),
-            Metric("wx_sky_temperature", "weather", "Sky temperature in degrees Celsius.", "double", "wx_device_name"),
-            Metric("wx_star_fwhm", "weather", "Measured star FWHM.", "double", "wx_device_name"),
-            Metric("wx_temperature", "weather", "Ambient air temperature in degrees Celsius.", "double", "wx_device_name"),
-            Metric("wx_wind_direction", "weather", "Wind direction in azimuthal degrees.", "double", "wx_device_name"),
-            Metric("wx_wind_gust", "weather", "Wind gust speed in meters per second.", "double", "wx_device_name"),
-            Metric("wx_wind_speed", "weather", "Wind speed in meters per second.", "double", "wx_device_name"),
+            WeatherMetric("wx_cloud_cover", "Cloud cover in percent.", "double"),
+            WeatherMetric("wx_dewpoint", "Dewpoint in degrees Celsius.", "double"),
+            WeatherMetric("wx_humidity", "Relative humidity in percent.", "double"),
+            WeatherMetric("wx_pressure", "Air pressure in hectopascals.", "double"),
+            WeatherMetric("wx_rain_rate", "Rain rate in millimeters per hour.", "double"),
+            WeatherMetric("wx_sky_brightness", "Sky brightness in lux.", "double"),
+            WeatherMetric("wx_sky_quality", "Sky quality in magnitudes per square arcsecond.", "double"),
+            WeatherMetric("wx_sky_temperature", "Sky temperature in degrees Celsius.", "double"),
+            WeatherMetric("wx_star_fwhm", "Measured star FWHM.", "double"),
+            WeatherMetric("wx_temperature", "Ambient air temperature in degrees Celsius.", "double"),
+            WeatherMetric("wx_wind_direction", "Wind direction in azimuthal degrees.", "double"),
+            WeatherMetric("wx_wind_gust", "Wind gust speed in meters per second.", "double"),
+            WeatherMetric("wx_wind_speed", "Wind speed in meters per second.", "double"),
 
             ImageMetric("image_eccentricity", "Average star eccentricity.", "double"),
             ImageMetric("image_fwhm", "Average star full width at half maximum.", "double"),
@@ -223,7 +223,7 @@ public static class NinaMetricCatalog
         return exportKind == NinaMetricExportKind.LiveObservableGauge &&
             IsSwitchReadOnlyGaugeName(metricName)
             ? new HashSet<string>(
-                GlobalAttributes.Concat(["switch_name", "switch_id", "switch_channel_name"]),
+                GlobalAttributes.Concat(["switch_name", "switch_id", "name", "switch_channel_name"]),
                 StringComparer.Ordinal)
             : null;
     }
@@ -265,6 +265,12 @@ public static class NinaMetricCatalog
             valueKind,
             ImageAttributes,
             NinaMetricExportKind.DeferredPointInTime);
+
+    private static NinaMetricDefinition WeatherMetric(
+        string name,
+        string description,
+        string valueKind) =>
+        Metric(name, "weather", description, valueKind, "wx_driver_name", "wx_device_name");
 
     private static NinaMetricDefinition Phd2Metric(
         string name,

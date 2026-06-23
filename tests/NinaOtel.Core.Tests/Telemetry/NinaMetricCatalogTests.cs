@@ -350,11 +350,23 @@ public sealed class NinaMetricCatalogTests
         var attributeNames = NinaMetricCatalog.GetLiveObservableGaugeAttributeNames("switch_ro_sw23");
 
         attributeNames.Should().NotBeNull();
-        attributeNames.Should().Contain(
-            "profile_name",
-            "host_name",
-            "switch_name",
-            "switch_id",
-            "switch_channel_name");
+        attributeNames.Should().Contain("profile_name");
+        attributeNames.Should().Contain("host_name");
+        attributeNames.Should().Contain("switch_name");
+        attributeNames.Should().Contain("switch_id");
+        attributeNames.Should().Contain("name");
+        attributeNames.Should().Contain("switch_channel_name");
+    }
+
+    [Fact]
+    public void GetLiveObservableGaugeAttributeNames_ForWeatherMetrics_IncludesInfluxExporterDriverName()
+    {
+        var attributeNames = NinaMetricCatalog.GetLiveObservableGaugeAttributeNames("wx_temperature");
+
+        attributeNames.Should().NotBeNull();
+        attributeNames.Should().Contain("profile_name");
+        attributeNames.Should().Contain("host_name");
+        attributeNames.Should().Contain("wx_driver_name");
+        attributeNames.Should().Contain("wx_device_name");
     }
 }
