@@ -73,12 +73,27 @@ public sealed class ImageTelemetryCollector : IDisposable
     {
         var timestamp = CreateTimestamp(args);
         var attributes = CreateAttributes(args);
+
+        PublishExposureSpan(args, attributes);
+        PublishImageSaveSpan(args, attributes);
+
+        if (IsLightFrame(args))
+        {
+            PublishImageMetrics(timestamp, args, attributes);
+        }
+
+        PublishImageLog(timestamp, args, attributes);
+    }
+
+    private void PublishImageMetrics(
+        DateTimeOffset timestamp,
+        ImageSavedEventArgs args,
+        IReadOnlyDictionary<string, object?> attributes)
+    {
         var statistics = args.Statistics;
         var starAnalysis = args.StarDetectionAnalysis;
         var recordedRms = args.MetaData?.Image?.RecordedRMS;
 
-        PublishExposureSpan(args, attributes);
-        PublishImageSaveSpan(args, attributes);
         PublishMetric(timestamp, "image_mean", NormalizeDouble(statistics?.Mean), attributes);
         PublishMetric(timestamp, "image_median", NormalizeDouble(statistics?.Median), attributes);
         PublishMetric(timestamp, "image_std_deviation", NormalizeDouble(statistics?.StDev), attributes);
@@ -103,8 +118,6 @@ public sealed class ImageTelemetryCollector : IDisposable
         PublishMetric(timestamp, "image_rms_peak_ra_arcsec", peakRms.Ra, attributes);
         PublishMetric(timestamp, "image_rms_peak_dec_arcsec", peakRms.Dec, attributes);
         PublishMetric(timestamp, "image_rms_peak_arcsec", peakRms.Total, attributes);
-
-        PublishImageLog(timestamp, args, attributes);
     }
 
     private DateTimeOffset CreateTimestamp(ImageSavedEventArgs args)
@@ -337,6 +350,12 @@ public sealed class ImageTelemetryCollector : IDisposable
             attributes[name] = value;
         }
     }
+
+    private static bool IsLightFrame(ImageSavedEventArgs args) =>
+        string.Equals(
+            args.MetaData?.Image?.ImageType?.Trim(),
+            "LIGHT",
+            StringComparison.OrdinalIgnoreCase);
 
     private void PublishOptionalHocusFocusMetric(
         DateTimeOffset timestamp,

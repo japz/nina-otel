@@ -128,6 +128,58 @@ public sealed class ImageTelemetryCollectorTests
     }
 
     [Fact]
+    public void ImageSaved_WhenImageTypeIsNotLight_PublishesWorkflowTelemetryButSkipsImageMetrics()
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(
+            mediator,
+            sink,
+            new FixedTimeProvider());
+        collector.Start();
+        var exposureStart = new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc);
+
+        proxy.RaiseImageSaved(CompleteImageSavedEvent(exposureStart, imageType: "DARK"));
+
+        sink.Records.Should().HaveCount(4);
+        sink.Records.Should().NotContain(static record => record.Signal == TelemetrySignal.Metric);
+        sink.Records.Should().ContainSingle(static record =>
+            record.Signal == TelemetrySignal.Span &&
+            record.Name == "nina.image_save" &&
+            Equals(record.Attributes["image_type"], "DARK"));
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Span && record.Name == "nina.exposure")
+            .Should().HaveCount(2)
+            .And.OnlyContain(static record => Equals(record.Attributes["image_type"], "DARK"));
+        sink.Records.Should().ContainSingle(static record =>
+            record.Signal == TelemetrySignal.Log &&
+            record.Name == "image" &&
+            Equals(record.Attributes["image_type"], "DARK") &&
+            record.Body == "Image; Type: DARK, Target: M42, Filter: L, Exp: 120.50s, Mean: 101.20");
+    }
+
+    [Theory]
+    [InlineData("LIGHT")]
+    [InlineData("Light")]
+    [InlineData(" light ")]
+    public void ImageSaved_WhenImageTypeIsLightIgnoringCaseAndWhitespace_PublishesImageMetrics(string imageType)
+    {
+        var proxy = CreateMediator(out var mediator);
+        var sink = new RecordingTelemetrySink();
+        using var collector = new ImageTelemetryCollector(
+            mediator,
+            sink,
+            new FixedTimeProvider());
+        collector.Start();
+        var exposureStart = new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc);
+
+        proxy.RaiseImageSaved(CompleteImageSavedEvent(exposureStart, imageType: imageType));
+
+        sink.Records.Where(static record => record.Signal == TelemetrySignal.Metric)
+            .Should().HaveCount(19)
+            .And.OnlyContain(record => Equals(record.Attributes["image_type"], imageType));
+    }
+
+    [Fact]
     public void ImageSaved_WhenSnapshotIsComplete_PublishesReferenceImageLog()
     {
         var proxy = CreateMediator(out var mediator);
@@ -435,6 +487,7 @@ public sealed class ImageTelemetryCollectorTests
             {
                 Image = new ImageParameter
                 {
+                    ImageType = "LIGHT",
                     ExposureStart = new DateTime(2026, 6, 18, 20, 15, 30, DateTimeKind.Utc),
                     RecordedRMS = new RMS
                     {
@@ -539,7 +592,7 @@ public sealed class ImageTelemetryCollectorTests
         proxy.ImageSavedSubscriberCount.Should().Be(0);
     }
 
-    private static ImageSavedEventArgs CompleteImageSavedEvent(DateTime exposureStart) =>
+    private static ImageSavedEventArgs CompleteImageSavedEvent(DateTime exposureStart, string imageType = "LIGHT") =>
         CompleteImageSavedEvent(
             exposureStart,
             new HocusFocusStarDetectionAnalysis
@@ -549,18 +602,20 @@ public sealed class ImageTelemetryCollectorTests
                 DetectedStars = 123,
                 FWHM = 3.3,
                 Eccentricity = 0.42,
-            });
+            },
+            imageType);
 
     private static ImageSavedEventArgs CompleteImageSavedEvent(
         DateTime exposureStart,
-        IStarDetectionAnalysis starDetectionAnalysis) =>
+        IStarDetectionAnalysis starDetectionAnalysis,
+        string imageType = "LIGHT") =>
         new()
         {
             MetaData = new ImageMetaData
             {
                 Image = new ImageParameter
                 {
-                    ImageType = "LIGHT",
+                    ImageType = imageType,
                     ExposureTime = 120.5,
                     ExposureStart = exposureStart,
                     RecordedRMS = new RMS
