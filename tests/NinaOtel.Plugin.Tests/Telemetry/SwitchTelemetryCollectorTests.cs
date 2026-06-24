@@ -67,6 +67,7 @@ public sealed class SwitchTelemetryCollectorTests
             record.NumericValue == 42.5 &&
             Equals(record.Attributes["switch_name"], "PowerBox") &&
             Equals(record.Attributes["switch_id"], (short)1) &&
+            Equals(record.Attributes["name"], "Dew heater") &&
             Equals(record.Attributes["switch_channel_name"], "Dew heater"));
     }
 
@@ -227,6 +228,7 @@ public sealed class SwitchTelemetryCollectorTests
             record.Name == "switch_ro_sw1" &&
             double.IsNaN(record.NumericValue!.Value) &&
             Equals(record.Attributes["switch_name"], "PowerBox") &&
+            Equals(record.Attributes["name"], "Dew heater") &&
             Equals(record.Attributes["switch_channel_name"], "Dew heater"));
         sink.Records.Should().ContainSingle(record =>
             record.Signal == TelemetrySignal.Log &&
@@ -505,11 +507,13 @@ public sealed class SwitchTelemetryCollectorTests
             record.Name == "switch_ro_sw1" &&
             record.NumericValue == 42.5 &&
             Equals(record.Attributes["switch_id"], (short)1) &&
+            Equals(record.Attributes["name"], "Dew heater") &&
             Equals(record.Attributes["switch_channel_name"], "Dew heater"));
         sink.Records.Should().ContainSingle(record =>
             record.Name == "switch_ro_sw3" &&
             record.NumericValue == 1.0 &&
             Equals(record.Attributes["switch_id"], (short)3) &&
+            Equals(record.Attributes["name"], "Main power") &&
             Equals(record.Attributes["switch_channel_name"], "Main power"));
     }
 
@@ -527,6 +531,7 @@ public sealed class SwitchTelemetryCollectorTests
 
         sink.Records.Should().ContainSingle().Which.Should().Match<TelemetryRecord>(record =>
             Equals(record.Attributes["switch_name"], "Unknown") &&
+            Equals(record.Attributes["name"], "Unknown") &&
             Equals(record.Attributes["switch_channel_name"], "Unknown"));
     }
 
@@ -552,6 +557,7 @@ public sealed class SwitchTelemetryCollectorTests
             double.IsNaN(record.NumericValue!.Value) &&
             Equals(record.Attributes["switch_name"], "PowerBox") &&
             Equals(record.Attributes["switch_id"], (short)1) &&
+            Equals(record.Attributes["name"], "Dew heater") &&
             Equals(record.Attributes["switch_channel_name"], "Dew heater"));
 
         sink.Records.Clear();
@@ -651,11 +657,13 @@ public sealed class SwitchTelemetryCollectorTests
             record.Name == "switch_ro_sw1" &&
             double.IsNaN(record.NumericValue!.Value) &&
             Equals(record.Attributes["switch_name"], "PowerBox") &&
+            Equals(record.Attributes["name"], "Dew heater") &&
             Equals(record.Attributes["switch_channel_name"], "Dew heater"));
         sink.Records[1].Should().Match<TelemetryRecord>(record =>
             record.Name == "switch_ro_sw1" &&
             record.NumericValue == 43.0 &&
             Equals(record.Attributes["switch_name"], "PowerBox 2") &&
+            Equals(record.Attributes["name"], "Dew heater") &&
             Equals(record.Attributes["switch_channel_name"], "Dew heater"));
     }
 
@@ -681,6 +689,7 @@ public sealed class SwitchTelemetryCollectorTests
         sink.Records.Should().ContainSingle(record =>
             record.Name == "switch_ro_sw2" &&
             double.IsNaN(record.NumericValue!.Value) &&
+            Equals(record.Attributes["name"], "Flat panel") &&
             Equals(record.Attributes["switch_channel_name"], "Flat panel"));
     }
 

@@ -477,6 +477,7 @@ public sealed class SwitchTelemetryCollector : ISwitchConsumer, IDisposable
             {
                 ["switch_name"] = switchName,
                 ["switch_id"] = readOnlySwitch.Id,
+                ["name"] = NormalizeName(readOnlySwitch.Name),
                 ["switch_channel_name"] = NormalizeName(readOnlySwitch.Name),
             });
 
