@@ -69,6 +69,17 @@ public sealed class LogSourceResolverTests
         resolution.Path.Should().Be(Path.Combine(folder.Path, NinaOwnLog));
     }
 
+    [Theory]
+    [InlineData("20261120-165600-3.3.0.1069.4242-202611.log", 4242, true)]
+    [InlineData("TS-20261120-165603-3.3.0.1069.4242.log", 4242, true)]
+    [InlineData("20261120-165600-3.3.0.1072.4242-202611.log", 1072, false)]
+    [InlineData("TS-20261120-165603-3.3.0.1072.4242.log", 1072, false)]
+    [InlineData("20261120-165600-3.3.0.1069.42420-202611.log", 4242, false)]
+    public void IsOwnProcessFile_MatchesOnlyTheProcessIdComponent(string fileName, int processId, bool expected)
+    {
+        LogSourceResolver.IsOwnProcessFile(fileName, processId).Should().Be(expected);
+    }
+
     [Fact]
     public void Resolve_FallsBackToTheNewestFileWhenNoneHasTheProcessId()
     {

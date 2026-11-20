@@ -304,9 +304,11 @@ public sealed class LogSourceResolver
 
         if (source.PreferCurrentProcessId && processId is { } pid)
         {
-            var token = $".{pid.ToString(CultureInfo.InvariantCulture)}";
-            var ownFiles = candidates.FindAll(
-                candidate => candidate.FileName.Contains(token, StringComparison.OrdinalIgnoreCase));
+            // The process id is the last dotted number before the optional -YYYYMM month suffix
+            // and the extension (…3.3.0.1069.13204-202611.log, TS-…3.3.0.1069.13204.log), so
+            // anchor it there instead of matching anywhere: a PID such as 1072 must not match
+            // the NINA version 3.3.0.1072 that every file name carries.
+            var ownFiles = candidates.FindAll(candidate => IsOwnProcessFile(candidate.FileName, pid));
             if (ownFiles.Count > 0)
             {
                 candidates = ownFiles;
@@ -339,6 +341,25 @@ public sealed class LogSourceResolver
             });
 
         return candidates[0].FullPath;
+    }
+
+    public static bool IsOwnProcessFile(string fileName, int processId)
+    {
+        var withoutExtension = Path.GetFileNameWithoutExtension(fileName);
+        var dash = withoutExtension.LastIndexOf('-');
+        if (dash >= 0 &&
+            withoutExtension.Length - dash - 1 == 6 &&
+            withoutExtension[(dash + 1)..].All(char.IsDigit))
+        {
+            withoutExtension = withoutExtension[..dash];
+        }
+
+        var dot = withoutExtension.LastIndexOf('.');
+        return dot >= 0 &&
+            string.Equals(
+                withoutExtension[(dot + 1)..],
+                processId.ToString(CultureInfo.InvariantCulture),
+                StringComparison.Ordinal);
     }
 
     private static bool MatchesGlob(
