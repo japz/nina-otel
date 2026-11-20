@@ -342,7 +342,8 @@ public sealed class NinaLogTelemetryCollectorTests
         secondLogFile.Append("2026-06-18T22:00:01.0000|ERROR|NINA.Core.App|Run|11|After switch");
         secondLogFile.Append("2026-06-18T22:00:02.0000|INFO|NINA.Core.App|Tick|12|Sentinel");
 
-        var records = await WaitForRecordsAsync(sink, expectedCount: 2);
+        // The new file is read on the next 5 s poll, so wait longer than one poll interval.
+        var records = await WaitForRecordsAsync(sink, expectedCount: 2, timeoutAfter: TimeSpan.FromSeconds(15));
         records.Select(static record => record.Body).Should().Equal("Held before switch", "After switch");
     }
 
@@ -508,9 +509,10 @@ public sealed class NinaLogTelemetryCollectorTests
 
     private static async Task<IReadOnlyList<TelemetryRecord>> WaitForRecordsAsync(
         RecordingTelemetrySink sink,
-        int expectedCount)
+        int expectedCount,
+        TimeSpan? timeoutAfter = null)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(timeoutAfter ?? TimeSpan.FromSeconds(5));
         while (!timeout.IsCancellationRequested)
         {
             var records = sink.Records;
