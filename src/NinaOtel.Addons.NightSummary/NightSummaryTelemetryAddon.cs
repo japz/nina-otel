@@ -1,4 +1,5 @@
 using NinaOtel.Abstractions.Addons;
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Abstractions.Telemetry;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -13,12 +14,14 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
     private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
     private readonly TimeSpan pollInterval;
     private readonly TimeSpan stopTimeout;
+    private readonly LogSourceCatalog catalog;
     private readonly object syncRoot = new();
     private readonly Dictionary<string, NightSummarySpanContext> activeReportSpans =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> activeSessionIds =
         new(StringComparer.OrdinalIgnoreCase);
     private NightSummaryLogTailer? tailer;
+    private readonly HashSet<string> reportedHealthMessages = new(StringComparer.Ordinal);
 
     public NightSummaryTelemetryAddon()
         : this(DefaultPollInterval, DefaultStopTimeout)
@@ -26,14 +29,25 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
     }
 
     internal NightSummaryTelemetryAddon(TimeSpan pollInterval)
-        : this(pollInterval, DefaultStopTimeout)
+        : this(pollInterval, DefaultStopTimeout, null)
+    {
+    }
+
+    internal NightSummaryTelemetryAddon(TimeSpan pollInterval, LogSourceCatalog catalog)
+        : this(pollInterval, DefaultStopTimeout, catalog)
     {
     }
 
     internal NightSummaryTelemetryAddon(TimeSpan pollInterval, TimeSpan stopTimeout)
+        : this(pollInterval, stopTimeout, null)
+    {
+    }
+
+    internal NightSummaryTelemetryAddon(TimeSpan pollInterval, TimeSpan stopTimeout, LogSourceCatalog? catalog)
     {
         this.pollInterval = pollInterval > TimeSpan.Zero ? pollInterval : DefaultPollInterval;
         this.stopTimeout = stopTimeout > TimeSpan.Zero ? stopTimeout : DefaultStopTimeout;
+        this.catalog = catalog ?? LogSourceCatalog.Default;
     }
 
     public AddonMetadata Metadata { get; } = new(
@@ -50,45 +64,43 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         cancellationToken.ThrowIfCancellationRequested();
 
         var logPath = GetConfiguredPath(context.Configuration);
-        if (string.IsNullOrWhiteSpace(logPath))
-        {
-            await StopCurrentTailerAsync(cancellationToken).ConfigureAwait(false);
-            ReportDegraded(context, "Configure the Night Summary/NINA log path to collect source telemetry.");
-            return;
-        }
 
         await StopCurrentTailerAsync(cancellationToken).ConfigureAwait(false);
 
+        var watcher = new LogSourceWatcher(catalog.NightSummary, logPath);
         var nextTailer = new NightSummaryLogTailer(
-            logPath,
+            watcher,
             pollInterval,
-            (line, token) =>
+            (line, path, token) =>
             {
-                PublishLine(context, line, logPath);
+                PublishLine(context, line, path);
                 return Task.CompletedTask;
             },
-            missingPath => ReportDegraded(context, $"Night Summary/NINA log file not found: {missingPath}"));
+            missingMessage => ReportDegraded(context, missingMessage));
 
         lock (syncRoot)
         {
             tailer = nextTailer;
         }
 
-        if (File.Exists(logPath))
+        if (nextTailer.CurrentPath is null)
         {
-            context.ReportHealth(
-                Metadata.Id,
-                "running",
-                "Collecting Night Summary log telemetry.",
-                TelemetryPriority.Routine);
+            ReportDegraded(context, nextTailer.NotFoundMessage);
         }
         else
         {
-            ReportDegraded(context, $"Night Summary/NINA log file not found: {logPath}");
+            ReportRunning(context);
         }
 
         _ = nextTailer.StartAsync(cancellationToken);
     }
+
+    private void ReportRunning(IAddonContext context) =>
+        ReportHealth(
+            context,
+            "running",
+            "Collecting Night Summary log telemetry.",
+            TelemetryPriority.Routine);
 
     public Task StopAsync(CancellationToken cancellationToken) =>
         StopCurrentTailerAsync(cancellationToken);
@@ -100,6 +112,7 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         {
             tailerToStop = tailer;
             tailer = null;
+            reportedHealthMessages.Clear();
         }
 
         if (tailerToStop is null)
@@ -140,6 +153,8 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
 
     private void PublishLine(IAddonContext context, string line, string sourcePath)
     {
+        ReportRunning(context);
+
         if (!NightSummaryLogParser.TryParse(line, sourcePath, context.TimeProvider, out var logEvent) ||
             logEvent is null)
         {
@@ -502,11 +517,33 @@ public sealed class NightSummaryTelemetryAddon : ITelemetryAddon
         };
 
     private void ReportDegraded(IAddonContext context, string message) =>
-        context.ReportHealth(
-            Metadata.Id,
-            "degraded",
-            message,
-            TelemetryPriority.Routine);
+        ReportHealth(context, "degraded", message, TelemetryPriority.Routine);
+
+    /// <summary>
+    /// Reports source health, but only when it changes: a tailer polls every second and the
+    /// same waiting message must not be published over and over.
+    /// </summary>
+    private void ReportHealth(
+        IAddonContext context,
+        string status,
+        string message,
+        TelemetryPriority priority)
+    {
+        lock (syncRoot)
+        {
+            if (status == "running")
+            {
+                reportedHealthMessages.Clear();
+            }
+
+            if (!reportedHealthMessages.Add(message))
+            {
+                return;
+            }
+        }
+
+        context.ReportHealth(Metadata.Id, status, message, priority);
+    }
 
     private sealed record NightSummarySpanContext(string SpanId, string? SessionId);
 }

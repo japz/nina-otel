@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text;
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Core.Logs;
 
 namespace NinaOtel.Plugin.Telemetry;
@@ -15,7 +16,7 @@ public sealed class NinaLogTailer : IDisposable
     private static readonly NinaLogTailerReadResult EmptyReadResult = new([], HasNewLines: false);
     private const int PrefixSnapshotBytes = 256;
 
-    private readonly string path;
+    private readonly LogSourceWatcher watcher;
     private readonly NinaLogTailerStartPosition startPosition;
     private readonly int readBufferSize;
     private readonly StringBuilder pendingText = new();
@@ -27,10 +28,13 @@ public sealed class NinaLogTailer : IDisposable
     private long observedLength;
     private byte[] prefixSnapshot = [];
     private bool hasOpenedReader;
+    private bool pendingRotation;
     private bool disposed;
 
     public NinaLogTailer(string path)
-        : this(path, NinaLogTailerStartPosition.End, readBufferSize: 4096)
+        : this(LogSourceWatcher.Pinned(path ?? throw new ArgumentNullException(nameof(path))),
+            NinaLogTailerStartPosition.End,
+            readBufferSize: 4096)
     {
     }
 
@@ -38,8 +42,18 @@ public sealed class NinaLogTailer : IDisposable
         string path,
         NinaLogTailerStartPosition startPosition,
         int readBufferSize)
+        : this(LogSourceWatcher.Pinned(path ?? throw new ArgumentNullException(nameof(path))),
+            startPosition,
+            readBufferSize)
     {
-        this.path = path ?? throw new ArgumentNullException(nameof(path));
+    }
+
+    internal NinaLogTailer(
+        LogSourceWatcher watcher,
+        NinaLogTailerStartPosition startPosition,
+        int readBufferSize)
+    {
+        this.watcher = watcher ?? throw new ArgumentNullException(nameof(watcher));
         this.startPosition = startPosition;
         this.readBufferSize = readBufferSize > 0
             ? readBufferSize
@@ -47,6 +61,27 @@ public sealed class NinaLogTailer : IDisposable
     }
 
     internal bool HasPendingEvent => pendingEventLines.Count > 0;
+
+    /// <summary>The file currently being read, or null while nothing has been found yet.</summary>
+    internal string? ResolvedPath => watcher.CurrentPath;
+
+    /// <summary>True when the tailer follows rotation instead of reading one explicit file.</summary>
+    internal bool FollowsRotation => watcher.FollowsRotation;
+
+    /// <summary>Message describing what was searched when <see cref="ResolvedPath"/> is null.</summary>
+    internal string NotFoundMessage => watcher.NotFoundMessage;
+
+    /// <summary>
+    /// Re-resolves the file to read. Call once per poll before <see cref="ReadAvailable"/>; a
+    /// changed file makes the next read switch to it from its beginning.
+    /// </summary>
+    internal void RefreshSource()
+    {
+        if (watcher.Refresh())
+        {
+            pendingRotation = true;
+        }
+    }
 
     internal void Prime()
     {
@@ -63,14 +98,21 @@ public sealed class NinaLogTailer : IDisposable
             return EmptyReadResult;
         }
 
-        if (reader is not null && !IsCurrentReaderUsable())
+        if (reader is not null && (pendingRotation || !IsCurrentReaderUsable()))
         {
+            // Rotation or a replaced file: hand over the held event, then read the new file
+            // from its beginning.
             var pendingEvents = FlushPending();
             ResetReader(clearPending: true);
+            pendingRotation = false;
             if (pendingEvents.Count > 0)
             {
                 return new NinaLogTailerReadResult(pendingEvents, HasNewLines: true);
             }
+        }
+        else
+        {
+            pendingRotation = false;
         }
 
         if (!EnsureReader())
@@ -139,6 +181,8 @@ public sealed class NinaLogTailer : IDisposable
         pendingEventLines.Clear();
     }
 
+    private string? Path => watcher.CurrentPath;
+
     private bool EnsureReader()
     {
         if (reader is not null)
@@ -146,6 +190,7 @@ public sealed class NinaLogTailer : IDisposable
             return true;
         }
 
+        var path = Path;
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
             return false;
@@ -196,7 +241,7 @@ public sealed class NinaLogTailer : IDisposable
 
         try
         {
-            var fileInfo = new FileInfo(path);
+            var fileInfo = new FileInfo(Path ?? string.Empty);
             if (!fileInfo.Exists)
             {
                 return false;
@@ -243,7 +288,7 @@ public sealed class NinaLogTailer : IDisposable
     {
         try
         {
-            var fileInfo = new FileInfo(path);
+            var fileInfo = new FileInfo(Path ?? string.Empty);
             if (!fileInfo.Exists)
             {
                 return;
@@ -278,7 +323,7 @@ public sealed class NinaLogTailer : IDisposable
     private byte[] ReadPrefixSnapshot(int maxBytes = PrefixSnapshotBytes)
     {
         using var prefixStream = new FileStream(
-            path,
+            Path ?? string.Empty,
             FileMode.Open,
             FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete);

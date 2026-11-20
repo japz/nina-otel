@@ -29,7 +29,7 @@ public sealed class NightSummaryTelemetryAddonTests
     public async Task StartAsync_WhenNoPathIsConfigured_ReportsDegraded()
     {
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         var context = CreateContext(sink, CancellationToken.None);
 
         await addon.StartAsync(context, CancellationToken.None);
@@ -39,7 +39,9 @@ public sealed class NightSummaryTelemetryAddonTests
             Equals(record.Attributes["addon.id"], "night-summary") &&
             Equals(record.Attributes["status"], "degraded")).Subject;
         health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("Night Summary");
-        health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("log path");
+        health.Attributes["message"].Should().BeOfType<string>().Which
+            .Should().Contain("No Night Summary/NINA log found in ")
+            .And.Contain(TestLogSources.EmptyDirectory);
     }
 
     [Fact]
@@ -48,7 +50,7 @@ public sealed class NightSummaryTelemetryAddonTests
         using var temp = new TempDirectory();
         var missingPath = Path.Combine(temp.Path, "nina.log");
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: missingPath);
 
@@ -58,7 +60,9 @@ public sealed class NightSummaryTelemetryAddonTests
             record.Signal == TelemetrySignal.Health &&
             Equals(record.Attributes["addon.id"], "night-summary") &&
             Equals(record.Attributes["status"], "degraded"));
-        health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("not found");
+        health.Attributes["message"].Should().BeOfType<string>().Which
+            .Should().Contain("No Night Summary/NINA log found in ")
+            .And.Contain(temp.Path);
 
         await addon.StopAsync(CancellationToken.None);
     }
@@ -68,7 +72,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -88,7 +92,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(
             sink,
@@ -102,7 +106,9 @@ public sealed class NightSummaryTelemetryAddonTests
             record.Signal == TelemetrySignal.Health &&
             Equals(record.Attributes["addon.id"], "night-summary") &&
             Equals(record.Attributes["status"], "degraded")).Subject;
-        health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("log path");
+        health.Attributes["message"].Should().BeOfType<string>().Which
+            .Should().Contain("No Night Summary/NINA log found in ")
+            .And.Contain(TestLogSources.EmptyDirectory);
     }
 
     [Fact]
@@ -110,7 +116,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -136,7 +142,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -188,7 +194,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -228,7 +234,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -273,7 +279,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -315,7 +321,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -341,7 +347,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -372,7 +378,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new ThrowOnceSink(TelemetrySignal.Log);
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -392,7 +398,7 @@ public sealed class NightSummaryTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new NightSummaryTelemetryAddon(PollInterval);
+        var addon = new NightSummaryTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 

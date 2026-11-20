@@ -1,4 +1,5 @@
 using NinaOtel.Abstractions.Addons;
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Abstractions.Telemetry;
 using System.Security.Cryptography;
 using System.Text;
@@ -12,8 +13,10 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
     private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
     private readonly TimeSpan pollInterval;
     private readonly TimeSpan stopTimeout;
+    private readonly LogSourceCatalog catalog;
     private readonly object syncRoot = new();
     private TargetSchedulerLogTailer? tailer;
+    private readonly HashSet<string> reportedHealthMessages = new(StringComparer.Ordinal);
     private string? activePlanningSpanId;
 
     public TargetSchedulerTelemetryAddon()
@@ -22,14 +25,25 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
     }
 
     internal TargetSchedulerTelemetryAddon(TimeSpan pollInterval)
-        : this(pollInterval, DefaultStopTimeout)
+        : this(pollInterval, DefaultStopTimeout, null)
+    {
+    }
+
+    internal TargetSchedulerTelemetryAddon(TimeSpan pollInterval, LogSourceCatalog catalog)
+        : this(pollInterval, DefaultStopTimeout, catalog)
     {
     }
 
     internal TargetSchedulerTelemetryAddon(TimeSpan pollInterval, TimeSpan stopTimeout)
+        : this(pollInterval, stopTimeout, null)
+    {
+    }
+
+    internal TargetSchedulerTelemetryAddon(TimeSpan pollInterval, TimeSpan stopTimeout, LogSourceCatalog? catalog)
     {
         this.pollInterval = pollInterval > TimeSpan.Zero ? pollInterval : DefaultPollInterval;
         this.stopTimeout = stopTimeout > TimeSpan.Zero ? stopTimeout : DefaultStopTimeout;
+        this.catalog = catalog ?? LogSourceCatalog.Default;
     }
 
     public AddonMetadata Metadata { get; } = new(
@@ -46,24 +60,19 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
         cancellationToken.ThrowIfCancellationRequested();
 
         var logPath = GetConfiguredPath(context.Configuration);
-        if (string.IsNullOrWhiteSpace(logPath))
-        {
-            await StopCurrentTailerAsync(cancellationToken).ConfigureAwait(false);
-            ReportWaiting(context, "Configure the Target Scheduler log path to collect source telemetry.");
-            return;
-        }
 
         await StopCurrentTailerAsync(cancellationToken).ConfigureAwait(false);
 
+        var watcher = new LogSourceWatcher(catalog.TargetScheduler, logPath);
         var nextTailer = new TargetSchedulerLogTailer(
-            logPath,
+            watcher,
             pollInterval,
-            (line, token) =>
+            (line, path, token) =>
             {
-                PublishLine(context, line, logPath);
+                PublishLine(context, line, path);
                 return Task.CompletedTask;
             },
-            missingPath => ReportWaiting(context, $"Target Scheduler log file not found: {missingPath}"));
+            missingMessage => ReportWaiting(context, missingMessage));
 
         lock (syncRoot)
         {
@@ -72,12 +81,22 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
         }
 
         _ = nextTailer.StartAsync(cancellationToken);
-        context.ReportHealth(
-            Metadata.Id,
+
+        if (nextTailer.CurrentPath is null)
+        {
+            ReportWaiting(context, nextTailer.NotFoundMessage);
+            return;
+        }
+
+        ReportRunning(context);
+    }
+
+    private void ReportRunning(IAddonContext context) =>
+        ReportHealth(
+            context,
             "running",
             "Collecting Target Scheduler log telemetry.",
             TelemetryPriority.Routine);
-    }
 
     public Task StopAsync(CancellationToken cancellationToken) =>
         StopCurrentTailerAsync(cancellationToken);
@@ -89,6 +108,7 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
         {
             tailerToStop = tailer;
             tailer = null;
+            reportedHealthMessages.Clear();
         }
 
         if (tailerToStop is null)
@@ -136,6 +156,8 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
 
     private void PublishLine(IAddonContext context, string line, string sourcePath)
     {
+        ReportRunning(context);
+
         if (!TargetSchedulerLogParser.TryParse(line, sourcePath, context.TimeProvider, out var logEvent) ||
             logEvent is null)
         {
@@ -427,9 +449,31 @@ public sealed class TargetSchedulerTelemetryAddon : ITelemetryAddon
     }
 
     private void ReportWaiting(IAddonContext context, string message) =>
-        context.ReportHealth(
-            Metadata.Id,
-            "waiting",
-            message,
-            TelemetryPriority.Routine);
+        ReportHealth(context, "waiting", message, TelemetryPriority.Routine);
+
+    /// <summary>
+    /// Reports source health, but only when it changes: a tailer polls every second and the
+    /// same waiting message must not be published over and over.
+    /// </summary>
+    private void ReportHealth(
+        IAddonContext context,
+        string status,
+        string message,
+        TelemetryPriority priority)
+    {
+        lock (syncRoot)
+        {
+            if (status == "running")
+            {
+                reportedHealthMessages.Clear();
+            }
+
+            if (!reportedHealthMessages.Add(message))
+            {
+                return;
+            }
+        }
+
+        context.ReportHealth(Metadata.Id, status, message, priority);
+    }
 }

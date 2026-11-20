@@ -22,7 +22,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
     public async Task StartAsync_WhenNoPathIsConfigured_ReportsWaitingForLogPath()
     {
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         var context = CreateContext(sink, CancellationToken.None);
 
         await addon.StartAsync(context, CancellationToken.None);
@@ -31,7 +31,9 @@ public sealed class TargetSchedulerTelemetryAddonTests
             record.Signal == TelemetrySignal.Health &&
             Equals(record.Attributes["addon.id"], "target-scheduler") &&
             Equals(record.Attributes["status"], "waiting")).Subject;
-        health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("Target Scheduler log path");
+        health.Attributes["message"].Should().BeOfType<string>().Which
+            .Should().Contain("No Target Scheduler log found in ")
+            .And.Contain(TestLogSources.EmptyDirectory);
         health.Priority.Should().Be(TelemetryPriority.Routine);
     }
 
@@ -41,7 +43,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
         using var temp = new TempDirectory();
         var missingPath = Path.Combine(temp.Path, "target-scheduler.log");
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: missingPath);
 
@@ -70,7 +72,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, rawForwardingEnabled: true);
 
@@ -100,7 +102,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
             "2026-06-18T22:00:10.0000|INFO|Scheduler.cs|Select|30|Target Scheduler: selected target M31 filter L";
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -136,7 +138,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
             "2026-06-18T22:01:00.0000|INFO|ImageGrader.cs|Grade|60|Target Scheduler: image grade accepted target=M31 score=0.92";
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, rawForwardingEnabled: true);
 
@@ -227,7 +229,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
             "2026-06-18T22:00:10.0000|INFO|Scheduler.cs|Select|30|Target Scheduler: selected target M31 filter L";
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, rawForwardingEnabled: true);
 
@@ -253,7 +255,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(TimeSpan.FromMilliseconds(500));
+        var addon = new TargetSchedulerTelemetryAddon(TimeSpan.FromMilliseconds(500), TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -277,7 +279,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(TimeSpan.FromMilliseconds(500));
+        var addon = new TargetSchedulerTelemetryAddon(TimeSpan.FromMilliseconds(500), TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -306,7 +308,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
             "not-a-timestamp|INFO|Scheduler.cs|Run|10|Target Scheduler: planning run started";
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path, rawForwardingEnabled: true);
 
@@ -335,7 +337,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
             "2026-06-18T22:03:00.0000|ERROR|Scheduler.cs|Run|80|Target Scheduler: planning failed timeout";
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -365,7 +367,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -399,7 +401,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, logPath: temp.Path);
 
@@ -414,7 +416,7 @@ public sealed class TargetSchedulerTelemetryAddonTests
     [Fact]
     public void Validate_AcceptsEmptyAndMissingLogPath()
     {
-        var addon = new TargetSchedulerTelemetryAddon(PollInterval);
+        var addon = new TargetSchedulerTelemetryAddon(PollInterval, TestLogSources.Empty());
         var configuration = new AddonConfiguration(settings: new Dictionary<string, string>
         {
             ["LogPath"] = string.Empty,

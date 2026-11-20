@@ -1,4 +1,5 @@
 using NinaOtel.Abstractions.Addons;
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Abstractions.Telemetry;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -14,8 +15,10 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
     private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
     private readonly TimeSpan pollInterval;
     private readonly TimeSpan stopTimeout;
+    private readonly LogSourceCatalog catalog;
     private readonly object syncRoot = new();
     private List<Phd2LogTailer> tailers = [];
+    private readonly HashSet<string> reportedHealthMessages = new(StringComparer.Ordinal);
     private string? activeSettleSpanId;
     private readonly Dictionary<string, Phd2GuideSession> activeGuideSessions =
         new(StringComparer.OrdinalIgnoreCase);
@@ -26,14 +29,25 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
     }
 
     internal Phd2TelemetryAddon(TimeSpan pollInterval)
-        : this(pollInterval, DefaultStopTimeout)
+        : this(pollInterval, DefaultStopTimeout, null)
+    {
+    }
+
+    internal Phd2TelemetryAddon(TimeSpan pollInterval, LogSourceCatalog catalog)
+        : this(pollInterval, DefaultStopTimeout, catalog)
     {
     }
 
     internal Phd2TelemetryAddon(TimeSpan pollInterval, TimeSpan stopTimeout)
+        : this(pollInterval, stopTimeout, null)
+    {
+    }
+
+    internal Phd2TelemetryAddon(TimeSpan pollInterval, TimeSpan stopTimeout, LogSourceCatalog? catalog)
     {
         this.pollInterval = pollInterval > TimeSpan.Zero ? pollInterval : DefaultPollInterval;
         this.stopTimeout = stopTimeout > TimeSpan.Zero ? stopTimeout : DefaultStopTimeout;
+        this.catalog = catalog ?? LogSourceCatalog.Default;
     }
 
     public AddonMetadata Metadata { get; } = new(
@@ -48,26 +62,19 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
     {
         ArgumentNullException.ThrowIfNull(context);
         cancellationToken.ThrowIfCancellationRequested();
-        var configuredPaths = GetConfiguredPaths(context.Configuration);
-
-        if (configuredPaths.Count == 0)
+        var startedTailers = new List<Phd2LogTailer>(capacity: 2);
+        foreach (var source in GetLogSources(context.Configuration))
         {
-            ReportWaiting(context, "Configure PHD2 log paths to collect guiding telemetry.");
-            return Task.CompletedTask;
-        }
-
-        var startedTailers = new List<Phd2LogTailer>(configuredPaths.Count);
-        foreach (var configuredPath in configuredPaths)
-        {
+            var kind = source.Kind;
             var tailer = new Phd2LogTailer(
-                configuredPath.Path,
+                source.Watcher,
                 pollInterval,
-                (line, token) =>
+                (line, path, token) =>
                 {
-                    PublishLine(context, line, configuredPath);
+                    PublishLine(context, line, new ConfiguredPhd2LogPath(path, kind));
                     return Task.CompletedTask;
                 },
-                missingPath => ReportWaiting(context, $"PHD2 log file not found: {missingPath}"));
+                missingMessage => ReportWaiting(context, missingMessage));
             startedTailers.Add(tailer);
         }
 
@@ -86,13 +93,23 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
             _ = tailer.StartAsync(cancellationToken);
         }
 
-        context.ReportHealth(
-            Metadata.Id,
-            "running",
-            "Collecting PHD2 log telemetry.",
-            TelemetryPriority.Routine);
+        ReportSourceHealth(context, startedTailers);
         return Task.CompletedTask;
     }
+
+    private void ReportSourceHealth(IAddonContext context, IReadOnlyList<Phd2LogTailer> startedTailers)
+    {
+        if (!startedTailers.Any(static tailer => tailer.CurrentPath is not null))
+        {
+            // Nothing found yet; each tailer reports what it searched for.
+            return;
+        }
+
+        ReportRunning(context);
+    }
+
+    private void ReportRunning(IAddonContext context) =>
+        ReportHealth(context, "running", "Collecting PHD2 log telemetry.", TelemetryPriority.Routine);
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
@@ -101,6 +118,7 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         {
             tailersToStop = tailers;
             tailers = [];
+            reportedHealthMessages.Clear();
             activeSettleSpanId = null;
             activeGuideSessions.Clear();
         }
@@ -140,29 +158,23 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
         }
     }
 
-    private static IReadOnlyList<ConfiguredPhd2LogPath> GetConfiguredPaths(AddonConfiguration configuration)
-    {
-        var paths = new List<ConfiguredPhd2LogPath>(capacity: 2);
-        AddConfiguredPath(configuration, DebugLogPathSetting, Phd2LogSourceKind.DebugLog, paths);
-        AddConfiguredPath(configuration, GuideLogPathSetting, Phd2LogSourceKind.GuideLog, paths);
-        return paths;
-    }
+    private IReadOnlyList<Phd2LogSource> GetLogSources(AddonConfiguration configuration) =>
+    [
+        new Phd2LogSource(
+            Phd2LogSourceKind.DebugLog,
+            new LogSourceWatcher(catalog.Phd2Debug, GetSetting(configuration, DebugLogPathSetting))),
+        new Phd2LogSource(
+            Phd2LogSourceKind.GuideLog,
+            new LogSourceWatcher(catalog.Phd2Guide, GetSetting(configuration, GuideLogPathSetting))),
+    ];
 
-    private static void AddConfiguredPath(
-        AddonConfiguration configuration,
-        string settingKey,
-        Phd2LogSourceKind sourceKind,
-        List<ConfiguredPhd2LogPath> paths)
-    {
-        if (configuration.Settings.TryGetValue(settingKey, out var path) &&
-            !string.IsNullOrWhiteSpace(path))
-        {
-            paths.Add(new ConfiguredPhd2LogPath(path, sourceKind));
-        }
-    }
+    private static string? GetSetting(AddonConfiguration configuration, string settingKey) =>
+        configuration.Settings.TryGetValue(settingKey, out var value) ? value : null;
 
     private void PublishLine(IAddonContext context, string line, ConfiguredPhd2LogPath configuredPath)
     {
+        ReportRunning(context);
+
         if (configuredPath.SourceKind == Phd2LogSourceKind.GuideLog)
         {
             PublishGuideLine(context, line, configuredPath.Path);
@@ -522,11 +534,33 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
     }
 
     private void ReportWaiting(IAddonContext context, string message) =>
-        context.ReportHealth(
-            Metadata.Id,
-            "waiting",
-            message,
-            TelemetryPriority.Routine);
+        ReportHealth(context, "waiting", message, TelemetryPriority.Routine);
+
+    /// <summary>
+    /// Reports source health, but only when it changes: a tailer polls every second and the
+    /// same waiting message must not be published over and over.
+    /// </summary>
+    private void ReportHealth(
+        IAddonContext context,
+        string status,
+        string message,
+        TelemetryPriority priority)
+    {
+        lock (syncRoot)
+        {
+            if (status == "running")
+            {
+                reportedHealthMessages.Clear();
+            }
+
+            if (!reportedHealthMessages.Add(message))
+            {
+                return;
+            }
+        }
+
+        context.ReportHealth(Metadata.Id, status, message, priority);
+    }
 
     private enum Phd2LogSourceKind
     {
@@ -535,6 +569,8 @@ public sealed class Phd2TelemetryAddon : ITelemetryAddon
     }
 
     private sealed record ConfiguredPhd2LogPath(string Path, Phd2LogSourceKind SourceKind);
+
+    private sealed record Phd2LogSource(Phd2LogSourceKind Kind, LogSourceWatcher Watcher);
 
     private sealed class Phd2GuideSession
     {

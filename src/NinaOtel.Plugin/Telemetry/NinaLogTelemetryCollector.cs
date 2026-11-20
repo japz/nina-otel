@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Logs;
 using NinaOtel.Core.Options;
@@ -20,11 +21,14 @@ public sealed class NinaLogTelemetryCollector : IDisposable
     private readonly TimeSpan pollInterval;
     private readonly TimeSpan pendingEventFlushDelay;
     private readonly int readBufferSize;
+    private readonly LogSourceCatalog catalog;
     private CoreTelemetryOptions options;
     private NinaLogTailer? tailer;
+    private LogSourceWatcher? watcher;
     private CancellationTokenSource? cancellation;
     private Task? pumpTask;
     private DateTimeOffset? pendingEventUpdatedAt;
+    private bool waitingStatusPublished;
     private bool started;
     private bool disposed;
 
@@ -39,7 +43,8 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             NinaLogTailerStartPosition.End,
             TimeSpan.FromSeconds(1),
             readBufferSize: 4096,
-            pendingEventFlushDelay: DefaultPendingEventFlushDelay)
+            pendingEventFlushDelay: DefaultPendingEventFlushDelay,
+            catalog: null)
     {
     }
 
@@ -50,7 +55,8 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         NinaLogTailerStartPosition startPosition,
         TimeSpan pollInterval,
         int readBufferSize,
-        TimeSpan? pendingEventFlushDelay = null)
+        TimeSpan? pendingEventFlushDelay = null,
+        LogSourceCatalog? catalog = null)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.sink = sink ?? throw new ArgumentNullException(nameof(sink));
@@ -64,6 +70,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         this.startPosition = startPosition;
         this.readBufferSize = readBufferSize;
         this.pendingEventFlushDelay = pendingEventFlushDelay ?? DefaultPendingEventFlushDelay;
+        this.catalog = catalog ?? LogSourceCatalog.Default;
         if (this.pendingEventFlushDelay < TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(
@@ -86,7 +93,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
 
     public void Start()
     {
-        var publishWaitingStatus = false;
+        string? waitingMessage = null;
 
         lock (syncRoot)
         {
@@ -97,21 +104,18 @@ public sealed class NinaLogTelemetryCollector : IDisposable
 
             started = true;
             cancellation = new CancellationTokenSource();
-            if (IsEnabled(options))
+            if (IsCollectionEnabled(options))
             {
                 ReplaceTailerLocked();
-            }
-            else if (IsCollectionEnabled(options))
-            {
-                publishWaitingStatus = true;
+                waitingMessage = UpdateWaitingStatusLocked();
             }
 
             pumpTask = Task.Run(() => PumpAsync(cancellation.Token));
         }
 
-        if (publishWaitingStatus)
+        if (waitingMessage is not null)
         {
-            PublishWaitingStatus();
+            PublishWaitingStatus(waitingMessage);
         }
     }
 
@@ -120,7 +124,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         ArgumentNullException.ThrowIfNull(updatedOptions);
         CoreTelemetryOptions? previousOptions = null;
         IReadOnlyList<NinaLogEvent> pendingEvents = [];
-        var publishWaitingStatus = false;
+        string? waitingMessage = null;
 
         lock (syncRoot)
         {
@@ -133,7 +137,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
                 options.NinaLogPath,
                 updatedOptions.NinaLogPath,
                 StringComparison.Ordinal);
-            var wasEnabled = IsEnabled(options);
+            var wasEnabled = IsCollectionEnabled(options);
             previousOptions = options;
             options = updatedOptions;
 
@@ -142,16 +146,15 @@ public sealed class NinaLogTelemetryCollector : IDisposable
                 pendingEvents = tailer?.FlushPending() ?? [];
                 DisposeTailerLocked();
             }
-            else if (!HasConfiguredPath(options))
-            {
-                pendingEvents = tailer?.FlushPending() ?? [];
-                DisposeTailerLocked();
-                publishWaitingStatus = true;
-            }
             else if (tailer is null || pathChanged || !wasEnabled)
             {
                 pendingEvents = tailer?.FlushPending() ?? [];
                 ReplaceTailerLocked();
+            }
+
+            if (IsCollectionEnabled(options))
+            {
+                waitingMessage = UpdateWaitingStatusLocked();
             }
         }
 
@@ -160,9 +163,9 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             PublishEvents(pendingEvents, previousOptions);
         }
 
-        if (publishWaitingStatus)
+        if (waitingMessage is not null)
         {
-            PublishWaitingStatus();
+            PublishWaitingStatus(waitingMessage);
         }
     }
 
@@ -246,8 +249,12 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         {
             try
             {
-                var (events, optionsSnapshot) = ReadAvailableEvents();
+                var (events, optionsSnapshot, waitingMessage) = ReadAvailableEvents();
                 PublishEvents(events, optionsSnapshot);
+                if (waitingMessage is not null)
+                {
+                    PublishWaitingStatus(waitingMessage);
+                }
             }
             catch
             {
@@ -265,17 +272,24 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         }
     }
 
-    private (IReadOnlyList<NinaLogEvent> Events, CoreTelemetryOptions OptionsSnapshot) ReadAvailableEvents()
+    private (IReadOnlyList<NinaLogEvent> Events, CoreTelemetryOptions OptionsSnapshot, string? WaitingMessage) ReadAvailableEvents()
     {
         lock (syncRoot)
         {
             var optionsSnapshot = options;
-            if (disposed || !IsEnabled(optionsSnapshot))
+            if (disposed || !IsCollectionEnabled(optionsSnapshot))
             {
-                return ([], optionsSnapshot);
+                return ([], optionsSnapshot, null);
             }
 
-            tailer ??= CreateTailer(optionsSnapshot.NinaLogPath);
+            tailer ??= CreateTailer();
+            tailer.RefreshSource();
+            var waitingMessage = UpdateWaitingStatusLocked();
+            if (tailer.ResolvedPath is null)
+            {
+                return ([], optionsSnapshot, waitingMessage);
+            }
+
             var readResult = tailer.ReadAvailable();
             if (readResult.HasNewLines)
             {
@@ -288,7 +302,7 @@ public sealed class NinaLogTelemetryCollector : IDisposable
                     pendingEventUpdatedAt = null;
                 }
 
-                return (readResult.Events, optionsSnapshot);
+                return (readResult.Events, optionsSnapshot, UpdateWaitingStatusLocked());
             }
 
             if (tailer.HasPendingEvent)
@@ -298,12 +312,38 @@ public sealed class NinaLogTelemetryCollector : IDisposable
                 if (now - pendingEventUpdatedAt.Value >= pendingEventFlushDelay)
                 {
                     pendingEventUpdatedAt = null;
-                    return (tailer.FlushPending(), optionsSnapshot);
+                    return (tailer.FlushPending(), optionsSnapshot, UpdateWaitingStatusLocked());
                 }
             }
 
-            return ([], optionsSnapshot);
+            return ([], optionsSnapshot, UpdateWaitingStatusLocked());
         }
+    }
+
+    /// <summary>
+    /// Publishes one waiting health record while autodetect cannot find a file, and forgets the
+    /// published state as soon as a file is back so the next gap is reported again.
+    /// </summary>
+    private string? UpdateWaitingStatusLocked()
+    {
+        if (tailer is null || !tailer.FollowsRotation)
+        {
+            return null;
+        }
+
+        if (tailer.ResolvedPath is not null)
+        {
+            waitingStatusPublished = false;
+            return null;
+        }
+
+        if (waitingStatusPublished)
+        {
+            return null;
+        }
+
+        waitingStatusPublished = true;
+        return tailer.NotFoundMessage;
     }
 
     private void PublishEvents(IEnumerable<NinaLogEvent> events, CoreTelemetryOptions optionsSnapshot)
@@ -374,18 +414,16 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             Severity: logEvent.Severity ?? TelemetrySeverity.Information));
     }
 
-    private NinaLogTailer CreateTailer(string path) =>
-        new(path, startPosition, readBufferSize);
+    private NinaLogTailer CreateTailer() =>
+        new(watcher ??= CreateWatcher(), startPosition, readBufferSize);
+
+    private LogSourceWatcher CreateWatcher() => new(catalog.Nina, options.NinaLogPath);
 
     private void ReplaceTailerLocked()
     {
         DisposeTailerLocked();
-        if (string.IsNullOrWhiteSpace(options.NinaLogPath))
-        {
-            return;
-        }
-
-        tailer = CreateTailer(options.NinaLogPath);
+        watcher = CreateWatcher();
+        tailer = new NinaLogTailer(watcher, startPosition, readBufferSize);
         tailer.Prime();
     }
 
@@ -402,20 +440,16 @@ public sealed class NinaLogTelemetryCollector : IDisposable
         finally
         {
             tailer = null;
+            watcher = null;
             pendingEventUpdatedAt = null;
+            waitingStatusPublished = false;
         }
     }
-
-    private static bool IsEnabled(CoreTelemetryOptions options) =>
-        IsCollectionEnabled(options) && HasConfiguredPath(options);
 
     private static bool IsCollectionEnabled(CoreTelemetryOptions options) =>
         options.FilteredLogsEnabled || options.RawForwardingEnabled;
 
-    private static bool HasConfiguredPath(CoreTelemetryOptions options) =>
-        !string.IsNullOrWhiteSpace(options.NinaLogPath);
-
-    private void PublishWaitingStatus() =>
+    private void PublishWaitingStatus(string searchMessage) =>
         TryPublishSafely(TelemetryRecord.Health(
             timeProvider.GetUtcNow(),
             SourceName,
@@ -425,7 +459,9 @@ public sealed class NinaLogTelemetryCollector : IDisposable
             {
                 ["nina.log.path"] = string.Empty,
                 ["status"] = "waiting",
-                ["reason"] = "not_configured",
+                ["reason"] = "not_found",
+                ["nina.log.search"] = searchMessage,
+                ["message"] = searchMessage,
             }));
 
     private void TryPublishSafely(TelemetryRecord record)

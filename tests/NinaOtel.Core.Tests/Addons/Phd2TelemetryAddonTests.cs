@@ -16,7 +16,7 @@ public sealed class Phd2TelemetryAddonTests
     public async Task StartAsync_WhenPathIsConfigured_ReturnsPromptly()
     {
         using var temp = new TempLogFile();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(new RecordingSink(), shutdown.Token, debugLogPath: temp.Path);
 
@@ -27,20 +27,42 @@ public sealed class Phd2TelemetryAddonTests
     }
 
     [Fact]
-    public async Task StartAsync_WhenNoPathsAreConfigured_ReportsWaitingForLogPaths()
+    public async Task StartAsync_WhenNoPathsAreConfigured_ReportsWhatAutodetectionSearched()
     {
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         var context = CreateContext(sink, CancellationToken.None);
 
         await addon.StartAsync(context, CancellationToken.None);
 
-        var health = sink.Records.Should().ContainSingle(record =>
+        await WaitForRecordAsync(sink, record =>
             record.Signal == TelemetrySignal.Health &&
-            Equals(record.Attributes["addon.id"], "phd2") &&
-            Equals(record.Attributes["status"], "waiting")).Subject;
-        health.Attributes["message"].Should().BeOfType<string>().Which.Should().Contain("PHD2 log path");
-        health.Priority.Should().Be(TelemetryPriority.Routine);
+            Equals(record.Attributes["status"], "waiting") &&
+            (record.Attributes["message"] as string)?.Contains("PHD2 debug log") == true);
+        await WaitForRecordAsync(sink, record =>
+            record.Signal == TelemetrySignal.Health &&
+            Equals(record.Attributes["status"], "waiting") &&
+            (record.Attributes["message"] as string)?.Contains("PHD2 guide log") == true);
+
+        var messages = sink.Records
+            .Where(record =>
+                record.Signal == TelemetrySignal.Health &&
+                Equals(record.Attributes["addon.id"], "phd2") &&
+                Equals(record.Attributes["status"], "waiting"))
+            .Select(record => record.Attributes["message"] as string)
+            .ToList();
+
+        messages.Should().HaveCount(2, "one record per source that could not be found");
+        messages.Should().ContainSingle(message =>
+            message!.Contains("No PHD2 debug log found in ") &&
+            message.Contains(TestLogSources.EmptyDirectory));
+        messages.Should().ContainSingle(message =>
+            message!.Contains("No PHD2 guide log found in ") &&
+            message.Contains(TestLogSources.EmptyDirectory));
+        sink.Records
+            .Where(record => Equals(record.Attributes["status"], "waiting"))
+            .Should()
+            .OnlyContain(record => record.Priority == TelemetryPriority.Routine);
     }
 
     [Fact]
@@ -49,7 +71,7 @@ public sealed class Phd2TelemetryAddonTests
         using var temp = new TempDirectory();
         var missingPath = Path.Combine(temp.Path, "missing-debug-log.txt");
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: missingPath);
 
@@ -75,7 +97,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: temp.Path, rawForwardingEnabled: true);
 
@@ -109,7 +131,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: temp.Path);
 
@@ -135,7 +157,7 @@ public sealed class Phd2TelemetryAddonTests
         using var temp = new TempDirectory();
         var missingPath = Path.Combine(temp.Path, "PHD2_DebugLog.txt");
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(TimeSpan.FromMilliseconds(200));
+        var addon = new Phd2TelemetryAddon(TimeSpan.FromMilliseconds(200), TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: missingPath);
 
@@ -154,7 +176,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: temp.Path);
 
@@ -173,11 +195,50 @@ public sealed class Phd2TelemetryAddonTests
     }
 
     [Fact]
+    public async Task Tailer_WhenANewerRotatingLogFileAppears_SwitchesAndReadsItFromTheStart()
+    {
+        using var temp = new TempDirectory();
+        var firstLog = Path.Combine(temp.Path, "PHD2_DebugLog_2026-11-19_210000.txt");
+        await File.AppendAllTextAsync(
+            firstLog,
+            "2026-11-19 21:00:00.000 Guiding Begins" + Environment.NewLine);
+        var secondLog = Path.Combine(temp.Path, "PHD2_DebugLog_2026-11-20_165716.txt");
+        var sink = new RecordingSink();
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Catalog(temp.Path));
+        using var shutdown = new CancellationTokenSource();
+        var context = CreateContext(sink, shutdown.Token);
+
+        await addon.StartAsync(context, CancellationToken.None);
+
+        // The file current at startup is read from its end, so its earlier lines stay unseen.
+        await WaitForRecordAsync(sink, record =>
+            record.Signal == TelemetrySignal.Health && Equals(record.Attributes["status"], "running"));
+
+        await File.AppendAllTextAsync(
+            secondLog,
+            "2026-11-20 16:57:16.000 Guiding Begins" + Environment.NewLine);
+        await File.AppendAllTextAsync(
+            secondLog,
+            "2026-11-20 16:58:00.000 Guiding Stopped" + Environment.NewLine);
+
+        var stopped = await WaitForRecordAsync(sink, record => record.Name == "phd2.guiding_stopped");
+        stopped.Attributes["source.file"].Should().Be(secondLog);
+
+        // The switch reads the new file from its beginning, so its "Guiding Begins" line is seen.
+        sink.Records.Should().Contain(record =>
+            record.Name == "phd2.guiding_started" && Equals(record.Attributes["source.file"], secondLog));
+        sink.Records.Should().NotContain(record =>
+            record.Name == "phd2.guiding_started" && Equals(record.Attributes["source.file"], firstLog));
+
+        await addon.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Tailer_WhenCaptureErrorLineIsAppended_PublishesImportantErrorLog()
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: temp.Path);
 
@@ -200,7 +261,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: temp.Path);
 
@@ -245,7 +306,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(sink, shutdown.Token, debugLogPath: temp.Path);
 
@@ -262,7 +323,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var timeProvider = new FixedTimeProvider(new DateTimeOffset(2026, 6, 18, 22, 0, 0, TimeSpan.Zero));
         var context = CreateContext(
@@ -333,7 +394,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(
             sink,
@@ -452,7 +513,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(
             sink,
@@ -497,7 +558,7 @@ public sealed class Phd2TelemetryAddonTests
     {
         using var temp = new TempLogFile();
         var sink = new RecordingSink();
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         using var shutdown = new CancellationTokenSource();
         var context = CreateContext(
             sink,
@@ -530,7 +591,7 @@ public sealed class Phd2TelemetryAddonTests
     [Fact]
     public void Validate_AcceptsEmptyAndMissingLogPaths()
     {
-        var addon = new Phd2TelemetryAddon(PollInterval);
+        var addon = new Phd2TelemetryAddon(PollInterval, TestLogSources.Empty());
         var configuration = new AddonConfiguration(settings: new Dictionary<string, string>
         {
             ["DebugLogPath"] = string.Empty,

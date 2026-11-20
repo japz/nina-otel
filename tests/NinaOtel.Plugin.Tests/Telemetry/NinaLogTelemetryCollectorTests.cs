@@ -1,5 +1,6 @@
 using System.Globalization;
 using FluentAssertions;
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Options;
 using NinaOtel.Plugin.Telemetry;
@@ -121,9 +122,9 @@ public sealed class NinaLogTelemetryCollectorTests
     }
 
     [Fact]
-    public async Task Start_WhenLogFileIsMissing_DoesNotThrowAndPublishesNothing()
+    public async Task Start_WhenPinnedLogFileIsMissing_DoesNotThrowAndPublishesNothing()
     {
-        var missingPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid().ToString("N"), "nina.log");
+        var missingPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid().ToString("N"), "pinned-nina-log.txt");
         var sink = new RecordingTelemetrySink();
         using var collector = CreateCollector(missingPath, sink, filteredLogsEnabled: true);
 
@@ -150,7 +151,83 @@ public sealed class NinaLogTelemetryCollectorTests
             record.Priority == TelemetryPriority.Normal &&
             Equals(record.Attributes["nina.log.path"], string.Empty) &&
             Equals(record.Attributes["status"], "waiting") &&
-            Equals(record.Attributes["reason"], "not_configured"));
+            Equals(record.Attributes["reason"], "not_found") &&
+            Equals(
+                record.Attributes["nina.log.search"],
+                $"No NINA log found in {TestLogSources.EmptyDirectory}"));
+    }
+
+    [Fact]
+    public async Task Start_WhenPathIsEmpty_AutodetectsTheNewestNinaLogAndFollowsRotation()
+    {
+        using var folder = new TempLogDirectory();
+        var ownLog = System.IO.Path.Combine(
+            folder.Path,
+            TestLogSources.NinaLogFileName(new DateTime(2026, 11, 19, 9, 0, 0), Environment.ProcessId));
+        File.WriteAllText(ownLog, string.Empty);
+        var rotatedLog = System.IO.Path.Combine(
+            folder.Path,
+            TestLogSources.NinaLogFileName(new DateTime(2026, 11, 20, 16, 56, 0), Environment.ProcessId));
+        var sink = new RecordingTelemetrySink();
+        using var collector = CreateCollector(
+            string.Empty,
+            sink,
+            filteredLogsEnabled: true,
+            startPosition: NinaLogTailerStartPosition.End,
+            catalog: TestLogSources.Catalog(folder.Path));
+
+        collector.Start();
+
+        // The file current at startup is followed from its end.
+        File.AppendAllText(
+            ownLog,
+            "2026-11-19T09:00:00.0000|WARNING|NINA.Core.App|Warn|10|Current log line" + Environment.NewLine);
+        var records = await WaitForRecordsAsync(sink, expectedCount: 1);
+        records.Should().ContainSingle().Which.Body.Should().Be("Current log line");
+
+        // A newer file that appears later is read from its beginning.
+        File.AppendAllText(
+            rotatedLog,
+            "2026-11-20T16:56:00.0000|WARNING|NINA.Core.App|Warn|11|Rotated log line" + Environment.NewLine);
+        records = await WaitForRecordsAsync(sink, expectedCount: 2);
+        records.Select(static record => record.Body).Should().Equal("Current log line", "Rotated log line");
+
+        // Reading follows the rotation, it does not stay on the old file.
+        File.AppendAllText(
+            ownLog,
+            "2026-11-19T09:05:00.0000|ERROR|NINA.Core.App|Run|12|Old log after rotation" + Environment.NewLine);
+        await Task.Delay(TimeSpan.FromMilliseconds(75));
+        sink.Records.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Start_WhenPathIsEmpty_PrefersTheLogNamedWithOwnProcessId()
+    {
+        using var folder = new TempLogDirectory();
+        var otherProcessLog = System.IO.Path.Combine(
+            folder.Path,
+            TestLogSources.NinaLogFileName(new DateTime(2026, 11, 21, 9, 0, 0), Environment.ProcessId + 1));
+        File.WriteAllText(
+            otherProcessLog,
+            "2026-11-21T09:00:00.0000|WARNING|NINA.Core.App|Warn|10|Another process" + Environment.NewLine);
+        var ownLog = System.IO.Path.Combine(
+            folder.Path,
+            TestLogSources.NinaLogFileName(new DateTime(2026, 11, 20, 9, 0, 0), Environment.ProcessId));
+        File.AppendAllText(
+            ownLog,
+            "2026-11-20T09:00:00.0000|WARNING|NINA.Core.App|Warn|11|Own process" + Environment.NewLine);
+        var sink = new RecordingTelemetrySink();
+        using var collector = CreateCollector(
+            string.Empty,
+            sink,
+            filteredLogsEnabled: true,
+            catalog: TestLogSources.Catalog(folder.Path),
+            startPosition: NinaLogTailerStartPosition.Beginning);
+
+        collector.Start();
+
+        var records = await WaitForRecordsAsync(sink, expectedCount: 1);
+        records.Should().ContainSingle().Which.Body.Should().Be("Own process");
     }
 
     [Fact]
@@ -454,7 +531,8 @@ public sealed class NinaLogTelemetryCollectorTests
         int readBufferSize = 4096,
         NinaLogTailerStartPosition startPosition = NinaLogTailerStartPosition.Beginning,
         TimeSpan? pollInterval = null,
-        TimeSpan? pendingEventFlushDelay = null) =>
+        TimeSpan? pendingEventFlushDelay = null,
+        LogSourceCatalog? catalog = null) =>
         CreateCollector(
             new CoreTelemetryOptions
             {
@@ -466,7 +544,8 @@ public sealed class NinaLogTelemetryCollectorTests
             readBufferSize,
             startPosition,
             pollInterval,
-            pendingEventFlushDelay);
+            pendingEventFlushDelay,
+            catalog);
 
     private static NinaLogTelemetryCollector CreateCollector(
         CoreTelemetryOptions options,
@@ -474,7 +553,8 @@ public sealed class NinaLogTelemetryCollectorTests
         int readBufferSize = 4096,
         NinaLogTailerStartPosition startPosition = NinaLogTailerStartPosition.Beginning,
         TimeSpan? pollInterval = null,
-        TimeSpan? pendingEventFlushDelay = null) =>
+        TimeSpan? pendingEventFlushDelay = null,
+        LogSourceCatalog? catalog = null) =>
         new(
             options,
             sink,
@@ -482,7 +562,8 @@ public sealed class NinaLogTelemetryCollectorTests
             startPosition,
             pollInterval ?? TimeSpan.FromMilliseconds(10),
             readBufferSize,
-            pendingEventFlushDelay ?? TimeSpan.FromMilliseconds(10));
+            pendingEventFlushDelay ?? TimeSpan.FromMilliseconds(10),
+            catalog ?? TestLogSources.Empty());
 
     private static async Task WaitForTailerToHoldEventAsync(NinaLogTelemetryCollector collector)
     {
@@ -590,6 +671,29 @@ public sealed class NinaLogTelemetryCollectorTests
             }
 
             return true;
+        }
+    }
+
+    private sealed class TempLogDirectory : IDisposable
+    {
+        public TempLogDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ninaotel-collector-" + Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            try
+            {
+                System.IO.Directory.Delete(Path, recursive: true);
+            }
+            catch
+            {
+                // Temp cleanup must not fail the test.
+            }
         }
     }
 

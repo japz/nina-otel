@@ -1,33 +1,45 @@
+using NinaOtel.Abstractions.Logs;
+
 namespace NinaOtel.Addons.NightSummary;
 
 internal sealed class NightSummaryLogTailer
 {
-    private readonly string path;
+    private readonly LogSourceWatcher watcher;
     private readonly TimeSpan pollInterval;
-    private readonly Func<string, CancellationToken, Task> lineHandler;
+    private readonly Func<string, string, CancellationToken, Task> lineHandler;
     private readonly Action<string> fileMissingHandler;
     private readonly CancellationTokenSource cancellation = new();
-    private long? initialPosition;
+    private long? firstOpenPosition;
+    private bool isFirstOpen = true;
     private DateTime creationTimeUtc;
     private DateTime lastWriteTimeUtc;
     private Task? worker;
 
     public NightSummaryLogTailer(
-        string path,
+        LogSourceWatcher watcher,
         TimeSpan pollInterval,
-        Func<string, CancellationToken, Task> lineHandler,
+        Func<string, string, CancellationToken, Task> lineHandler,
         Action<string> fileMissingHandler)
     {
-        this.path = path ?? throw new ArgumentNullException(nameof(path));
+        this.watcher = watcher ?? throw new ArgumentNullException(nameof(watcher));
         this.pollInterval = pollInterval > TimeSpan.Zero ? pollInterval : TimeSpan.FromSeconds(1);
         this.lineHandler = lineHandler ?? throw new ArgumentNullException(nameof(lineHandler));
         this.fileMissingHandler = fileMissingHandler ?? throw new ArgumentNullException(nameof(fileMissingHandler));
     }
 
+    public string? CurrentPath => watcher.CurrentPath;
+
+    public string NotFoundMessage => watcher.NotFoundMessage;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        initialPosition ??= TryGetCurrentLength() ?? 0;
+        watcher.Refresh();
+
+        // The file that already exists when we start is read from its end; a file that shows up
+        // later (a new run of the source app, or a rotation) is read from the beginning.
+        var currentPath = watcher.CurrentPath;
+        firstOpenPosition = currentPath is null ? 0 : TryGetCurrentLength(currentPath) ?? 0;
         worker ??= Task.Run(() => RunAsync(cancellation.Token), CancellationToken.None);
         return Task.CompletedTask;
     }
@@ -60,14 +72,16 @@ internal sealed class NightSummaryLogTailer
         {
             try
             {
-                if (!File.Exists(path))
+                watcher.Refresh();
+                var path = watcher.CurrentPath;
+                if (path is null || !File.Exists(path))
                 {
-                    fileMissingHandler(path);
+                    fileMissingHandler(watcher.NotFoundMessage);
                     await DelayAsync(cancellationToken).ConfigureAwait(false);
                     continue;
                 }
 
-                await TailExistingFileAsync(cancellationToken).ConfigureAwait(false);
+                await TailExistingFileAsync(path, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -75,12 +89,12 @@ internal sealed class NightSummaryLogTailer
             }
             catch (FileNotFoundException)
             {
-                fileMissingHandler(path);
+                fileMissingHandler(watcher.NotFoundMessage);
                 await DelayAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (DirectoryNotFoundException)
             {
-                fileMissingHandler(path);
+                fileMissingHandler(watcher.NotFoundMessage);
                 await DelayAsync(cancellationToken).ConfigureAwait(false);
             }
             catch
@@ -90,8 +104,10 @@ internal sealed class NightSummaryLogTailer
         }
     }
 
-    private async Task TailExistingFileAsync(CancellationToken cancellationToken)
+    private async Task TailExistingFileAsync(string path, CancellationToken cancellationToken)
     {
+        var startPosition = isFirstOpen ? firstOpenPosition ?? 0 : 0;
+
         await using var stream = new FileStream(
             path,
             FileMode.Open,
@@ -101,23 +117,24 @@ internal sealed class NightSummaryLogTailer
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         using var reader = new StreamReader(stream);
 
-        stream.Seek(Math.Min(initialPosition ?? stream.Length, stream.Length), SeekOrigin.Begin);
-        initialPosition = null;
-        RefreshFileSnapshot();
+        stream.Seek(Math.Min(startPosition, stream.Length), SeekOrigin.Begin);
+        isFirstOpen = false;
+        RefreshFileSnapshot(path);
 
         while (!cancellationToken.IsCancellationRequested)
         {
             var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
             if (line is not null)
             {
-                await lineHandler(line, cancellationToken).ConfigureAwait(false);
-                RefreshFileSnapshot();
+                await lineHandler(line, path, cancellationToken).ConfigureAwait(false);
+                RefreshFileSnapshot(path);
                 continue;
             }
 
-            if (ShouldReopen(stream))
+            if (watcher.Refresh() || ShouldReopen(path, stream))
             {
-                initialPosition = 0;
+                // Rotation or a replaced file: read the next file from the beginning.
+                isFirstOpen = false;
                 return;
             }
 
@@ -128,7 +145,7 @@ internal sealed class NightSummaryLogTailer
     private Task DelayAsync(CancellationToken cancellationToken) =>
         Task.Delay(pollInterval, cancellationToken);
 
-    private long? TryGetCurrentLength()
+    private long? TryGetCurrentLength(string path)
     {
         try
         {
@@ -140,7 +157,7 @@ internal sealed class NightSummaryLogTailer
         }
     }
 
-    private bool ShouldReopen(FileStream stream)
+    private bool ShouldReopen(string path, FileStream stream)
     {
         try
         {
@@ -168,7 +185,7 @@ internal sealed class NightSummaryLogTailer
         }
     }
 
-    private void RefreshFileSnapshot()
+    private void RefreshFileSnapshot(string path)
     {
         try
         {
