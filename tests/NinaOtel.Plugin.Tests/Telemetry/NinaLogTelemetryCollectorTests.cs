@@ -306,7 +306,8 @@ public sealed class NinaLogTelemetryCollectorTests
             missingLog.Path,
             "2026-06-18T22:00:00.0000|WARNING|NINA.Core.App|Warn|10|Created after prime" + Environment.NewLine);
 
-        var records = await WaitForRecordsAsync(sink, expectedCount: 2);
+        // Changing the path also publishes a waiting status, so wait for the log record itself.
+        var records = await WaitForLogRecordsAsync(sink, expectedCount: 1);
         records.Should().ContainSingle(static record => record.Signal == TelemetrySignal.Log)
             .Which.Body.Should().Be("Created after prime");
     }
@@ -586,6 +587,32 @@ public sealed class NinaLogTelemetryCollectorTests
         }
 
         collector.HasPendingTailEventForTests.Should().BeTrue("the pump should have read and held the single log event");
+    }
+
+    private static async Task<IReadOnlyList<TelemetryRecord>> WaitForLogRecordsAsync(
+        RecordingTelemetrySink sink,
+        int expectedCount)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        while (!timeout.IsCancellationRequested)
+        {
+            var records = sink.Records;
+            if (records.Count(static record => record.Signal == TelemetrySignal.Log) >= expectedCount)
+            {
+                return records;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(10), timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        return sink.Records;
     }
 
     private static async Task<IReadOnlyList<TelemetryRecord>> WaitForRecordsAsync(

@@ -376,7 +376,11 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         return settings;
     }
 
-    private bool SetPhd2Path(ref string field, string? value, string settingName)
+    private bool SetPhd2Path(
+        ref string field,
+        string? value,
+        string settingName,
+        [CallerMemberName] string propertyName = "")
     {
         if (!IsPhd2)
         {
@@ -384,7 +388,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         }
 
         var normalized = value?.Trim() ?? string.Empty;
-        if (SetField(ref field, normalized))
+        if (SetField(ref field, normalized, propertyName))
         {
             settingChanged(this, settingName, normalized);
             return true;
@@ -449,7 +453,11 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         }
     }
 
-    private void SetOnStepXSetting(ref string field, string? value, string settingName)
+    private void SetOnStepXSetting(
+        ref string field,
+        string? value,
+        string settingName,
+        [CallerMemberName] string propertyName = "")
     {
         if (!IsOnStepX)
         {
@@ -457,7 +465,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         }
 
         var normalized = value?.Trim() ?? string.Empty;
-        if (SetField(ref field, normalized))
+        if (SetField(ref field, normalized, propertyName))
         {
             settingChanged(this, settingName, normalized);
         }
