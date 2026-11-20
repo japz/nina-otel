@@ -118,11 +118,32 @@
                     Text="NINA log path:"
                     FontWeight="SemiBold"
                     VerticalAlignment="Center" />
-                <TextBox
-                    Grid.Row="10"
-                    Grid.Column="2"
-                    MinWidth="320"
-                    Text="{Binding NinaOtelOptionsViewModel.NinaLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}" />
+                <StackPanel Grid.Row="10" Grid.Column="2">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox
+                            Grid.Column="0"
+                            MinWidth="240"
+                            Text="{Binding NinaOtelOptionsViewModel.NinaLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                            ToolTip="Leave empty to autodetect the newest NINA log and follow rotation." />
+                        <Button
+                            Grid.Column="1"
+                            Content="Browse…"
+                            Margin="6,0,0,0"
+                            Padding="8,1"
+                            Command="{Binding NinaOtelOptionsViewModel.BrowseNinaLogPathCommand}"
+                            ToolTip="Pick a NINA log file." />
+                    </Grid>
+                    <TextBlock
+                        Text="{Binding NinaOtelOptionsViewModel.NinaLogPathAutoHint}"
+                        Foreground="#666666"
+                        FontSize="11"
+                        Margin="0,2,0,0"
+                        TextWrapping="Wrap" />
+                </StackPanel>
             </Grid>
             <TextBlock Text="Add-ons" FontWeight="Bold" Margin="0,12,0,0" />
             <ItemsControl ItemsSource="{Binding NinaOtelOptionsViewModel.Addons}">
@@ -196,12 +217,35 @@
                                 FontWeight="SemiBold"
                                 VerticalAlignment="Center"
                                 Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
-                            <TextBox
+                            <StackPanel
                                 Grid.Row="4"
                                 Grid.Column="2"
-                                MinWidth="220"
-                                Text="{Binding Phd2DebugLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox
+                                        Grid.Column="0"
+                                        MinWidth="150"
+                                        Text="{Binding Phd2DebugLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                        ToolTip="Leave empty to autodetect the newest PHD2 debug log and follow rotation." />
+                                    <Button
+                                        Grid.Column="1"
+                                        Content="Browse…"
+                                        Margin="6,0,0,0"
+                                        Padding="8,1"
+                                        Command="{Binding BrowsePhd2DebugLogPathCommand}"
+                                        ToolTip="Pick a PHD2 debug log file." />
+                                </Grid>
+                                <TextBlock
+                                    Text="{Binding Phd2DebugLogPathAutoHint}"
+                                    Foreground="#666666"
+                                    FontSize="11"
+                                    Margin="0,2,0,0"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
 
                             <TextBlock
                                 Grid.Row="6"
@@ -210,12 +254,35 @@
                                 FontWeight="SemiBold"
                                 VerticalAlignment="Center"
                                 Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
-                            <TextBox
+                            <StackPanel
                                 Grid.Row="6"
                                 Grid.Column="2"
-                                MinWidth="220"
-                                Text="{Binding Phd2GuideLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                                Visibility="{Binding IsPhd2, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox
+                                        Grid.Column="0"
+                                        MinWidth="150"
+                                        Text="{Binding Phd2GuideLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                        ToolTip="Leave empty to autodetect the newest PHD2 guide log and follow rotation." />
+                                    <Button
+                                        Grid.Column="1"
+                                        Content="Browse…"
+                                        Margin="6,0,0,0"
+                                        Padding="8,1"
+                                        Command="{Binding BrowsePhd2GuideLogPathCommand}"
+                                        ToolTip="Pick a PHD2 guide log file." />
+                                </Grid>
+                                <TextBlock
+                                    Text="{Binding Phd2GuideLogPathAutoHint}"
+                                    Foreground="#666666"
+                                    FontSize="11"
+                                    Margin="0,2,0,0"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
 
                             <TextBlock
                                 Grid.Row="8"
@@ -224,12 +291,35 @@
                                 FontWeight="SemiBold"
                                 VerticalAlignment="Center"
                                 Visibility="{Binding IsTargetScheduler, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
-                            <TextBox
+                            <StackPanel
                                 Grid.Row="8"
                                 Grid.Column="2"
-                                MinWidth="220"
-                                Text="{Binding TargetSchedulerLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                Visibility="{Binding IsTargetScheduler, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                                Visibility="{Binding IsTargetScheduler, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox
+                                        Grid.Column="0"
+                                        MinWidth="150"
+                                        Text="{Binding TargetSchedulerLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                        ToolTip="Leave empty to autodetect the newest Target Scheduler log and follow rotation." />
+                                    <Button
+                                        Grid.Column="1"
+                                        Content="Browse…"
+                                        Margin="6,0,0,0"
+                                        Padding="8,1"
+                                        Command="{Binding BrowseTargetSchedulerLogPathCommand}"
+                                        ToolTip="Pick a Target Scheduler log file." />
+                                </Grid>
+                                <TextBlock
+                                    Text="{Binding TargetSchedulerLogPathAutoHint}"
+                                    Foreground="#666666"
+                                    FontSize="11"
+                                    Margin="0,2,0,0"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
 
                             <TextBlock
                                 Grid.Row="10"
@@ -238,12 +328,35 @@
                                 FontWeight="SemiBold"
                                 VerticalAlignment="Center"
                                 Visibility="{Binding IsNightSummary, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
-                            <TextBox
+                            <StackPanel
                                 Grid.Row="10"
                                 Grid.Column="2"
-                                MinWidth="220"
-                                Text="{Binding NightSummaryLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                Visibility="{Binding IsNightSummary, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}" />
+                                Visibility="{Binding IsNightSummary, Converter={StaticResource NinaOtel_BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox
+                                        Grid.Column="0"
+                                        MinWidth="150"
+                                        Text="{Binding NightSummaryLogPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                        ToolTip="Leave empty to autodetect the newest NINA log and follow rotation." />
+                                    <Button
+                                        Grid.Column="1"
+                                        Content="Browse…"
+                                        Margin="6,0,0,0"
+                                        Padding="8,1"
+                                        Command="{Binding BrowseNightSummaryLogPathCommand}"
+                                        ToolTip="Pick the NINA log file Night Summary writes to." />
+                                </Grid>
+                                <TextBlock
+                                    Text="{Binding NightSummaryLogPathAutoHint}"
+                                    Foreground="#666666"
+                                    FontSize="11"
+                                    Margin="0,2,0,0"
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
 
                             <TextBlock
                                 Grid.Row="12"

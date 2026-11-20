@@ -1,6 +1,8 @@
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Core.Options;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows.Input;
 
 namespace NinaOtel.Plugin.Options;
 
@@ -20,6 +22,8 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     internal const string OnStepXCommandTimeoutMillisecondsSettingName = "CommandTimeoutMilliseconds";
 
     private readonly Action<AddonOptionViewModel, string, object> settingChanged;
+    private readonly ILogFilePicker filePicker;
+    private readonly LogSourceCatalog catalog;
     private bool isEnabled;
     private bool rawForwardingEnabled;
     private bool hasSourceSpecificHealth;
@@ -38,12 +42,20 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         string id,
         string displayName,
         string source,
-        Action<AddonOptionViewModel, string, object> settingChanged)
+        Action<AddonOptionViewModel, string, object> settingChanged,
+        ILogFilePicker? filePicker = null,
+        LogSourceCatalog? catalog = null)
     {
         Id = id;
         DisplayName = displayName;
         Source = source;
         this.settingChanged = settingChanged;
+        this.filePicker = filePicker ?? LogPathUi.DefaultPicker;
+        this.catalog = catalog ?? LogSourceCatalog.Default;
+        BrowsePhd2DebugLogPathCommand = new RelayCommand(BrowsePhd2DebugLogPath);
+        BrowsePhd2GuideLogPathCommand = new RelayCommand(BrowsePhd2GuideLogPath);
+        BrowseTargetSchedulerLogPathCommand = new RelayCommand(BrowseTargetSchedulerLogPath);
+        BrowseNightSummaryLogPathCommand = new RelayCommand(BrowseNightSummaryLogPath);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -86,14 +98,38 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
     public string Phd2DebugLogPath
     {
         get => phd2DebugLogPath;
-        set => SetPhd2Path(ref phd2DebugLogPath, value, Phd2DebugLogPathSettingName);
+        set
+        {
+            if (SetPhd2Path(ref phd2DebugLogPath, value, Phd2DebugLogPathSettingName))
+            {
+                RaisePropertyChanged(nameof(Phd2DebugLogPathAutoHint));
+            }
+        }
     }
+
+    /// <summary>Opens a file dialog to pick the PHD2 debug log.</summary>
+    public ICommand BrowsePhd2DebugLogPathCommand { get; }
+
+    /// <summary>What autodetection would tail while <see cref="Phd2DebugLogPath"/> is empty.</summary>
+    public string Phd2DebugLogPathAutoHint => LogPathUi.AutoHint(catalog.Phd2Debug, phd2DebugLogPath);
 
     public string Phd2GuideLogPath
     {
         get => phd2GuideLogPath;
-        set => SetPhd2Path(ref phd2GuideLogPath, value, Phd2GuideLogPathSettingName);
+        set
+        {
+            if (SetPhd2Path(ref phd2GuideLogPath, value, Phd2GuideLogPathSettingName))
+            {
+                RaisePropertyChanged(nameof(Phd2GuideLogPathAutoHint));
+            }
+        }
     }
+
+    /// <summary>Opens a file dialog to pick the PHD2 guide log.</summary>
+    public ICommand BrowsePhd2GuideLogPathCommand { get; }
+
+    /// <summary>What autodetection would tail while <see cref="Phd2GuideLogPath"/> is empty.</summary>
+    public string Phd2GuideLogPathAutoHint => LogPathUi.AutoHint(catalog.Phd2Guide, phd2GuideLogPath);
 
     public string TargetSchedulerLogPath
     {
@@ -109,9 +145,17 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
             if (SetField(ref targetSchedulerLogPath, normalized))
             {
                 settingChanged(this, TargetSchedulerLogPathSettingName, normalized);
+                RaisePropertyChanged(nameof(TargetSchedulerLogPathAutoHint));
             }
         }
     }
+
+    /// <summary>Opens a file dialog to pick the Target Scheduler log.</summary>
+    public ICommand BrowseTargetSchedulerLogPathCommand { get; }
+
+    /// <summary>What autodetection would tail while <see cref="TargetSchedulerLogPath"/> is empty.</summary>
+    public string TargetSchedulerLogPathAutoHint =>
+        LogPathUi.AutoHint(catalog.TargetScheduler, targetSchedulerLogPath);
 
     public string NightSummaryLogPath
     {
@@ -127,9 +171,16 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
             if (SetField(ref nightSummaryLogPath, normalized))
             {
                 settingChanged(this, NightSummaryLogPathSettingName, normalized);
+                RaisePropertyChanged(nameof(NightSummaryLogPathAutoHint));
             }
         }
     }
+
+    /// <summary>Opens a file dialog to pick the Night Summary (NINA) log.</summary>
+    public ICommand BrowseNightSummaryLogPathCommand { get; }
+
+    /// <summary>What autodetection would tail while <see cref="NightSummaryLogPath"/> is empty.</summary>
+    public string NightSummaryLogPathAutoHint => LogPathUi.AutoHint(catalog.NightSummary, nightSummaryLogPath);
 
     public string OnStepXHost
     {
@@ -325,17 +376,76 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         return settings;
     }
 
-    private void SetPhd2Path(ref string field, string? value, string settingName)
+    private bool SetPhd2Path(ref string field, string? value, string settingName)
     {
         if (!IsPhd2)
         {
-            return;
+            return false;
         }
 
         var normalized = value?.Trim() ?? string.Empty;
         if (SetField(ref field, normalized))
         {
             settingChanged(this, settingName, normalized);
+            return true;
+        }
+
+        return false;
+    }
+
+    private void BrowsePhd2DebugLogPath()
+    {
+        var picked = LogPathUi.Browse(
+            filePicker,
+            catalog.Phd2Debug,
+            phd2DebugLogPath,
+            LogPathUi.Phd2LogFilter,
+            "Select the PHD2 debug log to tail");
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            Phd2DebugLogPath = picked;
+        }
+    }
+
+    private void BrowsePhd2GuideLogPath()
+    {
+        var picked = LogPathUi.Browse(
+            filePicker,
+            catalog.Phd2Guide,
+            phd2GuideLogPath,
+            LogPathUi.Phd2LogFilter,
+            "Select the PHD2 guide log to tail");
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            Phd2GuideLogPath = picked;
+        }
+    }
+
+    private void BrowseTargetSchedulerLogPath()
+    {
+        var picked = LogPathUi.Browse(
+            filePicker,
+            catalog.TargetScheduler,
+            targetSchedulerLogPath,
+            LogPathUi.TargetSchedulerLogFilter,
+            "Select the Target Scheduler log to tail");
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            TargetSchedulerLogPath = picked;
+        }
+    }
+
+    private void BrowseNightSummaryLogPath()
+    {
+        var picked = LogPathUi.Browse(
+            filePicker,
+            catalog.NightSummary,
+            nightSummaryLogPath,
+            LogPathUi.NightSummaryLogFilter,
+            "Select the Night Summary (NINA) log to tail");
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            NightSummaryLogPath = picked;
         }
     }
 
@@ -378,4 +488,7 @@ public sealed class AddonOptionViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         return true;
     }
+
+    private void RaisePropertyChanged(string propertyName) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 }

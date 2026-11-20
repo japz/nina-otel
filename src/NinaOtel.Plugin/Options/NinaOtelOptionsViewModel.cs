@@ -1,3 +1,4 @@
+using NinaOtel.Abstractions.Logs;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Health;
 using NinaOtel.Core.Options;
@@ -7,6 +8,7 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Windows.Input;
 
 namespace NinaOtel.Plugin.Options;
 
@@ -58,6 +60,8 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
     private readonly INinaOtelSettingsStore settingsStore;
     private readonly ISecretProtector secretProtector;
+    private readonly ILogFilePicker filePicker;
+    private readonly LogSourceCatalog catalog;
     private readonly IReadOnlyList<AddonOptionViewModel> addons;
     private readonly NinaOtelOptions defaults = NinaOtelOptions.CreateDefault();
     private readonly SynchronizationContext? synchronizationContext = SynchronizationContext.Current;
@@ -98,10 +102,17 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
     {
     }
 
-    internal NinaOtelOptionsViewModel(INinaOtelSettingsStore settingsStore, ISecretProtector secretProtector)
+    internal NinaOtelOptionsViewModel(
+        INinaOtelSettingsStore settingsStore,
+        ISecretProtector secretProtector,
+        ILogFilePicker? filePicker = null,
+        LogSourceCatalog? catalog = null)
     {
         this.settingsStore = settingsStore ?? throw new ArgumentNullException(nameof(settingsStore));
         this.secretProtector = secretProtector ?? throw new ArgumentNullException(nameof(secretProtector));
+        this.filePicker = filePicker ?? LogPathUi.DefaultPicker;
+        this.catalog = catalog ?? LogSourceCatalog.Default;
+        BrowseNinaLogPathCommand = new RelayCommand(BrowseNinaLogPath);
         addons = FirstPartyAddonCatalog.Descriptors
             .Select(descriptor => new AddonOptionViewModel(
                 descriptor.Id,
@@ -290,8 +301,29 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
             if (SetField(ref ninaLogPath, normalized))
             {
                 settingsStore.SetString(NinaLogPathKey, normalized);
+                RaisePropertyChanged(nameof(NinaLogPathAutoHint));
                 Status = "Settings saved";
             }
+        }
+    }
+
+    /// <summary>Opens a file dialog to pick the NINA log file.</summary>
+    public ICommand BrowseNinaLogPathCommand { get; }
+
+    /// <summary>What autodetection would tail while <see cref="NinaLogPath"/> is empty.</summary>
+    public string NinaLogPathAutoHint => LogPathUi.AutoHint(catalog.Nina, ninaLogPath);
+
+    private void BrowseNinaLogPath()
+    {
+        var picked = LogPathUi.Browse(
+            filePicker,
+            catalog.Nina,
+            ninaLogPath,
+            LogPathUi.NinaLogFilter,
+            "Select the NINA log file to tail");
+        if (!string.IsNullOrWhiteSpace(picked))
+        {
+            NinaLogPath = picked;
         }
     }
 
@@ -582,6 +614,7 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         RaisePropertyChanged(nameof(MaxSpoolSizeGb));
         RaisePropertyChanged(nameof(MaxSpoolAgeDays));
         RaisePropertyChanged(nameof(NinaLogPath));
+        RaisePropertyChanged(nameof(NinaLogPathAutoHint));
         RaisePropertyChanged(nameof(EquipmentEnabled));
         RaisePropertyChanged(nameof(ImageStatsEnabled));
         RaisePropertyChanged(nameof(WorkflowTracesEnabled));
