@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
@@ -9,6 +10,9 @@ internal sealed class DiskTelemetrySpool
 {
     private const long DefaultMaxBytes = 1L * 1024 * 1024 * 1024;
 
+    private static readonly ConcurrentDictionary<string, SpoolAccess> AccessByPath = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.General);
     private static readonly TimeSpan DefaultMaxAge = TimeSpan.FromDays(7);
 
@@ -16,6 +20,7 @@ internal sealed class DiskTelemetrySpool
     private readonly long maxBytes;
     private readonly TimeSpan maxAge;
     private readonly Func<string, TelemetryPriority> evictionPriorityResolver;
+    private readonly SpoolAccess access;
     private long droppedRecords;
 
     public DiskTelemetrySpool(string spoolPath)
@@ -46,7 +51,8 @@ internal sealed class DiskTelemetrySpool
             throw new ArgumentOutOfRangeException(nameof(maxAge), "Max age must be positive.");
         }
 
-        this.spoolPath = ExpandLocalAppData(spoolPath);
+        this.spoolPath = Path.GetFullPath(ExpandLocalAppData(spoolPath));
+        access = AccessByPath.GetOrAdd(this.spoolPath, _ => new SpoolAccess());
         this.maxBytes = maxBytes;
         this.maxAge = maxAge;
         this.evictionPriorityResolver = evictionPriorityResolver;
@@ -58,11 +64,11 @@ internal sealed class DiskTelemetrySpool
         cancellationToken.ThrowIfCancellationRequested();
 
         Directory.CreateDirectory(spoolPath);
-        PruneExpiredFiles(DateTime.UtcNow);
 
         var baseName = CreateSpoolFileBaseName();
         var temporaryPath = Path.Combine(spoolPath, baseName + ".tmp");
-        var readyPath = Path.Combine(spoolPath, baseName + ".ready");
+        var readyPath = new ReplayFile(Path.Combine(spoolPath, baseName), GetSignals(records), false, records.Count,
+            records.Select(record => (DateTimeOffset?)record.Timestamp).Min()).ReadyPath;
         var dto = BatchDto.FromRecords(records);
 
         try
@@ -78,8 +84,12 @@ internal sealed class DiskTelemetrySpool
                 await JsonSerializer.SerializeAsync(stream, dto, JsonOptions, cancellationToken).ConfigureAwait(false);
             }
 
-            File.Move(temporaryPath, readyPath);
-            EnforceMaxBytes(readyPath);
+            lock (access)
+            {
+                PruneExpiredFiles(DateTime.UtcNow);
+                File.Move(temporaryPath, readyPath);
+                EnforceMaxBytes(readyPath);
+            }
         }
         catch
         {
@@ -88,84 +98,171 @@ internal sealed class DiskTelemetrySpool
         }
     }
 
-    public async Task<IReadOnlyList<Batch>> ReadBatchesAsync(CancellationToken cancellationToken)
+    internal Task AcquireReplayOwnershipAsync(CancellationToken token) => access.ReplayOwner.WaitAsync(token);
+
+    internal void ReleaseReplayOwnership() => access.ReplayOwner.Release();
+
+    internal IEnumerable<string> EnumerateReadyFiles() => Directory.Exists(spoolPath)
+        ? Directory.EnumerateFiles(spoolPath, "*.ready")
+        : [];
+
+    internal IReadOnlyList<string> GetReplayPage(SpoolSignal eligible, int pageSize)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (!Directory.Exists(spoolPath))
+        // Keep only the oldest page of names, without loading or sorting the entire directory.
+        var oldest = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var path in EnumerateReadyFiles())
         {
-            return Array.Empty<Batch>();
-        }
-
-        var batches = new List<Batch>();
-        foreach (var path in Directory.EnumerateFiles(spoolPath, "*.ready").OrderBy(path => path, StringComparer.Ordinal))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            batches.Add(await ReadBatchAsync(path, cancellationToken).ConfigureAwait(false));
-        }
-
-        return batches;
-    }
-
-    public async Task<Stats> GetStatsAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        if (!Directory.Exists(spoolPath))
-        {
-            return Stats.Empty;
-        }
-
-        var readyFiles = Directory.EnumerateFiles(spoolPath, "*.ready")
-            .Select(path => new FileInfo(path))
-            .Where(file => file.Exists)
-            .OrderBy(file => file.FullName, StringComparer.Ordinal)
-            .ToArray();
-        var queuedBytes = readyFiles.Sum(file => file.Length);
-        var queuedRecords = 0;
-        DateTimeOffset? oldestQueuedTimestamp = null;
-
-        foreach (var file in readyFiles)
-        {
-            Batch batch;
-            try
-            {
-                batch = await ReadBatchAsync(file.FullName, cancellationToken).ConfigureAwait(false);
-            }
-            catch (BatchReadException)
+            var file = ReplayFile.Parse(path);
+            if ((file.Pending & eligible) == 0)
             {
                 continue;
             }
 
-            queuedRecords += batch.Records.Count;
-            foreach (var record in batch.Records)
+            if (oldest.Count < pageSize || StringComparer.Ordinal.Compare(path, oldest.Max) < 0)
             {
-                if (oldestQueuedTimestamp is null || record.Timestamp < oldestQueuedTimestamp)
+                oldest.Add(path);
+                if (oldest.Count > pageSize)
                 {
-                    oldestQueuedTimestamp = record.Timestamp;
+                    oldest.Remove(oldest.Max!);
                 }
             }
         }
 
-        return new Stats(
-            readyFiles.Length,
-            queuedRecords,
-            queuedBytes,
-            oldestQueuedTimestamp,
-            Interlocked.Read(ref droppedRecords));
+        return oldest.ToArray();
     }
 
-    public void Quarantine(BatchReadException exception)
+    internal bool TryReserve(string path)
     {
-        ArgumentNullException.ThrowIfNull(exception);
-
-        if (!File.Exists(exception.Path))
+        lock (access)
         {
-            return;
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            access.ActiveReplayFile = path;
+            return true;
+        }
+    }
+
+    internal void Release()
+    {
+        lock (access)
+        {
+            access.ActiveReplayFile = null;
+        }
+    }
+
+    internal void FinishAttempt(string path, ReplayFile file)
+    {
+        lock (access)
+        {
+            if (file.Pending != SpoolSignal.None)
+            {
+                if (!string.Equals(path, file.ReadyPath, StringComparison.Ordinal))
+                {
+                    File.Move(path, file.ReadyPath);
+                }
+                return;
+            }
+
+            if (file.HasInvalidSignal)
+            {
+                File.Move(path, CreateSidecarPath(path, "invalid"));
+            }
+            else
+            {
+                CompleteFile(path, File.Move, File.Delete);
+            }
+        }
+    }
+
+    internal Stats GetStats()
+    {
+        var queuedBatches = 0;
+        var queuedRecords = 0;
+        long queuedBytes = 0;
+        DateTimeOffset? oldestQueuedTimestamp = null;
+        foreach (var path in EnumerateReadyFiles())
+        {
+            try
+            {
+                queuedBytes += new FileInfo(path).Length;
+            }
+            catch (FileNotFoundException)
+            {
+                continue;
+            }
+
+            var file = ReplayFile.Parse(path);
+            queuedBatches++;
+            queuedRecords += file.RecordCount;
+            var timestamp = file.OldestTimestamp ?? file.EnqueueTime;
+            if (timestamp is not null && (oldestQueuedTimestamp is null || timestamp < oldestQueuedTimestamp))
+            {
+                oldestQueuedTimestamp = timestamp;
+            }
         }
 
-        File.Move(exception.Path, CreateSidecarPath(exception.Path, "invalid"));
+        return new Stats(
+            queuedBatches, queuedRecords, queuedBytes, oldestQueuedTimestamp, Interlocked.Read(ref droppedRecords));
+    }
+
+    internal static SpoolSignal GetSignals(IReadOnlyList<TelemetryRecord> records)
+    {
+        var signals = SpoolSignal.None;
+        foreach (var record in records)
+        {
+            signals |= record.Signal switch
+            {
+                TelemetrySignal.Metric => SpoolSignal.Metrics,
+                TelemetrySignal.Span => SpoolSignal.Logs | SpoolSignal.Traces,
+                _ => SpoolSignal.Logs,
+            };
+        }
+
+        return signals;
+    }
+
+    // The JSON remains untouched. A rename atomically records which signals still need delivery.
+    // Legacy alpha.57 names have no metadata and are discovered the first time the payload is read.
+    internal sealed record ReplayFile(
+        string BasePath, SpoolSignal Pending, bool HasInvalidSignal, int RecordCount, DateTimeOffset? OldestTimestamp)
+    {
+        public string ReadyPath => FormattableString.Invariant(
+            $"{BasePath}~{(int)Pending}~{(HasInvalidSignal ? 1 : 0)}~{RecordCount}~{OldestTimestamp?.UtcTicks ?? 0}.ready");
+
+        public DateTimeOffset? EnqueueTime
+        {
+            get
+            {
+                var name = Path.GetFileName(BasePath);
+                var separator = name.IndexOf('-');
+                return separator > 0 && long.TryParse(name.AsSpan(0, separator), out var ticks)
+                    ? ReadTimestamp(ticks)
+                    : null;
+            }
+        }
+
+        public static ReplayFile Parse(string path)
+        {
+            var stem = Path.GetFileNameWithoutExtension(path);
+            var parts = stem.Split('~');
+            var basePath = Path.Combine(Path.GetDirectoryName(path)!, parts[0]);
+            if (parts.Length == 5 &&
+                int.TryParse(parts[1], out var signals) &&
+                signals > 0 && signals <= (int)SpoolSignal.All &&
+                int.TryParse(parts[3], out var records) &&
+                long.TryParse(parts[4], out var ticks))
+            {
+                return new ReplayFile(basePath, (SpoolSignal)signals, parts[2] == "1", records, ReadTimestamp(ticks));
+            }
+
+            return new ReplayFile(basePath, SpoolSignal.All, false, 0, null);
+        }
+
+        private static DateTimeOffset? ReadTimestamp(long ticks) =>
+            ticks > 0 && ticks <= DateTimeOffset.MaxValue.Ticks ? new DateTimeOffset(ticks, TimeSpan.Zero) : null;
     }
 
     private void PruneExpiredFiles(DateTime utcNow)
@@ -173,7 +270,7 @@ internal sealed class DiskTelemetrySpool
         var cutoff = utcNow - maxAge;
         foreach (var path in EnumerateSpoolFiles())
         {
-            if (File.GetLastWriteTimeUtc(path) < cutoff)
+            if (!string.Equals(path, access.ActiveReplayFile, StringComparison.Ordinal) && File.GetLastWriteTimeUtc(path) < cutoff)
             {
                 if (path.EndsWith(".ready", StringComparison.Ordinal))
                 {
@@ -203,13 +300,14 @@ internal sealed class DiskTelemetrySpool
         var candidates = files
             .Select(file =>
             {
-                var isNewestProtected = string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal);
+                var isProtected = string.Equals(file.FullName, newestFullPath, StringComparison.Ordinal) ||
+                    string.Equals(file.FullName, access.ActiveReplayFile, StringComparison.Ordinal);
                 return new EvictionCandidate(
                     file,
-                    isNewestProtected,
-                    isNewestProtected ? TelemetryPriority.Debug : evictionPriorityResolver(file.FullName));
+                    isProtected,
+                    isProtected ? TelemetryPriority.Debug : evictionPriorityResolver(file.FullName));
             })
-            .OrderBy(candidate => candidate.IsNewestProtected)
+            .OrderBy(candidate => candidate.IsProtected)
             .ThenBy(candidate => candidate.Priority)
             .ThenBy(candidate => candidate.File.FullName, StringComparer.Ordinal)
             .ToList();
@@ -222,7 +320,7 @@ internal sealed class DiskTelemetrySpool
             }
 
             var file = candidate.File;
-            if (candidate.IsNewestProtected)
+            if (candidate.IsProtected)
             {
                 continue;
             }
@@ -305,7 +403,7 @@ internal sealed class DiskTelemetrySpool
     private static string CreateSpoolFileBaseName() =>
         DateTime.UtcNow.Ticks.ToString("D19", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N");
 
-    private static async Task<Batch> ReadBatchAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<Batch> ReadBatchAsync(string path, CancellationToken cancellationToken)
     {
         try
         {
@@ -329,7 +427,7 @@ internal sealed class DiskTelemetrySpool
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or ArgumentException or NotSupportedException)
         {
             throw new BatchReadException(path, ex);
         }
@@ -356,7 +454,13 @@ internal sealed class DiskTelemetrySpool
         }
     }
 
-    private sealed record EvictionCandidate(FileInfo File, bool IsNewestProtected, TelemetryPriority Priority);
+    private sealed class SpoolAccess
+    {
+        public SemaphoreSlim ReplayOwner { get; } = new(1, 1);
+        public string? ActiveReplayFile { get; set; }
+    }
+
+    private sealed record EvictionCandidate(FileInfo File, bool IsProtected, TelemetryPriority Priority);
 
     internal sealed class Batch
     {
@@ -383,17 +487,22 @@ internal sealed class DiskTelemetrySpool
 
         public IReadOnlyList<TelemetryRecord> Records { get; }
 
-        public void Complete()
+        public string Id => ReplayFile.Parse(path).BasePath;
+
+        public void Complete() => CompleteFile(path, moveFile, deleteFile);
+    }
+
+    private static void CompleteFile(string path, Action<string, string> moveFile, Action<string> deleteFile)
+    {
+        var sentPath = CreateSidecarPath(path, "sent");
+        moveFile(path, sentPath);
+        try
         {
-            var sentPath = CreateSidecarPath(path, "sent");
-            moveFile(path, sentPath);
-            try
-            {
-                deleteFile(sentPath);
-            }
-            catch
-            {
-            }
+            deleteFile(sentPath);
+        }
+        catch
+        {
+            // The atomic rename already took this file out of the ready queue.
         }
     }
 
@@ -452,9 +561,60 @@ internal sealed class DiskTelemetrySpool
         public static Stats Empty { get; } = new(0, 0, 0, null, 0);
     }
 
+    internal sealed record TraceCheckpoint(
+        string BatchId, byte[] Payload, IReadOnlyList<OtlpActiveSpanSnapshot> ActiveSpans)
+    {
+        public static async Task<TraceCheckpoint?> LoadAsync(Batch batch, CancellationToken token)
+        {
+            var path = GetPath(batch);
+            try
+            {
+                await using var stream = File.OpenRead(path);
+                var dto = await JsonSerializer.DeserializeAsync<TraceCheckpointDto>(stream, JsonOptions, token)
+                    .ConfigureAwait(false);
+                return dto is null ? throw new InvalidDataException("Empty trace replay checkpoint.") : new(
+                    dto.BatchId, dto.Payload, dto.Spans.Select(span => new OtlpActiveSpanSnapshot(
+                        span.Start.ToRecord(), span.TraceIdSeed, span.Events.ToRecords(), span.DroppedEventCount)).ToArray());
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+        }
+
+        public async Task SaveAsync(Batch batch, CancellationToken token)
+        {
+            var path = GetPath(batch);
+            var temporaryPath = path + ".tmp";
+            var dto = new TraceCheckpointDto(BatchId, Payload, ActiveSpans.Select(span => new ActiveSpanDto(
+                RecordDto.FromRecord(span.Start), span.TraceIdSeed,
+                BatchDto.FromRecords(span.Events), span.DroppedEventCount)).ToArray());
+            try
+            {
+                await using (var stream = File.Create(temporaryPath))
+                {
+                    await JsonSerializer.SerializeAsync(stream, dto, JsonOptions, token).ConfigureAwait(false);
+                }
+                File.Move(temporaryPath, path, overwrite: true);
+            }
+            finally
+            {
+                TryDelete(temporaryPath);
+            }
+        }
+
+        public static void Remove(Batch batch) => TryDelete(GetPath(batch));
+
+        private static string GetPath(Batch batch) =>
+            Path.Combine(Path.GetDirectoryName(batch.Id)!, "trace-replay.checkpoint");
+
+        private sealed record TraceCheckpointDto(string BatchId, byte[] Payload, ActiveSpanDto[] Spans);
+        private sealed record ActiveSpanDto(RecordDto Start, string TraceIdSeed, BatchDto Events, int DroppedEventCount);
+    }
+
     private sealed class BatchDto
     {
-        public List<RecordDto> Records { get; init; } = [];
+        public required List<RecordDto> Records { get; init; }
 
         public static BatchDto FromRecords(IReadOnlyList<TelemetryRecord> records) =>
             new()
@@ -463,7 +623,9 @@ internal sealed class DiskTelemetrySpool
             };
 
         public IReadOnlyList<TelemetryRecord> ToRecords() =>
-            Records.Select(record => record.ToRecord()).ToArray();
+            Records?.Select(record => record?.ToRecord() ??
+                throw new InvalidDataException("Null telemetry record.")).ToArray() ??
+            throw new InvalidDataException("Missing telemetry records.");
     }
 
     private sealed class RecordDto
@@ -500,8 +662,15 @@ internal sealed class DiskTelemetrySpool
                 TraceId = record.TraceId,
             };
 
-        public TelemetryRecord ToRecord() =>
-            new(
+        public TelemetryRecord ToRecord()
+        {
+            if (!Enum.IsDefined(Signal) || Timestamp == default || string.IsNullOrWhiteSpace(Name) ||
+                string.IsNullOrWhiteSpace(Source) || Attributes is null || Attributes.Any(attribute => attribute is null))
+            {
+                throw new InvalidDataException("Invalid telemetry record.");
+            }
+
+            return new(
                 Signal,
                 Timestamp,
                 Source,
@@ -518,6 +687,7 @@ internal sealed class DiskTelemetrySpool
             {
                 TraceId = TraceId,
             };
+        }
     }
 
     private sealed class AttributeDto

@@ -16,7 +16,9 @@ public sealed record CollectorHealthSnapshot
         int queuedRecords,
         long queuedBytes,
         DateTimeOffset? oldestQueuedTimestamp,
-        int droppedRecords)
+        int droppedRecords,
+        int queuedBatches,
+        int quarantinedBatches)
     {
         State = state;
         Endpoint = endpoint;
@@ -30,6 +32,8 @@ public sealed record CollectorHealthSnapshot
         QueuedBytes = queuedBytes;
         OldestQueuedTimestamp = oldestQueuedTimestamp;
         DroppedRecords = droppedRecords;
+        QueuedBatches = queuedBatches;
+        QuarantinedBatches = quarantinedBatches;
     }
 
     public CollectorHealthState State { get; }
@@ -44,6 +48,8 @@ public sealed record CollectorHealthSnapshot
     public long QueuedBytes { get; }
     public DateTimeOffset? OldestQueuedTimestamp { get; }
     public int DroppedRecords { get; }
+    public int QueuedBatches { get; }
+    public int QuarantinedBatches { get; }
 
     public static CollectorHealthSnapshot Healthy(
         Uri endpoint,
@@ -54,7 +60,9 @@ public sealed record CollectorHealthSnapshot
         int queuedRecords = 0,
         long queuedBytes = 0,
         DateTimeOffset? oldestQueuedTimestamp = null,
-        int droppedRecords = 0) =>
+        int droppedRecords = 0,
+        int queuedBatches = 0,
+        int quarantinedBatches = 0) =>
         new(
             CollectorHealthState.Healthy,
             endpoint,
@@ -67,7 +75,9 @@ public sealed record CollectorHealthSnapshot
             queuedRecords,
             queuedBytes,
             oldestQueuedTimestamp,
-            droppedRecords);
+            droppedRecords,
+            queuedBatches,
+            quarantinedBatches);
 
     public static CollectorHealthSnapshot Unhealthy(
         Uri endpoint,
@@ -80,7 +90,9 @@ public sealed record CollectorHealthSnapshot
         int queuedRecords = 0,
         long queuedBytes = 0,
         DateTimeOffset? oldestQueuedTimestamp = null,
-        int droppedRecords = 0) =>
+        int droppedRecords = 0,
+        int queuedBatches = 0,
+        int quarantinedBatches = 0) =>
         new(
             CollectorHealthState.Unhealthy,
             endpoint,
@@ -93,5 +105,7 @@ public sealed record CollectorHealthSnapshot
             queuedRecords,
             queuedBytes,
             oldestQueuedTimestamp,
-            droppedRecords);
+            droppedRecords,
+            queuedBatches,
+            quarantinedBatches);
 }

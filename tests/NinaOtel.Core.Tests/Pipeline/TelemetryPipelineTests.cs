@@ -115,7 +115,7 @@ public sealed class TelemetryPipelineTests
     {
         var spoolPath = Path.Combine(Path.GetTempPath(), "nina-otel-pipeline-spool-tests", Guid.NewGuid().ToString("N"));
         var inner = new FailingOnceExporter();
-        var exporter = new DurableTelemetryExporter(inner, new DiskTelemetrySpool(spoolPath));
+        var exporter = new DurableTelemetryExporter(inner, new TestReplayExporter(inner), new DiskTelemetrySpool(spoolPath));
         var pipeline = new TelemetryPipeline(exporter, capacity: 10);
         var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Important);
         var second = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "second", TelemetryPriority.Routine);
@@ -130,16 +130,25 @@ public sealed class TelemetryPipelineTests
 
             await inner.WaitForCountAsync(2, TimeSpan.FromSeconds(2));
             pipeline.DroppedRecords.Should().Be(0);
-            inner.Records.Select(record => record.Name).Should().Equal("first", "second");
+            inner.Records.Select(record => record.Name).Should().BeEquivalentTo("first", "second");
         }
         finally
         {
             await pipeline.DisposeAsync();
+            await exporter.ReplayCompletion.WaitAsync(TimeSpan.FromSeconds(2));
             if (Directory.Exists(spoolPath))
             {
                 Directory.Delete(spoolPath, recursive: true);
             }
         }
+    }
+
+    private sealed class TestReplayExporter(ITelemetryExporter exporter) : ISpoolReplayExporter
+    {
+        public Task ExportAsync(SpoolSignal signal, DiskTelemetrySpool.Batch batch, CancellationToken cancellationToken) =>
+            exporter.ExportAsync(batch.Records, cancellationToken);
+
+        public void Dispose() { }
     }
 
     [Fact]

@@ -7,6 +7,14 @@ public sealed class TelemetryExportException : Exception
     {
     }
 
+    internal TelemetryExportException(string message, bool isPermanent)
+        : base(message)
+    {
+        IsPermanent = isPermanent;
+    }
+
+    internal bool IsPermanent { get; }
+
     public TelemetryExportException(string message, Exception innerException)
         : base(message, innerException)
     {

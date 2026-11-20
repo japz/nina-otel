@@ -11,12 +11,19 @@ internal sealed record OtlpCompletedSpan(
     DateTimeOffset EndTimestamp,
     IReadOnlyDictionary<string, object?> Attributes,
     IReadOnlyList<OtlpCompletedSpanEvent> Events,
-    string? TraceIdSeed = null);
+    string? TraceIdSeed = null,
+    int DroppedEventCount = 0);
 
 internal sealed record OtlpCompletedSpanEvent(
     DateTimeOffset Timestamp,
     string Name,
     IReadOnlyDictionary<string, object?> Attributes);
+
+internal sealed record OtlpActiveSpanSnapshot(
+    TelemetryRecord Start,
+    string TraceIdSeed,
+    IReadOnlyList<TelemetryRecord> Events,
+    int DroppedEventCount);
 
 internal sealed class OtlpTraceStateStore
 {
@@ -24,6 +31,7 @@ internal sealed class OtlpTraceStateStore
     private const int DefaultMaxCompletedSpans = 1024;
 
     private readonly int maxActiveSpans;
+    private readonly int maxEventsPerSpan;
     private readonly int maxCompletedSpans;
     private readonly Dictionary<ActiveSpanKey, ActiveSpan> activeSpans = [];
     private readonly List<OtlpCompletedSpan> completedSpans = [];
@@ -34,7 +42,7 @@ internal sealed class OtlpTraceStateStore
     {
     }
 
-    internal OtlpTraceStateStore(int maxActiveSpans, int maxCompletedSpans)
+    internal OtlpTraceStateStore(int maxActiveSpans, int maxCompletedSpans, int maxEventsPerSpan = int.MaxValue)
     {
         if (maxActiveSpans <= 0)
         {
@@ -47,6 +55,7 @@ internal sealed class OtlpTraceStateStore
         }
 
         this.maxActiveSpans = maxActiveSpans;
+        this.maxEventsPerSpan = maxEventsPerSpan;
         this.maxCompletedSpans = maxCompletedSpans;
     }
 
@@ -93,6 +102,36 @@ internal sealed class OtlpTraceStateStore
         RemoveCompletedSpanRange(0, removeCount);
     }
 
+    internal IReadOnlyList<OtlpActiveSpanSnapshot> SnapshotActiveSpans() =>
+        activeSpans.Values.Select(span => new OtlpActiveSpanSnapshot(
+            TelemetryRecord.Span(span.StartTimestamp, span.Source, span.Name, SpanEventKind.Start, span.SpanId,
+                TelemetryPriority.Normal, span.Attributes, span.ParentSpanId) with
+            {
+                TraceId = span.TraceIdWasExplicit ? span.TraceIdSeed : null,
+            },
+            span.TraceIdSeed,
+            span.Events.Select(item => TelemetryRecord.Span(item.Timestamp, span.Source, item.Name,
+                SpanEventKind.Event, span.SpanId, TelemetryPriority.Normal, item.Attributes, span.ParentSpanId)).ToArray(),
+            span.DroppedEventCount)).ToArray();
+
+    internal void RestoreActiveSpans(IReadOnlyList<OtlpActiveSpanSnapshot> spans)
+    {
+        foreach (var span in spans)
+        {
+            var start = span.Start;
+            var key = new ActiveSpanKey(start.Source, start.SpanId!, span.TraceIdSeed);
+            activeSpans[key] = new ActiveSpan(
+                start.Source, start.Name, start.SpanId!, start.ParentSpanId, span.TraceIdSeed, start.TraceId is not null,
+                start.Timestamp, start.Attributes,
+                span.Events.Select(item => new OtlpCompletedSpanEvent(item.Timestamp, item.Name, item.Attributes)).ToList())
+            {
+                DroppedEventCount = span.DroppedEventCount,
+            };
+        }
+
+        TrimActiveSpansToLimit();
+    }
+
     private void StartSpan(TelemetryRecord record)
     {
         var spanId = NormalizeId(record.SpanId)!;
@@ -124,6 +163,12 @@ internal sealed class OtlpTraceStateStore
                 out _,
                 out var span))
         {
+            return;
+        }
+
+        if (span.Events.Count >= maxEventsPerSpan)
+        {
+            span.DroppedEventCount++;
             return;
         }
 
@@ -173,7 +218,8 @@ internal sealed class OtlpTraceStateStore
             record.Timestamp,
             attributes,
             span.Events.ToArray(),
-            traceId ?? span.TraceIdSeed);
+            traceId ?? span.TraceIdSeed,
+            span.DroppedEventCount);
     }
 
     private string ResolveTraceIdSeed(
@@ -371,5 +417,8 @@ internal sealed class OtlpTraceStateStore
         bool TraceIdWasExplicit,
         DateTimeOffset StartTimestamp,
         IReadOnlyDictionary<string, object?> Attributes,
-        List<OtlpCompletedSpanEvent> Events);
+        List<OtlpCompletedSpanEvent> Events)
+    {
+        public int DroppedEventCount { get; set; }
+    }
 }

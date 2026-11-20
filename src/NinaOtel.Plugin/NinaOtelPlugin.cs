@@ -402,29 +402,28 @@ public sealed class NinaOtelPlugin : PluginBase
 
     private ITelemetryExporter CreateCollectorExporter(NinaOtelOptions options)
     {
-        var collectorExporter = new CollectorHealthReportingExporter(
-            new OtlpTelemetryExporter(options),
-            NinaOtelOptionsViewModel.UpdateCollectorHealth,
-            options.Otlp.Endpoint,
-            options.Otlp.Protocol,
-            timeProvider);
-
+        var liveExporter = new OtlpTelemetryExporter(options);
         if (!options.Buffer.DiskOnFailureEnabled)
         {
-            return collectorExporter;
+            return new CollectorHealthReportingExporter(
+                liveExporter,
+                NinaOtelOptionsViewModel.UpdateCollectorHealth,
+                options.Otlp.Endpoint,
+                options.Otlp.Protocol,
+                timeProvider);
         }
 
         return new DurableTelemetryExporter(
-            collectorExporter,
+            liveExporter,
+            new OtlpSpoolReplayExporter(options.Otlp),
             new DiskTelemetrySpool(
                 options.Buffer.SpoolPath,
                 options.Buffer.MaxSpoolBytes,
                 options.Buffer.MaxSpoolAge),
-            TimeSpan.FromMilliseconds(250),
-            TimeSpan.FromSeconds(5),
             NinaOtelOptionsViewModel.UpdateCollectorHealth,
             options.Otlp.Endpoint,
             options.Otlp.Protocol,
-            timeProvider);
+            timeProvider,
+            diagnostic: message => Logger.Warning(message));
     }
 }

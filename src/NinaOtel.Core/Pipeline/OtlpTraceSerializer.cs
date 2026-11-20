@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using static NinaOtel.Core.Pipeline.OtlpProtoValues;
 
 namespace NinaOtel.Core.Pipeline;
 
@@ -17,7 +18,7 @@ internal static class OtlpTraceSerializer
             return [];
         }
 
-        var writer = new ProtoWriter();
+        var writer = new OtlpProtoWriter();
         writer.WriteMessage(1, resourceSpans =>
         {
             resourceSpans.WriteMessage(1, resource =>
@@ -39,7 +40,7 @@ internal static class OtlpTraceSerializer
         return writer.ToArray();
     }
 
-    private static void WriteSpan(ProtoWriter writer, OtlpCompletedSpan span)
+    private static void WriteSpan(OtlpProtoWriter writer, OtlpCompletedSpan span)
     {
         writer.WriteBytes(1, CreateIdentifier(span.TraceIdSeed ?? span.ParentSpanId ?? span.SpanId, length: 16));
         writer.WriteBytes(2, CreateIdentifier(span.SpanId, length: 8));
@@ -62,9 +63,14 @@ internal static class OtlpTraceSerializer
         {
             writer.WriteMessage(11, eventWriter => WriteSpanEvent(eventWriter, spanEvent));
         }
+
+        if (span.DroppedEventCount > 0)
+        {
+            writer.WriteVarint(12, (uint)span.DroppedEventCount);
+        }
     }
 
-    private static void WriteSpanEvent(ProtoWriter writer, OtlpCompletedSpanEvent spanEvent)
+    private static void WriteSpanEvent(OtlpProtoWriter writer, OtlpCompletedSpanEvent spanEvent)
     {
         writer.WriteFixed64(1, ToUnixNanoseconds(spanEvent.Timestamp));
         writer.WriteString(2, spanEvent.Name);
@@ -145,154 +151,5 @@ internal static class OtlpTraceSerializer
 
         bytes[^1] = 1;
         return bytes;
-    }
-
-    private static void WriteKeyValue(ProtoWriter writer, int fieldNumber, string key, object? value)
-    {
-        if (value is null)
-        {
-            return;
-        }
-
-        writer.WriteMessage(fieldNumber, keyValue =>
-        {
-            keyValue.WriteString(1, key);
-            keyValue.WriteMessage(2, anyValue => WriteAnyValue(anyValue, value));
-        });
-    }
-
-    private static void WriteAnyValue(ProtoWriter writer, object value)
-    {
-        switch (value)
-        {
-            case string text:
-                writer.WriteString(1, text);
-                break;
-            case bool boolean:
-                writer.WriteBool(2, boolean);
-                break;
-            case byte number:
-                writer.WriteSignedVarint(3, number);
-                break;
-            case sbyte number:
-                writer.WriteSignedVarint(3, number);
-                break;
-            case short number:
-                writer.WriteSignedVarint(3, number);
-                break;
-            case ushort number:
-                writer.WriteSignedVarint(3, number);
-                break;
-            case int number:
-                writer.WriteSignedVarint(3, number);
-                break;
-            case uint number:
-                writer.WriteSignedVarint(3, number);
-                break;
-            case long number:
-                writer.WriteSignedVarint(3, number);
-                break;
-            case ulong number when number <= long.MaxValue:
-                writer.WriteSignedVarint(3, (long)number);
-                break;
-            case float number:
-                writer.WriteDouble(4, number);
-                break;
-            case double number:
-                writer.WriteDouble(4, number);
-                break;
-            case decimal number:
-                writer.WriteDouble(4, (double)number);
-                break;
-            default:
-                writer.WriteString(1, value.ToString() ?? string.Empty);
-                break;
-        }
-    }
-
-    private static ulong ToUnixNanoseconds(DateTimeOffset timestamp) =>
-        (ulong)((timestamp.ToUniversalTime().Ticks - DateTimeOffset.UnixEpoch.Ticks) * 100);
-
-    private sealed class ProtoWriter
-    {
-        private const int VarintWireType = 0;
-        private const int Fixed64WireType = 1;
-        private const int LengthDelimitedWireType = 2;
-
-        private readonly List<byte> buffer = [];
-
-        public byte[] ToArray() => [.. buffer];
-
-        public void WriteBool(int fieldNumber, bool value) =>
-            WriteVarint(fieldNumber, value ? 1UL : 0UL);
-
-        public void WriteBytes(int fieldNumber, byte[] value)
-        {
-            WriteTag(fieldNumber, LengthDelimitedWireType);
-            WriteRawVarint((ulong)value.Length);
-            buffer.AddRange(value);
-        }
-
-        public void WriteDouble(int fieldNumber, double value)
-        {
-            WriteTag(fieldNumber, Fixed64WireType);
-            var bits = BitConverter.DoubleToUInt64Bits(value);
-            WriteLittleEndianUInt64(bits);
-        }
-
-        public void WriteFixed64(int fieldNumber, ulong value)
-        {
-            WriteTag(fieldNumber, Fixed64WireType);
-            WriteLittleEndianUInt64(value);
-        }
-
-        private void WriteLittleEndianUInt64(ulong value)
-        {
-            for (var shift = 0; shift < 64; shift += 8)
-            {
-                buffer.Add((byte)(value >> shift));
-            }
-        }
-
-        public void WriteMessage(int fieldNumber, Action<ProtoWriter> write)
-        {
-            var child = new ProtoWriter();
-            write(child);
-            var payload = child.ToArray();
-            WriteTag(fieldNumber, LengthDelimitedWireType);
-            WriteRawVarint((ulong)payload.Length);
-            buffer.AddRange(payload);
-        }
-
-        public void WriteSignedVarint(int fieldNumber, long value) =>
-            WriteVarint(fieldNumber, unchecked((ulong)value));
-
-        public void WriteString(int fieldNumber, string value)
-        {
-            var payload = Encoding.UTF8.GetBytes(value);
-            WriteTag(fieldNumber, LengthDelimitedWireType);
-            WriteRawVarint((ulong)payload.Length);
-            buffer.AddRange(payload);
-        }
-
-        public void WriteVarint(int fieldNumber, ulong value)
-        {
-            WriteTag(fieldNumber, VarintWireType);
-            WriteRawVarint(value);
-        }
-
-        private void WriteTag(int fieldNumber, int wireType) =>
-            WriteRawVarint(((ulong)fieldNumber << 3) | (uint)wireType);
-
-        private void WriteRawVarint(ulong value)
-        {
-            while (value >= 0x80)
-            {
-                buffer.Add((byte)(value | 0x80));
-                value >>= 7;
-            }
-
-            buffer.Add((byte)value);
-        }
     }
 }

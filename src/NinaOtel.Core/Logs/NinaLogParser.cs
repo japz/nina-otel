@@ -23,6 +23,7 @@ public static class NinaLogParser
 
         var events = new List<NinaLogEvent>();
 
+        var isMultilineRecord = false;
         foreach (var line in lines)
         {
             if (string.IsNullOrWhiteSpace(line) ||
@@ -31,18 +32,21 @@ public static class NinaLogParser
                 continue;
             }
 
-            if (TryParseLine(line, out var parsed))
+            if (TryParseLine(line, out var parsed, out var hasNoInlineMessage))
             {
                 events.Add(parsed);
+                isMultilineRecord = hasNoInlineMessage;
                 continue;
             }
 
-            if (events.Count > 0 && IsContinuationLine(line))
+            if (events.Count > 0 && (isMultilineRecord || IsContinuationLine(line)))
             {
                 var previous = events[^1];
+                var message = previous.Message.Length == 0 ? line : previous.Message + Environment.NewLine + line;
                 events[^1] = previous with
                 {
-                    Message = previous.Message + Environment.NewLine + line,
+                    Message = message,
+                    Kind = isMultilineRecord ? Classify(previous.Level, previous.Source, previous.Member, message) : previous.Kind,
                     RawLine = previous.RawLine + Environment.NewLine + line,
                 };
             }
@@ -51,12 +55,13 @@ public static class NinaLogParser
         return events;
     }
 
-    private static bool TryParseLine(string line, out NinaLogEvent parsed)
+    private static bool TryParseLine(string line, out NinaLogEvent parsed, out bool hasNoInlineMessage)
     {
         parsed = default!;
+        hasNoInlineMessage = false;
 
         var parts = line.Split(['|'], 6);
-        if (parts.Length != 6)
+        if (parts.Length < 5)
         {
             return false;
         }
@@ -70,7 +75,8 @@ public static class NinaLogParser
         var level = parts[1].Trim();
         var source = parts[2].Trim();
         var member = parts[3].Trim();
-        var message = parts[5];
+        hasNoInlineMessage = parts.Length == 5;
+        var message = hasNoInlineMessage ? string.Empty : parts[5];
 
         parsed = new NinaLogEvent(
             Classify(level, source, member, message),

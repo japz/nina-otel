@@ -8,6 +8,32 @@ namespace NinaOtel.Core.Tests.Logs;
 public sealed class NinaLogParserTests
 {
     [Fact]
+    public void ParseLines_FiveFieldExceptionHeaderOwnsItsStackTrace()
+    {
+        const string header = "2026-11-20T02:41:19.5139|ERROR|App.xaml.cs|CurrentDomain_UnhandledException|273";
+        const string exception = "System.ComponentModel.Win32Exception (8): Not enough memory resources are available to process this command.";
+        const string stackFrame = "   at System.Windows.Threading.Dispatcher..ctor()";
+        var events = NinaLogParser.ParseLines(
+        [
+            "2026-11-20T02:41:18.0000|INFO|App.xaml.cs|Main|12|Previous message",
+            header,
+            exception,
+            stackFrame,
+            "2026-11-20T02:41:20.0000|INFO|App.xaml.cs|Main|13|Next message",
+        ]);
+
+        Assert.Equal(3, events.Count);
+        Assert.Equal("Previous message", events[0].Message);
+        var error = events[1];
+        Assert.Equal(NinaLogEventKind.Error, error.Kind);
+        Assert.Equal("CurrentDomain_UnhandledException", error.Member);
+        Assert.Equal(273, error.LineNumber);
+        Assert.Equal(string.Join(Environment.NewLine, exception, stackFrame), error.Message);
+        Assert.Equal(string.Join(Environment.NewLine, header, exception, stackFrame), error.RawLine);
+        Assert.Equal("Next message", events[2].Message);
+    }
+
+    [Fact]
     public void ParseLines_WhenInputStartsWithHeader_SkipsHeaderAndParsesRows()
     {
         var events = NinaLogParser.ParseLines(

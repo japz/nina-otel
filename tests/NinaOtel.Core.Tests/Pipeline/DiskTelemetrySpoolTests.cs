@@ -82,7 +82,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         Directory.GetFiles(spoolPath, "*.tmp").Should().BeEmpty();
         Directory.GetFiles(spoolPath, "*.ready").Should().ContainSingle();
 
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(spool);
         batches.Should().ContainSingle();
         batches[0].Records.Should().ContainSingle().Which.Should().BeEquivalentTo(record);
     }
@@ -103,7 +103,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await firstSpool.AppendBatchAsync(new[] { record }, CancellationToken.None);
 
         var secondSpool = new DiskTelemetrySpool(spoolPath);
-        var batches = await secondSpool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(secondSpool);
 
         batches.Should().ContainSingle();
         batches[0].Records.Should().ContainSingle().Which.Should().BeEquivalentTo(record);
@@ -120,12 +120,12 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await Task.Delay(TimeSpan.FromMilliseconds(2));
         await spool.AppendBatchAsync(new[] { second }, CancellationToken.None);
 
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(spool);
         batches.Should().HaveCount(2);
 
         batches[0].Complete();
 
-        var remaining = await spool.ReadBatchesAsync(CancellationToken.None);
+        var remaining = await ReadBatchesAsync(spool);
         remaining.Should().ContainSingle();
         remaining[0].Records.Should().ContainSingle().Which.Name.Should().Be("second");
     }
@@ -169,7 +169,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("second") }, CancellationToken.None);
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("third") }, CancellationToken.None);
 
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(spool);
 
         batches.SelectMany(batch => batch.Records).Select(record => record.Name)
             .Should().Equal("second", "third");
@@ -192,10 +192,10 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("second") }, CancellationToken.None);
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("third") }, CancellationToken.None);
 
-        var stats = await spool.GetStatsAsync(CancellationToken.None);
+        var stats = spool.GetStats();
 
         stats.DroppedRecords.Should().Be(2);
-        (await spool.ReadBatchesAsync(CancellationToken.None))
+        (await ReadBatchesAsync(spool))
             .SelectMany(batch => batch.Records)
             .Select(record => record.Name)
             .Should().Equal("second", "third");
@@ -221,10 +221,10 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         var pruningSpool = new DiskTelemetrySpool(spoolPath, maxBytes: 1024 * 1024, maxAge: TimeSpan.FromDays(7));
         await pruningSpool.AppendBatchAsync(new[] { CreateHealthRecord("new") }, CancellationToken.None);
 
-        var stats = await pruningSpool.GetStatsAsync(CancellationToken.None);
+        var stats = pruningSpool.GetStats();
 
         stats.DroppedRecords.Should().Be(2);
-        (await pruningSpool.ReadBatchesAsync(CancellationToken.None))
+        (await ReadBatchesAsync(pruningSpool))
             .SelectMany(batch => batch.Records)
             .Select(record => record.Name)
             .Should().Equal("new");
@@ -241,7 +241,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("routine-newer", TelemetryPriority.Routine) }, CancellationToken.None);
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("critical-newest", TelemetryPriority.Critical) }, CancellationToken.None);
 
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(spool);
 
         batches.SelectMany(batch => batch.Records).Select(record => record.Name)
             .Should().Equal("important-old", "critical-newest");
@@ -296,7 +296,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("old") }, CancellationToken.None);
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("newest") }, CancellationToken.None);
 
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(spool);
 
         batches.SelectMany(batch => batch.Records).Select(record => record.Name)
             .Should().Equal("newest");
@@ -315,7 +315,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("normal-middle", TelemetryPriority.Normal) }, CancellationToken.None);
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("routine-newest", TelemetryPriority.Routine) }, CancellationToken.None);
 
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(spool);
 
         batches.SelectMany(batch => batch.Records).Select(record => record.Name)
             .Should().Equal("important-old", "routine-newest");
@@ -339,7 +339,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("important-single", TelemetryPriority.Important) }, CancellationToken.None);
         await spool.AppendBatchAsync(new[] { CreateLargeRecord("normal-newest", TelemetryPriority.Normal) }, CancellationToken.None);
 
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
+        var batches = await ReadBatchesAsync(spool);
 
         batches.SelectMany(batch => batch.Records).Select(record => record.Name)
             .Should().Equal("routine-in-mixed", "critical-in-mixed", "normal-newest");
@@ -371,7 +371,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
             CancellationToken.None);
 
         await append.Should().ThrowAsync<IOException>();
-        var stats = await spool.GetStatsAsync(CancellationToken.None);
+        var stats = spool.GetStats();
         stats.DroppedRecords.Should().Be(1);
     }
 
@@ -411,7 +411,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
 
         await spool.AppendBatchAsync(new[] { record }, CancellationToken.None);
 
-        var batch = (await spool.ReadBatchesAsync(CancellationToken.None)).Should().ContainSingle().Subject;
+        var batch = (await ReadBatchesAsync(spool)).Should().ContainSingle().Subject;
         var persisted = batch.Records.Should().ContainSingle().Subject;
 
         persisted.Should().BeEquivalentTo(record);
@@ -432,7 +432,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
-    public async Task GetStatsAsync_WhenSpoolHasReadyBatches_ReturnsQueuedRecordCountsBytesAndOldestTimestamp()
+    public async Task GetStats_WhenSpoolHasReadyBatches_ReturnsQueuedRecordCountsBytesAndOldestTimestamp()
     {
         var spoolPath = Path.Combine(root, "spool");
         var spool = new DiskTelemetrySpool(spoolPath);
@@ -450,7 +450,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
             new[] { TelemetryRecord.Health(newer.AddMinutes(1), "test", "latest", TelemetryPriority.Routine) },
             CancellationToken.None);
 
-        var stats = await spool.GetStatsAsync(CancellationToken.None);
+        var stats = spool.GetStats();
 
         stats.QueuedBatches.Should().Be(2);
         stats.QueuedRecords.Should().Be(3);
@@ -459,7 +459,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
     }
 
     [Fact]
-    public async Task GetStatsAsync_WhenReadyFileCannotBeRead_StillReportsReadyFileBacklog()
+    public async Task GetStats_WhenReadyFileCannotBeRead_StillReportsReadyFileBacklog()
     {
         var spoolPath = Path.Combine(root, "spool");
         Directory.CreateDirectory(spoolPath);
@@ -471,12 +471,13 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
             new[] { TelemetryRecord.Health(timestamp, "test", "valid", TelemetryPriority.Routine) },
             CancellationToken.None);
 
-        var stats = await spool.GetStatsAsync(CancellationToken.None);
+        var stats = spool.GetStats();
 
         stats.QueuedBatches.Should().Be(2);
         stats.QueuedRecords.Should().Be(1);
         stats.QueuedBytes.Should().BeGreaterThan(new FileInfo(invalidPath).Length);
-        stats.OldestQueuedTimestamp.Should().Be(timestamp);
+        // Without opening an old filename, we can only approximate its age.
+        stats.OldestQueuedTimestamp.Should().Be(new DateTimeOffset(1, TimeSpan.Zero));
     }
 
     [Fact]
@@ -487,7 +488,7 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         await File.WriteAllTextAsync(Path.Combine(spoolPath, "0000000000000000001-null.ready"), "null");
         var spool = new DiskTelemetrySpool(spoolPath);
 
-        Func<Task> read = async () => await spool.ReadBatchesAsync(CancellationToken.None);
+        Func<Task> read = async () => await ReadBatchesAsync(spool);
 
         await read.Should().ThrowAsync<DiskTelemetrySpool.BatchReadException>();
     }
@@ -512,6 +513,10 @@ public sealed class DiskTelemetrySpoolTests : IDisposable
         Directory.GetFiles(spoolPath, "*.ready").Should().BeEmpty();
         Directory.GetFiles(spoolPath, "*.sent").Should().ContainSingle();
     }
+
+    private static Task<DiskTelemetrySpool.Batch[]> ReadBatchesAsync(DiskTelemetrySpool spool) =>
+        Task.WhenAll(spool.EnumerateReadyFiles().Order(StringComparer.Ordinal)
+            .Select(path => DiskTelemetrySpool.ReadBatchAsync(path, CancellationToken.None)));
 
     private static TelemetryRecord CreateHealthRecord(string name) =>
         TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", name, TelemetryPriority.Routine);

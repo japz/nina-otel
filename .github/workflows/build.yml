@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - renovate/**
+      - fix/**
   workflow_dispatch:
 
 permissions:

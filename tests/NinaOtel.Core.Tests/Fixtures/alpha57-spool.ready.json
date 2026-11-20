@@ -1,0 +1,163 @@
+{
+  "Records": [
+    {
+      "Signal": 0,
+      "Timestamp": "2026-11-18T11:15:30.1234567+00:00",
+      "Source": "nina.camera",
+      "Name": "camera_sensor_temperature",
+      "Priority": 1,
+      "Attributes": [
+        {
+          "Key": "camera_name",
+          "Type": "string",
+          "StringValue": "Fixture camera",
+          "BooleanValue": null,
+          "ByteValue": null,
+          "SByteValue": null,
+          "Int16Value": null,
+          "UInt16Value": null,
+          "Int32Value": null,
+          "UInt32Value": null,
+          "Int64Value": null,
+          "UInt64Value": null,
+          "DoubleValue": null,
+          "SingleValue": null,
+          "DecimalValue": null
+        }
+      ],
+      "NumericValue": -9.75,
+      "Body": null,
+      "Severity": null,
+      "SpanKind": null,
+      "SpanId": null,
+      "ParentSpanId": null,
+      "TraceId": null
+    },
+    {
+      "Signal": 0,
+      "Timestamp": "2026-11-18T11:15:40.1234567+00:00",
+      "Source": "nina.camera",
+      "Name": "camera_sensor_temperature",
+      "Priority": 1,
+      "Attributes": [
+        {
+          "Key": "camera_name",
+          "Type": "string",
+          "StringValue": "Fixture camera",
+          "BooleanValue": null,
+          "ByteValue": null,
+          "SByteValue": null,
+          "Int16Value": null,
+          "UInt16Value": null,
+          "Int32Value": null,
+          "UInt32Value": null,
+          "Int64Value": null,
+          "UInt64Value": null,
+          "DoubleValue": null,
+          "SingleValue": null,
+          "DecimalValue": null
+        }
+      ],
+      "NumericValue": -10,
+      "Body": null,
+      "Severity": null,
+      "SpanKind": null,
+      "SpanId": null,
+      "ParentSpanId": null,
+      "TraceId": null
+    },
+    {
+      "Signal": 0,
+      "Timestamp": "2026-11-18T11:15:41.1234567+00:00",
+      "Source": "addon.phd2",
+      "Name": "phd2_guide_rms_ra_arcsec",
+      "Priority": 1,
+      "Attributes": [
+        {
+          "Key": "guider_name",
+          "Type": "string",
+          "StringValue": "Fixture guider",
+          "BooleanValue": null,
+          "ByteValue": null,
+          "SByteValue": null,
+          "Int16Value": null,
+          "UInt16Value": null,
+          "Int32Value": null,
+          "UInt32Value": null,
+          "Int64Value": null,
+          "UInt64Value": null,
+          "DoubleValue": null,
+          "SingleValue": null,
+          "DecimalValue": null
+        }
+      ],
+      "NumericValue": 0.45,
+      "Body": null,
+      "Severity": null,
+      "SpanKind": null,
+      "SpanId": null,
+      "ParentSpanId": null,
+      "TraceId": null
+    },
+    {
+      "Signal": 1,
+      "Timestamp": "2026-11-18T11:15:42.1234567+00:00",
+      "Source": "nina.log",
+      "Name": "log",
+      "Priority": 3,
+      "Attributes": [],
+      "NumericValue": null,
+      "Body": "Fixture log message",
+      "Severity": 4,
+      "SpanKind": null,
+      "SpanId": null,
+      "ParentSpanId": null,
+      "TraceId": null
+    },
+    {
+      "Signal": 2,
+      "Timestamp": "2026-11-18T11:15:43.1234567+00:00",
+      "Source": "nina.workflow",
+      "Name": "fixture span",
+      "Priority": 3,
+      "Attributes": [],
+      "NumericValue": null,
+      "Body": null,
+      "Severity": null,
+      "SpanKind": 0,
+      "SpanId": "f123456789abcdef",
+      "ParentSpanId": null,
+      "TraceId": "0123456789abcdef0123456789abcdef"
+    },
+    {
+      "Signal": 2,
+      "Timestamp": "2026-11-18T11:15:44.1234567+00:00",
+      "Source": "nina.workflow",
+      "Name": "fixture event",
+      "Priority": 3,
+      "Attributes": [],
+      "NumericValue": null,
+      "Body": null,
+      "Severity": null,
+      "SpanKind": 1,
+      "SpanId": "f123456789abcdef",
+      "ParentSpanId": null,
+      "TraceId": "0123456789abcdef0123456789abcdef"
+    },
+    {
+      "Signal": 2,
+      "Timestamp": "2026-11-18T11:15:45.1234567+00:00",
+      "Source": "nina.workflow",
+      "Name": "fixture span",
+      "Priority": 3,
+      "Attributes": [],
+      "NumericValue": null,
+      "Body": null,
+      "Severity": null,
+      "SpanKind": 2,
+      "SpanId": "f123456789abcdef",
+      "ParentSpanId": null,
+      "TraceId": "0123456789abcdef0123456789abcdef"
+    }
+  ]
+}

@@ -1,619 +1,229 @@
-using FluentAssertions;
+using System.Collections.Concurrent;
 using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Health;
-using NinaOtel.Core.Options;
 using NinaOtel.Core.Pipeline;
 using Xunit;
 
 namespace NinaOtel.Core.Tests.Pipeline;
 
-public sealed class DurableTelemetryExporterTests : IDisposable
+public sealed class DurableTelemetryExporterTests : IAsyncDisposable
 {
-    private readonly string root = Path.Combine(Path.GetTempPath(), "nina-otel-durable-exporter-tests", Guid.NewGuid().ToString("N"));
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(5);
+    private readonly string root = Path.Combine(Path.GetTempPath(), "nina-otel-durable-tests", Guid.NewGuid().ToString("N"));
+    private DurableTelemetryExporter? exporter;
 
-    public void Dispose()
+    [Fact]
+    public async Task StartupReplay_IsOldestFirstAndLiveFailureCanSpoolWhileReplayIsBlocked()
     {
+        var spool = new DiskTelemetrySpool(root);
+        await AppendAsync(spool, Health("first"));
+        await AppendAsync(spool, Health("second"));
+        await File.WriteAllTextAsync(Path.Combine(root, "last-bad.ready"), "not JSON");
+
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var replayed = new ConcurrentQueue<string>();
+        var snapshots = new ConcurrentQueue<CollectorHealthSnapshot>();
+        var live = new LiveExporter((_, _) => throw new HttpRequestException("collector unavailable"));
+        exporter = Create(spool, live, async (_, batch, token) =>
+        {
+            var name = Assert.Single(batch.Records).Name;
+            replayed.Enqueue(name);
+            if (name == "first")
+            {
+                started.TrySetResult();
+                await release.Task.WaitAsync(token);
+            }
+        }, snapshots.Enqueue);
+
+        await started.Task.WaitAsync(TestTimeout);
+        await exporter.ExportAsync([Health("live")], CancellationToken.None).WaitAsync(TestTimeout);
+        Assert.Equal(4, spool.GetStats().QueuedBatches);
+        Assert.Empty(Directory.GetFiles(root, "*.invalid"));
+        Assert.Contains(snapshots, snapshot => snapshot.BufferMode == CollectorBufferMode.Degraded);
+        release.SetResult();
+        await UntilAsync(() => snapshots.Any(snapshot =>
+            snapshot.BufferMode == CollectorBufferMode.Healthy && snapshot.QueuedBatches == 0 &&
+            snapshot.QuarantinedBatches == 1));
+        Assert.Equal(["first", "second", "live"], replayed.ToArray());
+    }
+
+    [Fact]
+    public async Task Replay_TransientMetricFailureDoesNotBlockLaterLogsOrResendAcknowledgedSignals()
+    {
+        var spool = new DiskTelemetrySpool(root);
+        await AppendAsync(spool, Metric("firstMetric"), Health("firstLog"));
+        await AppendAsync(spool, Metric("secondMetric"), Health("secondLog"));
+        var sent = new ConcurrentQueue<(SpoolSignal, string)>();
+        var attemptedMetrics = 0;
+        var allowMetrics = 0;
+
+        exporter = Create(spool, new LiveExporter(), (signal, batch, _) =>
+        {
+            if (signal == SpoolSignal.Metrics)
+            {
+                Interlocked.Increment(ref attemptedMetrics);
+                if (Volatile.Read(ref allowMetrics) == 0)
+                {
+                    throw new HttpRequestException("test DNS outage");
+                }
+            }
+            var name = batch.Records.Single(record =>
+                signal == SpoolSignal.Metrics ? record.Signal == TelemetrySignal.Metric : record.Signal == TelemetrySignal.Health).Name;
+            sent.Enqueue((signal, name));
+            return Task.CompletedTask;
+        }, initialBackoff: TimeSpan.FromSeconds(1));
+
+        await UntilAsync(() => sent.Contains((SpoolSignal.Logs, "secondLog")));
+        Assert.Equal(1, Volatile.Read(ref attemptedMetrics));
+        Assert.Equal(2, spool.GetStats().QueuedBatches);
+        Volatile.Write(ref allowMetrics, 1);
+        await UntilAsync(() => !spool.EnumerateReadyFiles().Any());
+        Assert.Equal(
+            [(SpoolSignal.Logs, "firstLog"), (SpoolSignal.Logs, "secondLog"),
+             (SpoolSignal.Metrics, "firstMetric"), (SpoolSignal.Metrics, "secondMetric")],
+            sent.ToArray());
+        Assert.Empty(Directory.GetFiles(root, "*.invalid"));
+    }
+
+    [Fact]
+    public async Task Replay_QuarantinesPermanentFailuresAndCorruptJsonAndContinues()
+    {
+        var spool = new DiskTelemetrySpool(root);
+        await AppendAsync(spool, Metric("invalid"), Health("goodLog"));
+        await AppendAsync(spool, Metric("valid"));
+        await File.WriteAllTextAsync(Path.Combine(root, "0000000000000000001-corrupt.ready"), "null");
+        var sent = new ConcurrentQueue<SpoolSignal>();
+        var diagnostic = new ConcurrentQueue<string>();
+        var snapshots = new ConcurrentQueue<CollectorHealthSnapshot>();
+        exporter = Create(spool, new LiveExporter(), (signal, batch, _) =>
+        {
+            if (signal == SpoolSignal.Metrics && batch.Records[0].Name == "invalid")
+            {
+                throw new TelemetryExportException("HTTP 400 Bad Request", isPermanent: true);
+            }
+            sent.Enqueue(signal);
+            return Task.CompletedTask;
+        }, snapshots.Enqueue, diagnostic.Enqueue);
+
+        await UntilAsync(() => snapshots.Any(snapshot => snapshot.QueuedBatches == 0 && snapshot.QuarantinedBatches == 2));
+        Assert.Single(diagnostic);
+        Assert.Equal([SpoolSignal.Logs, SpoolSignal.Metrics], sent.ToArray());
+        var invalid = Directory.GetFiles(root, "*.invalid");
+        Assert.Equal(2, invalid.Length);
+        Assert.Contains(invalid, path => File.ReadAllText(path).Contains("goodLog", StringComparison.Ordinal));
+        Assert.Contains(invalid, path => File.ReadAllText(path) == "null");
+    }
+
+    [Fact]
+    public async Task Replay_RespectsRateLimitBetweenFiles()
+    {
+        var spool = new DiskTelemetrySpool(root);
+        await AppendAsync(spool, Health("first"));
+        await AppendAsync(spool, Health("second"));
+        var attempts = new ConcurrentQueue<long>();
+        exporter = Create(spool, new LiveExporter(), (_, _, _) =>
+        {
+            attempts.Enqueue(System.Diagnostics.Stopwatch.GetTimestamp());
+            return Task.CompletedTask;
+        }, interval: TimeSpan.FromMilliseconds(200));
+
+        await UntilAsync(() => attempts.Count == 2);
+        var timestamps = attempts.ToArray();
+        Assert.True(System.Diagnostics.Stopwatch.GetElapsedTime(timestamps[0], timestamps[1]) >=
+            TimeSpan.FromMilliseconds(175));
+    }
+
+    [Fact]
+    public async Task Dispose_CancelsAndWaitsForInFlightReplayBeforeDisposingTransports()
+    {
+        var spool = new DiskTelemetrySpool(root);
+        await AppendAsync(spool, Health("queued"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var replay = new ReplayExporter(async (_, _, token) =>
+        {
+            started.TrySetResult();
+            await release.Task;
+            token.ThrowIfCancellationRequested();
+        });
+        exporter = new DurableTelemetryExporter(new LiveExporter(), replay, spool);
+        await started.Task.WaitAsync(TestTimeout);
+        exporter.Dispose();
+        Assert.False(replay.Disposed.Task.IsCompleted);
+        release.TrySetResult();
+        await replay.Disposed.Task.WaitAsync(TestTimeout);
+        Assert.Single(spool.EnumerateReadyFiles());
+    }
+
+    [Fact]
+    public async Task Export_WhenSpoolingFails_RethrowsOriginalExportFailure()
+    {
+        var spool = new DiskTelemetrySpool(root, maxBytes: 1, maxAge: TimeSpan.FromDays(7));
+        var failure = new HttpRequestException("collector unavailable");
+        var snapshots = new ConcurrentQueue<CollectorHealthSnapshot>();
+        exporter = Create(spool, new LiveExporter((_, _) => throw failure), (_, _, _) => Task.CompletedTask, snapshots.Enqueue);
+        var actual = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            exporter.ExportAsync([Health("live")], CancellationToken.None));
+        Assert.Same(failure, actual);
+        Assert.Contains(snapshots, snapshot => snapshot.DroppedRecords == 1);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (exporter is not null)
+        {
+            exporter.Dispose();
+            await exporter.ReplayCompletion.WaitAsync(TestTimeout);
+        }
         if (Directory.Exists(root))
         {
             Directory.Delete(root, recursive: true);
         }
     }
 
-    [Fact]
-    public async Task ExportAsync_WhenInnerFails_PersistsBatchAndDoesNotThrow()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        using var exporter = CreateExporter(
-            new ThrowingExporter(new InvalidOperationException("collector unavailable")),
-            spool);
-        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
-
-        Func<Task> export = async () => await exporter.ExportAsync(new[] { record }, CancellationToken.None);
-
-        await export.Should().NotThrowAsync();
-        var batch = (await spool.ReadBatchesAsync(CancellationToken.None)).Should().ContainSingle().Subject;
-        batch.Records.Should().ContainSingle().Which.Name.Should().Be("live");
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenInnerFails_ReportsDegradedHealthWithQueuedSpoolStats()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        var reporter = new RecordingHealthReporter();
-        using var exporter = CreateExporter(
-            new ThrowingExporter(new InvalidOperationException("collector unavailable")),
-            spool,
-            reportHealth: reporter.Report);
-        var timestamp = new DateTimeOffset(2026, 6, 21, 12, 0, 0, TimeSpan.Zero);
-        var record = TelemetryRecord.Health(timestamp, "test", "live", TelemetryPriority.Important);
-
-        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
-
-        reporter.Snapshots.Should().ContainSingle();
-        var snapshot = reporter.Snapshots[0];
-        snapshot.State.Should().Be(CollectorHealthState.Unhealthy);
-        snapshot.BufferMode.Should().Be(CollectorBufferMode.Degraded);
-        snapshot.ErrorType.Should().Be(nameof(InvalidOperationException));
-        snapshot.ErrorMessage.Should().Be("collector unavailable");
-        snapshot.QueuedRecords.Should().Be(1);
-        snapshot.QueuedBytes.Should().BeGreaterThan(0);
-        snapshot.OldestQueuedTimestamp.Should().Be(timestamp);
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenSpoolingEvictsRecords_ReportsDroppedRecordsInHealthSnapshot()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"), maxBytes: 6_000, maxAge: TimeSpan.FromDays(7));
-        var reporter = new RecordingHealthReporter();
-        using var exporter = CreateExporter(
-            new ThrowingExporter(new InvalidOperationException("collector unavailable")),
-            spool,
-            reportHealth: reporter.Report);
-        await spool.AppendBatchAsync(new[] { CreateLargeRecord("queued") }, CancellationToken.None);
-        var live = CreateLargeRecord("live");
-
-        await exporter.ExportAsync(new[] { live }, CancellationToken.None);
-
-        reporter.Snapshots.Should().ContainSingle();
-        reporter.Snapshots[0].DroppedRecords.Should().Be(1);
-        reporter.Snapshots[0].QueuedRecords.Should().Be(1);
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenSpoolHasRecords_ReplaysOldestBeforeLiveBatch()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        var inner = new RecordingExporter();
-        using var exporter = CreateExporter(inner, spool);
-        var first = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "first", TelemetryPriority.Routine);
-        var second = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddMilliseconds(1), "test", "second", TelemetryPriority.Routine);
-        var live = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddMilliseconds(2), "test", "live", TelemetryPriority.Routine);
-
-        await spool.AppendBatchAsync(new[] { first }, CancellationToken.None);
-        await Task.Delay(TimeSpan.FromMilliseconds(2));
-        await spool.AppendBatchAsync(new[] { second }, CancellationToken.None);
-
-        await exporter.ExportAsync(new[] { live }, CancellationToken.None);
-
-        inner.Batches.Should().HaveCount(3);
-        inner.Batches.Select(batch => batch.Should().ContainSingle().Subject.Name)
-            .Should().Equal("first", "second", "live");
-        (await spool.ReadBatchesAsync(CancellationToken.None)).Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenInnerSucceeds_DoesNotCreateSpoolDirectory()
-    {
-        var spoolPath = Path.Combine(root, "spool");
-        var inner = new RecordingExporter();
-        using var exporter = CreateExporter(inner, new DiskTelemetrySpool(spoolPath));
-        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
-
-        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
-
-        Directory.Exists(spoolPath).Should().BeFalse();
-        inner.Batches.Should().ContainSingle();
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenSpoolReadFails_QuarantinesBadFileAndSpoolsLiveBatch()
-    {
-        var spoolPath = Path.Combine(root, "spool");
-        Directory.CreateDirectory(spoolPath);
-        await File.WriteAllTextAsync(Path.Combine(spoolPath, "0000000000000000001-bad.ready"), "null");
-        var inner = new RecordingExporter();
-        using var exporter = CreateExporter(inner, new DiskTelemetrySpool(spoolPath));
-        var live = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
-        var next = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddSeconds(1), "test", "next", TelemetryPriority.Routine);
-
-        Func<Task> export = async () => await exporter.ExportAsync(new[] { live }, CancellationToken.None);
-
-        await export.Should().NotThrowAsync();
-        inner.Batches.Should().BeEmpty();
-        Directory.GetFiles(spoolPath, "*.invalid").Should().ContainSingle();
-        Directory.GetFiles(spoolPath, "*.ready").Should().ContainSingle();
-
-        await exporter.ExportAsync(new[] { next }, CancellationToken.None);
-
-        inner.Batches.Select(batch => batch.Should().ContainSingle().Subject.Name)
-            .Should().Equal("live", "next");
-        Directory.GetFiles(spoolPath, "*.ready").Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenReplayFails_KeepsSpooledBatchAndSpoolsLiveBatch()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        var inner = new ThrowOnAttemptExporter(1, new InvalidOperationException("replay failed"));
-        using var exporter = CreateExporter(inner, spool);
-        var replay = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "replay", TelemetryPriority.Routine);
-        var live = TelemetryRecord.Health(DateTimeOffset.UtcNow.AddMilliseconds(1), "test", "live", TelemetryPriority.Routine);
-
-        await spool.AppendBatchAsync(new[] { replay }, CancellationToken.None);
-
-        Func<Task> export = async () => await exporter.ExportAsync(new[] { live }, CancellationToken.None);
-
-        await export.Should().NotThrowAsync();
-        var batches = await spool.ReadBatchesAsync(CancellationToken.None);
-        batches.Should().HaveCount(2);
-        batches.SelectMany(batch => batch.Records).Select(record => record.Name)
-            .Should().Equal("replay", "live");
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenInnerRecovers_DrainsSpooledBatchWithoutNewLiveExport()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        using var inner = new RecoveringExporter(new InvalidOperationException("collector unavailable"));
-        using var exporter = CreateExporter(inner, spool, TimeSpan.FromMilliseconds(10));
-        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Important);
-
-        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
-        inner.Recover();
-
-        await inner.WaitForCountAsync(1, TimeSpan.FromSeconds(2));
-        await WaitForSpoolToDrainAsync(spool, TimeSpan.FromSeconds(2));
-
-        inner.Batches.Should().ContainSingle()
-            .Which.Should().ContainSingle()
-            .Which.Name.Should().Be("live");
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenInnerRecovers_ReportsHealthyAfterBackgroundDrain()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        var reporter = new RecordingHealthReporter();
-        using var inner = new RecoveringExporter(new InvalidOperationException("collector unavailable"));
-        using var exporter = CreateExporter(
-            inner,
-            spool,
-            TimeSpan.FromMilliseconds(10),
-            reporter.Report);
-        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Important);
-
-        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
-        inner.Recover();
-
-        var healthySnapshot = await WaitForHealthSnapshotAsync(
-            reporter,
-            snapshot => snapshot.State == CollectorHealthState.Healthy &&
-                snapshot.BufferMode == CollectorBufferMode.Healthy &&
-                snapshot.QueuedRecords == 0,
-            TimeSpan.FromSeconds(2));
-
-        reporter.SnapshotCopy.Should().Contain(snapshot => snapshot.BufferMode == CollectorBufferMode.Degraded);
-        healthySnapshot.State.Should().Be(CollectorHealthState.Healthy);
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenLiveExportSucceedsAfterDroppedRecovery_PreservesDroppedRecordsInLatestHealthySnapshot()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"), maxBytes: 6_000, maxAge: TimeSpan.FromDays(7));
-        var reporter = new RecordingHealthReporter();
-        using var inner = new RecoveringExporter(new InvalidOperationException("collector unavailable"));
-        using var healthReportingInner = new CollectorHealthReportingExporter(
-            inner,
-            reporter.Report,
-            new Uri("http://collector.local:4317/"),
-            OtlpProtocol.Grpc,
-            TimeProvider.System);
-        using var exporter = CreateExporter(
-            healthReportingInner,
-            spool,
-            TimeSpan.FromMilliseconds(10),
-            reporter.Report);
-        await spool.AppendBatchAsync(new[] { CreateLargeRecord("queued") }, CancellationToken.None);
-
-        await exporter.ExportAsync(new[] { CreateLargeRecord("live") }, CancellationToken.None);
-        inner.Recover();
-        await WaitForSpoolToDrainAsync(spool, TimeSpan.FromSeconds(2));
-        await WaitForHealthSnapshotAsync(
-            reporter,
-            snapshot => snapshot.State == CollectorHealthState.Healthy && snapshot.DroppedRecords == 1,
-            TimeSpan.FromSeconds(2));
-
-        await exporter.ExportAsync(new[] { CreateLargeRecord("normal") }, CancellationToken.None);
-
-        reporter.SnapshotCopy.Last().DroppedRecords.Should().Be(1);
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenCancellationRequested_PropagatesAndDoesNotSpool()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        using var cts = new CancellationTokenSource();
-        await cts.CancelAsync();
-        using var exporter = CreateExporter(new CanceledExporter(), spool);
-        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
-
-        Func<Task> export = async () => await exporter.ExportAsync(new[] { record }, cts.Token);
-
-        await export.Should().ThrowAsync<OperationCanceledException>();
-        Directory.Exists(Path.Combine(root, "spool")).Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenAppendFails_RethrowsOriginalExportFailure()
-    {
-        var exportFailure = new InvalidOperationException("collector unavailable");
-        using var exporter = CreateExporter(
-            new ThrowingExporter(exportFailure),
-            new DiskTelemetrySpool(Path.Combine(root, "not-a-directory", "spool")));
-        Directory.CreateDirectory(root);
-        await File.WriteAllTextAsync(Path.Combine(root, "not-a-directory"), "file");
-        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Routine);
-
-        var exception = await Record.ExceptionAsync(() => exporter.ExportAsync(new[] { record }, CancellationToken.None));
-
-        exception.Should().BeSameAs(exportFailure);
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenOversizedLiveBatchCannotBeSpooled_ReportsDroppedRecordsBeforeRethrowingOriginalFailure()
-    {
-        var exportFailure = new InvalidOperationException("collector unavailable");
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"), maxBytes: 32, maxAge: TimeSpan.FromDays(7));
-        var reporter = new RecordingHealthReporter();
-        using var exporter = CreateExporter(
-            new ThrowingExporter(exportFailure),
-            spool,
-            reportHealth: reporter.Report);
-
-        var exception = await Record.ExceptionAsync(() =>
-            exporter.ExportAsync(new[] { CreateLargeRecord("oversized") }, CancellationToken.None));
-
-        exception.Should().BeSameAs(exportFailure);
-        reporter.Snapshots.Should().ContainSingle();
-        reporter.Snapshots[0].DroppedRecords.Should().Be(1);
-        reporter.Snapshots[0].QueuedRecords.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task ExportAsync_WhenLiveAppendRacesWithReplay_DoesNotCountExportedReplayBatchAsDropped()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"), maxBytes: 6_000, maxAge: TimeSpan.FromDays(7));
-        var inner = new ReplayRaceExporter();
-        using var exporter = CreateExporter(inner, spool);
-        inner.Exporter = exporter;
-        await spool.AppendBatchAsync(new[] { CreateLargeRecord("queued") }, CancellationToken.None);
-
-        var firstExport = exporter.ExportAsync(new[] { CreateLargeRecord("trigger") }, CancellationToken.None);
-        await inner.WaitForNestedReplayAsync(TimeSpan.FromSeconds(2));
-        await Task.Delay(TimeSpan.FromMilliseconds(200));
-        inner.ReleaseNestedReplay();
-
-        await firstExport;
-        await inner.NestedExportTask!.WaitAsync(TimeSpan.FromSeconds(2));
-        var stats = await spool.GetStatsAsync(CancellationToken.None);
-
-        inner.ExportedNames.Should().Contain("queued");
-        stats.DroppedRecords.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task Dispose_WhenRecoveryExportIsInFlight_DefersInnerDisposeUntilWorkerExits()
-    {
-        var spool = new DiskTelemetrySpool(Path.Combine(root, "spool"));
-        var inner = new BlockingRecoveringExporter(new InvalidOperationException("collector unavailable"));
-        var exporter = CreateExporter(inner, spool, TimeSpan.FromMilliseconds(1));
-        var record = TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", "live", TelemetryPriority.Important);
-
-        await exporter.ExportAsync(new[] { record }, CancellationToken.None);
-        inner.Recover();
-        await inner.WaitForExportAttemptAsync(TimeSpan.FromSeconds(2));
-
-        exporter.Dispose();
-
-        inner.Disposed.Should().BeFalse();
-
-        inner.ReleaseExport();
-        await inner.WaitForDisposeAsync(TimeSpan.FromSeconds(2));
-        inner.Disposed.Should().BeTrue();
-    }
-
-    private static DurableTelemetryExporter CreateExporter(
-        ITelemetryExporter inner,
+    private static DurableTelemetryExporter Create(
         DiskTelemetrySpool spool,
-        TimeSpan? recoveryInitialDelay = null,
-        Action<CollectorHealthSnapshot>? reportHealth = null)
+        ITelemetryExporter live,
+        Func<SpoolSignal, DiskTelemetrySpool.Batch, CancellationToken, Task> replay,
+        Action<CollectorHealthSnapshot>? health = null,
+        Action<string>? diagnostic = null,
+        TimeSpan? interval = null,
+        TimeSpan? initialBackoff = null) =>
+        new(live, new ReplayExporter(replay), spool, health, new Uri("https://example.test"), diagnostic: diagnostic,
+            replayInterval: interval ?? TimeSpan.FromMilliseconds(10), initialBackoff: initialBackoff);
+
+    private static Task AppendAsync(DiskTelemetrySpool spool, params TelemetryRecord[] records) =>
+        spool.AppendBatchAsync(records, CancellationToken.None);
+
+    private static TelemetryRecord Health(string name) =>
+        TelemetryRecord.Health(DateTimeOffset.UtcNow, "test", name, TelemetryPriority.Routine);
+
+    private static TelemetryRecord Metric(string name) =>
+        TelemetryRecord.Metric(DateTimeOffset.UtcNow, "test", name, 1, TelemetryPriority.Routine);
+
+    internal static async Task UntilAsync(Func<bool> condition)
     {
-        var delay = recoveryInitialDelay ?? TimeSpan.FromMinutes(1);
-        return new DurableTelemetryExporter(
-            inner,
-            spool,
-            delay,
-            delay,
-            reportHealth,
-            new Uri("http://collector.local:4317/"),
-            OtlpProtocol.Grpc,
-            TimeProvider.System);
-    }
-
-    private static TelemetryRecord CreateLargeRecord(string name, int payloadSize = 3_000) =>
-        TelemetryRecord.Health(
-            DateTimeOffset.UtcNow,
-            "test",
-            name,
-            TelemetryPriority.Routine,
-            new Dictionary<string, object?> { ["payload"] = new string('x', payloadSize) });
-
-    private static async Task WaitForSpoolToDrainAsync(DiskTelemetrySpool spool, TimeSpan timeout)
-    {
-        using var cts = new CancellationTokenSource(timeout);
-
-        while (!cts.IsCancellationRequested)
+        using var timeout = new CancellationTokenSource(TestTimeout);
+        while (!condition())
         {
-            if (!(await spool.ReadBatchesAsync(CancellationToken.None)).Any())
-            {
-                return;
-            }
-
-            try
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(10), cts.Token);
-            }
-            catch (OperationCanceledException) when (cts.IsCancellationRequested)
-            {
-                break;
-            }
-        }
-
-        throw new TimeoutException("Telemetry spool did not drain before the timeout elapsed.");
-    }
-
-    private static async Task<CollectorHealthSnapshot> WaitForHealthSnapshotAsync(
-        RecordingHealthReporter reporter,
-        Predicate<CollectorHealthSnapshot> predicate,
-        TimeSpan timeout)
-    {
-        using var cts = new CancellationTokenSource(timeout);
-
-        while (!cts.IsCancellationRequested)
-        {
-            lock (reporter.Gate)
-            {
-                var matchingSnapshot = reporter.Snapshots.FirstOrDefault(snapshot => predicate(snapshot));
-                if (matchingSnapshot is not null)
-                {
-                    return matchingSnapshot;
-                }
-            }
-
-            try
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(10), cts.Token);
-            }
-            catch (OperationCanceledException) when (cts.IsCancellationRequested)
-            {
-                break;
-            }
-        }
-
-        throw new TimeoutException("Expected collector health snapshot was not reported.");
-    }
-
-    private sealed class RecordingHealthReporter
-    {
-        public object Gate { get; } = new();
-
-        public List<CollectorHealthSnapshot> Snapshots { get; } = [];
-
-        public IReadOnlyList<CollectorHealthSnapshot> SnapshotCopy
-        {
-            get
-            {
-                lock (Gate)
-                {
-                    return Snapshots.ToArray();
-                }
-            }
-        }
-
-        public void Report(CollectorHealthSnapshot snapshot)
-        {
-            lock (Gate)
-            {
-                Snapshots.Add(snapshot);
-            }
+            await Task.Delay(10, timeout.Token);
         }
     }
 
-    private sealed class RecordingExporter : ITelemetryExporter
-    {
-        public List<IReadOnlyList<TelemetryRecord>> Batches { get; } = [];
-
-        public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
-        {
-            Batches.Add(records.ToArray());
-            return Task.CompletedTask;
-        }
-    }
-
-    private sealed class ThrowingExporter(Exception exception) : ITelemetryExporter
+    private sealed class LiveExporter(Func<IReadOnlyList<TelemetryRecord>, CancellationToken, Task>? send = null) : ITelemetryExporter
     {
         public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken) =>
-            Task.FromException(exception);
+            send?.Invoke(records, cancellationToken) ?? Task.CompletedTask;
     }
 
-    private sealed class ThrowOnAttemptExporter(int failingAttempt, Exception exception) : ITelemetryExporter
+    private sealed class ReplayExporter(Func<SpoolSignal, DiskTelemetrySpool.Batch, CancellationToken, Task> send) : ISpoolReplayExporter
     {
-        private int attempts;
+        public TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
-        {
-            if (Interlocked.Increment(ref attempts) == failingAttempt)
-            {
-                return Task.FromException(exception);
-            }
+        public Task ExportAsync(SpoolSignal signal, DiskTelemetrySpool.Batch batch, CancellationToken cancellationToken) =>
+            send(signal, batch, cancellationToken);
 
-            return Task.CompletedTask;
-        }
-    }
-
-    private sealed class RecoveringExporter(Exception initialException) : ITelemetryExporter, IDisposable
-    {
-        private readonly object gate = new();
-        private readonly TaskCompletionSource exported = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private Exception? exception = initialException;
-        private int disposed;
-
-        public List<IReadOnlyList<TelemetryRecord>> Batches { get; } = [];
-
-        public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (Volatile.Read(ref disposed) != 0)
-            {
-                return Task.FromException(new ObjectDisposedException(nameof(RecoveringExporter)));
-            }
-
-            var currentException = Volatile.Read(ref exception);
-            if (currentException != null)
-            {
-                return Task.FromException(currentException);
-            }
-
-            lock (gate)
-            {
-                Batches.Add(records.ToArray());
-            }
-
-            exported.TrySetResult();
-            return Task.CompletedTask;
-        }
-
-        public void Recover() => Volatile.Write(ref exception, null);
-
-        public async Task WaitForCountAsync(int count, TimeSpan timeout)
-        {
-            using var cts = new CancellationTokenSource(timeout);
-
-            while (!cts.IsCancellationRequested)
-            {
-                lock (gate)
-                {
-                    if (Batches.Count >= count)
-                    {
-                        return;
-                    }
-                }
-
-                await exported.Task.WaitAsync(timeout);
-            }
-        }
-
-        public void Dispose()
-        {
-            Volatile.Write(ref disposed, 1);
-            exported.TrySetCanceled();
-        }
-    }
-
-    private sealed class ReplayRaceExporter : ITelemetryExporter
-    {
-        private readonly object gate = new();
-        private readonly TaskCompletionSource nestedReplayEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource releaseNestedReplay = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int queuedAttempts;
-
-        public DurableTelemetryExporter? Exporter { get; set; }
-
-        public Task? NestedExportTask { get; private set; }
-
-        public List<string> ExportedNames { get; } = [];
-
-        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var firstRecordName = records.FirstOrDefault()?.Name;
-            if (firstRecordName == "queued")
-            {
-                if (Interlocked.Increment(ref queuedAttempts) == 1)
-                {
-                    NestedExportTask = Exporter!.ExportAsync(
-                        new[] { CreateLargeRecord("nested-live") },
-                        CancellationToken.None);
-                    throw new InvalidOperationException("replay failed");
-                }
-
-                nestedReplayEntered.TrySetResult();
-                await releaseNestedReplay.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            lock (gate)
-            {
-                ExportedNames.AddRange(records.Select(record => record.Name));
-            }
-        }
-
-        public async Task WaitForNestedReplayAsync(TimeSpan timeout) =>
-            await nestedReplayEntered.Task.WaitAsync(timeout);
-
-        public void ReleaseNestedReplay() => releaseNestedReplay.TrySetResult();
-    }
-
-    private sealed class BlockingRecoveringExporter(Exception initialException) : ITelemetryExporter, IDisposable
-    {
-        private readonly TaskCompletionSource enteredExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource releaseExport = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private Exception? exception = initialException;
-
-        public bool Disposed => disposed.Task.IsCompleted;
-
-        public async Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var currentException = Volatile.Read(ref exception);
-            if (currentException != null)
-            {
-                throw currentException;
-            }
-
-            enteredExport.TrySetResult();
-            await releaseExport.Task.ConfigureAwait(false);
-        }
-
-        public void Recover() => Volatile.Write(ref exception, null);
-
-        public void ReleaseExport() => releaseExport.TrySetResult();
-
-        public async Task WaitForExportAttemptAsync(TimeSpan timeout) =>
-            await enteredExport.Task.WaitAsync(timeout);
-
-        public async Task WaitForDisposeAsync(TimeSpan timeout) =>
-            await disposed.Task.WaitAsync(timeout);
-
-        public void Dispose() => disposed.TrySetResult();
-    }
-
-    private sealed class CanceledExporter : ITelemetryExporter
-    {
-        public Task ExportAsync(IReadOnlyList<TelemetryRecord> records, CancellationToken cancellationToken) =>
-            Task.FromCanceled(cancellationToken);
+        public void Dispose() => Disposed.TrySetResult();
     }
 }

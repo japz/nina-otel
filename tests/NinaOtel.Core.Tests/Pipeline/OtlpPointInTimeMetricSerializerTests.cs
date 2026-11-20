@@ -3,6 +3,7 @@ using NinaOtel.Abstractions.Telemetry;
 using NinaOtel.Core.Pipeline;
 using NinaOtel.Core.Telemetry;
 using Xunit;
+using OpenTelemetry.Proto.Collector.Metrics.V1;
 
 namespace NinaOtel.Core.Tests.Pipeline;
 
@@ -10,6 +11,18 @@ public sealed class OtlpPointInTimeMetricSerializerTests
 {
     private static readonly DateTimeOffset CatalogMetricTimestamp =
         DateTimeOffset.UnixEpoch.AddSeconds(123).AddTicks(4567);
+
+    [Fact]
+    public void Serialize_OfficialOtlpDecoderReadsTimestampAndValue()
+    {
+        var record = TelemetryRecord.Metric(CatalogMetricTimestamp, "nina.image", "image_mean", 1842.5, TelemetryPriority.Normal);
+        var request = ExportMetricsServiceRequest.Parser.ParseFrom(
+            OtlpPointInTimeMetricSerializer.Serialize([record]));
+        var point = Assert.Single(Assert.Single(Assert.Single(Assert.Single(request.ResourceMetrics)
+            .ScopeMetrics).Metrics).Gauge.DataPoints);
+        Assert.Equal(ToUnixNanoseconds(record.Timestamp), point.TimeUnixNano);
+        Assert.Equal(1842.5, point.AsDouble);
+    }
 
     [Fact]
     public void Serialize_WritesExpectedPayloadForEveryCatalogDeferredPointInTimeMetric()
@@ -41,7 +54,7 @@ public sealed class OtlpPointInTimeMetricSerializerTests
                 .Which
                 .Should()
                 .Be(record.NumericValue!.Value);
-            ProtobufFieldScanner.FindVarints(dataPoint, "3")
+            ProtobufFieldScanner.FindFixed64(dataPoint, "3")
                 .Should()
                 .ContainSingle(metric.Name)
                 .Which
@@ -96,7 +109,7 @@ public sealed class OtlpPointInTimeMetricSerializerTests
         var payload = OtlpPointInTimeMetricSerializer.Serialize([record]);
 
         payload.Should().NotBeEmpty();
-        ProtobufFieldScanner.FindVarints(payload, "1.2.2.5.1.3")
+        ProtobufFieldScanner.FindFixed64(payload, "1.2.2.5.1.3")
             .Should()
             .Contain(expectedUnixNano);
     }

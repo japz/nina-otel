@@ -4,6 +4,10 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
+    <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="all" />
+    <Protobuf Include="Protos/**/*.proto" ProtoRoot="Protos" GrpcServices="None" />
+    <None Update="Fixtures/alpha57-spool.ready.json" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
     <PackageReference Include="FluentAssertions" Version="6.12.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />

@@ -140,6 +140,8 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
 
     public string CollectorHealthSummary => collectorHealthState switch
     {
+        CollectorHealthState.Healthy when collectorHealthSnapshot?.BufferMode == CollectorBufferMode.Recovering =>
+            "Collector connected; draining queue",
         CollectorHealthState.Healthy => "Collector connected",
         CollectorHealthState.Unhealthy when collectorHealthSnapshot?.BufferMode == CollectorBufferMode.Degraded =>
             "Collector unavailable; telemetry queued",
@@ -1082,7 +1084,9 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         if (snapshot.QueuedRecords <= 0 &&
             snapshot.QueuedBytes <= 0 &&
             snapshot.OldestQueuedTimestamp is null &&
-            snapshot.DroppedRecords <= 0)
+            snapshot.DroppedRecords <= 0 &&
+            snapshot.QueuedBatches <= 0 &&
+            snapshot.QuarantinedBatches <= 0)
         {
             return string.Empty;
         }
@@ -1090,7 +1094,10 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         var parts = new List<string>();
         if (snapshot.QueuedRecords > 0 || snapshot.QueuedBytes > 0)
         {
-            parts.Add($"Queued: {snapshot.QueuedRecords} record(s), {snapshot.QueuedBytes} byte(s);");
+            var counts = snapshot.QueuedBatches > 0
+                ? $"{snapshot.QueuedBatches} batch(es), {snapshot.QueuedBytes} byte(s)"
+                : $"{snapshot.QueuedRecords} record(s), {snapshot.QueuedBytes} byte(s)";
+            parts.Add($"Queued: {counts};");
         }
 
         if (snapshot.OldestQueuedTimestamp is not null)
@@ -1101,6 +1108,11 @@ public sealed class NinaOtelOptionsViewModel : INotifyPropertyChanged
         if (snapshot.DroppedRecords > 0)
         {
             parts.Add($"Dropped: {snapshot.DroppedRecords} record(s);");
+        }
+
+        if (snapshot.QuarantinedBatches > 0)
+        {
+            parts.Add($"Quarantined this session: {snapshot.QuarantinedBatches} batch(es);");
         }
 
         return string.Join(" ", parts) + " ";
